@@ -107,16 +107,69 @@ This two-tier buffering (client batches → server buffers) means "W1TU" typed q
 
 ---
 
-## 🌐 Networking with Tailscale
+## 🌐 Networking — Setting Up Tailscale (Step by Step)
 
-The challenge with remote UDP is peer-to-peer connectivity through NATs and firewalls. The simplest (and free) solution is **[Tailscale](https://tailscale.com/)**:
+### Why You Need This
 
-1. Install Tailscale on both PCs (takes 2 minutes)
-2. Both machines get a `100.x.x.x` address
-3. Enter the server's Tailscale IP in RWKClient — done
+When your station PC and your operating PC are on different internet connections (different houses, different ISPs), they can't normally talk directly to each other via UDP. Home routers, cable modems, and firewalls all block incoming connections. This is a fundamental problem with the internet — it's not specific to RWK.
 
-No port forwarding, no firewall rules, no VPN configuration. Tailscale's WireGuard-based mesh adds minimal latency (~1-3ms overhead).
+**Tailscale** solves this completely. It's a free program that creates a private encrypted tunnel between your computers, giving each one a simple `100.x.x.x` address that works no matter where they are — behind NAT, on cellular, on hotel WiFi, anything. It just works.
 
+### Step 1: Create a Tailscale Account (Once)
+
+1. Go to [https://tailscale.com/](https://tailscale.com/)
+2. Click **Get Started** — it's free for personal use (up to 100 devices)
+3. Sign in with your Google, Microsoft, or GitHub account
+4. That's it — no credit card, no trial period
+
+### Step 2: Install Tailscale on Your Station PC (Remote)
+
+1. Go to [https://tailscale.com/download/windows](https://tailscale.com/download/windows)
+2. Download and run the installer
+3. When it finishes, a Tailscale icon appears in your system tray (bottom-right near the clock)
+4. Click the icon and sign in with the same account you created in Step 1
+5. After signing in, the icon turns blue — you're connected
+6. **Note the IP address** — hover over the tray icon or right-click → "My IP" — it will be something like `100.64.x.x`
+
+### Step 3: Install Tailscale on Your Operating PC (Local/Home)
+
+1. Same process — download from [https://tailscale.com/download/windows](https://tailscale.com/download/windows)
+2. Install, sign in with the **same account**
+3. Both machines are now on your private Tailscale network
+
+### Step 4: Test the Connection
+
+On your local PC, open a Command Prompt and type:
+```
+ping 100.64.x.x
+```
+(use the IP from your station PC in Step 2)
+
+You should see replies. If so, everything is working.
+
+### Step 5: Use the Tailscale IP in RWKClient
+
+In the RWKClient app, enter the station PC's Tailscale IP (e.g., `100.64.0.2`) as the **WKR Server IP**. That's all the configuration needed.
+
+### That's It!
+
+Tailscale handles everything else automatically:
+- ✅ Works through any NAT or firewall
+- ✅ Works on different ISPs (cable, fiber, cellular, Starlink)
+- ✅ Encrypted end-to-end (WireGuard)
+- ✅ Starts automatically with Windows
+- ✅ Reconnects automatically if internet drops
+- ✅ Adds only 1-3ms of latency (negligible for CW)
+- ✅ Free for personal use
+
+### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Can't ping the other machine | Make sure both are signed in to Tailscale (icon should be blue/connected) |
+| Tailscale connected but RWK doesn't work | Check that port 7388 isn't blocked by Windows Firewall — add an exception for WKRServer.exe |
+| High latency (>100ms) | Tailscale is relaying through a server instead of going direct. This is rare but can happen. Try restarting Tailscale on both machines. |
+| Forgot the IP | Right-click the Tailscale tray icon → "My IP addresses" or visit [https://login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines) |
 ---
 
 ## 🚀 Getting Started
