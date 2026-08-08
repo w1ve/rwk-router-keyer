@@ -8,6 +8,9 @@ publish/
 *.user
 *.suo
 
+## Kiro specs (local only)
+.kiro/
+
 ## Build artifacts
 *.log
 crash.log
