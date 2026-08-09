@@ -115,11 +115,15 @@ public class TimingEngine : IDisposable
     }
 
     /// <summary>
-    /// Interrupts in-progress keying, causing the current schedule to be abandoned.
+    /// Interrupts in-progress keying and clears all queued schedules.
+    /// Ensures the key is released.
     /// </summary>
     public void AbortCurrent()
     {
         _abortCurrent = true;
+        
+        // Drain the schedule queue to prevent queued messages from playing
+        while (_scheduleQueue.TryTake(out _)) { }
     }
 
     /// <summary>

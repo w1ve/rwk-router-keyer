@@ -21,28 +21,27 @@ public sealed class UdpCommandSource : ICommandSource, ICommandSink
     public event EventHandler<byte[]>? DataReceived;
 
     /// <summary>
-    /// Raised when a socket error occurs (e.g., bind failure).
+    /// Raised when a socket error occurs (e.g., bind failure, receive error).
     /// </summary>
     public event EventHandler<string>? Error;
+
+    /// <summary>
+    /// Raised when the UDP receive loop terminates unexpectedly.
+    /// </summary>
+    public event EventHandler? Disconnected;
 
     /// <summary>
     /// Starts listening on the specified endpoint.
     /// </summary>
     /// <param name="endpoint">The local IP endpoint to bind to.</param>
+    /// <exception cref="SocketException">Thrown if binding fails.</exception>
     public void Start(IPEndPoint endpoint)
     {
         if (_disposed) throw new ObjectDisposedException(nameof(UdpCommandSource));
         if (_client is not null) throw new InvalidOperationException("Source is already running.");
 
-        try
-        {
-            _client = new UdpClient(endpoint);
-        }
-        catch (SocketException ex)
-        {
-            Error?.Invoke(this, $"Failed to bind UDP to {endpoint}: {ex.Message}");
-            return;
-        }
+        // Let SocketException propagate — caller (AppController) should catch and report
+        _client = new UdpClient(endpoint);
 
         _cts = new CancellationTokenSource();
         _receiveTask = Task.Run(() => ReceiveLoop(_cts.Token));
@@ -134,6 +133,7 @@ public sealed class UdpCommandSource : ICommandSource, ICommandSink
                 if (!ct.IsCancellationRequested)
                 {
                     Error?.Invoke(this, $"UDP receive error: {ex.Message}");
+                    Disconnected?.Invoke(this, EventArgs.Empty);
                 }
                 break;
             }

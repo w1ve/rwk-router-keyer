@@ -1,4 +1,7 @@
+using System.Net;
+using System.Net.Security;
 using System.Net.WebSockets;
+using System.Security.Authentication;
 
 namespace WinKeyerEmulator.Core.CloudRelay;
 
@@ -204,7 +207,10 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
             }
             catch (Exception ex)
             {
-                Error?.Invoke(this, $"Connection error: {ex.Message}");
+                var fullMsg = ex.InnerException != null
+                    ? $"Connection error: {ex.Message} | Inner: {ex.InnerException.Message}"
+                    : $"Connection error: {ex.Message}";
+                Error?.Invoke(this, fullMsg);
             }
 
             if (ct.IsCancellationRequested) break;
@@ -228,15 +234,53 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
     {
         CleanupWebSocket();
         _ws = new ClientWebSocket();
+        _ws.Options.HttpVersion = HttpVersion.Version11;
+        _ws.Options.HttpVersionPolicy = HttpVersionPolicy.RequestVersionExact;
 
         string typeStr = _config.EndpointType == RelayEndpointType.StationSide
             ? "STATION_SIDE" : "REMOTE_SIDE";
-        var uri = new Uri($"{_config.RelayUrl}?token={_config.PairingToken}&type={typeStr}");
+        var token = _config.PairingToken.Trim();
+        var uri = new Uri($"{_config.RelayUrl}?token={token}&type={typeStr}");
+
+        var handler = new SocketsHttpHandler
+        {
+            SslOptions = new SslClientAuthenticationOptions
+            {
+                EnabledSslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12
+            }
+        };
 
         using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         connectCts.CancelAfter(TimeSpan.FromSeconds(15));
 
-        await _ws.ConnectAsync(uri, connectCts.Token).ConfigureAwait(false);
+        try
+        {
+            await _ws.ConnectAsync(uri, new HttpMessageInvoker(handler), connectCts.Token).ConfigureAwait(false);
+        }
+        catch (WebSocketException wsEx)
+        {
+            // On failure, probe the endpoint with plain HTTP to get the actual response body
+            try
+            {
+                using var httpClient = new System.Net.Http.HttpClient(new SocketsHttpHandler
+                {
+                    SslOptions = new SslClientAuthenticationOptions
+                    {
+                        EnabledSslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12
+                    }
+                });
+                var httpUri = uri.ToString().Replace("wss://", "https://");
+                var resp = await httpClient.GetAsync(httpUri, connectCts.Token).ConfigureAwait(false);
+                var body = await resp.Content.ReadAsStringAsync(connectCts.Token).ConfigureAwait(false);
+                Error?.Invoke(this, $"HTTP probe {(int)resp.StatusCode}: {body}");
+            }
+            catch (Exception probeEx)
+            {
+                Error?.Invoke(this, $"HTTP probe failed: {probeEx.Message}");
+            }
+
+            throw;
+        }
     }
 
     private async Task ReceiveLoop(CancellationToken ct)

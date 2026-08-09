@@ -26,6 +26,7 @@ partial class MainForm
     private Label lblPairingToken;
     private TextBox txtPairingToken;
     private Button btnGenerateToken;
+    private Button btnCopyToken;
     private Label lblRelayStatus;
 
     // Middle controls
@@ -62,6 +63,7 @@ partial class MainForm
         this.lblPairingToken = new Label();
         this.txtPairingToken = new TextBox();
         this.btnGenerateToken = new Button();
+        this.btnCopyToken = new Button();
         this.lblRelayStatus = new Label();
         this.btnStart = new Button();
         this.btnStop = new Button();
@@ -156,6 +158,14 @@ partial class MainForm
         this.btnGenerateToken.Visible = false;
         this.btnGenerateToken.Click += new EventHandler(this.BtnGenerateToken_Click);
 
+        // btnCopyToken
+        this.btnCopyToken.Location = new Point(520, 126);
+        this.btnCopyToken.Size = new Size(50, 25);
+        this.btnCopyToken.Text = "Copy";
+        this.btnCopyToken.Visible = false;
+        this.btnCopyToken.Enabled = false;
+        this.btnCopyToken.Click += new EventHandler(this.BtnCopyToken_Click);
+
         // lblRelayStatus
         this.lblRelayStatus.AutoSize = true;
         this.lblRelayStatus.Location = new Point(320, 82);
@@ -209,6 +219,7 @@ partial class MainForm
         this.Controls.Add(this.lblPairingToken);
         this.Controls.Add(this.txtPairingToken);
         this.Controls.Add(this.btnGenerateToken);
+        this.Controls.Add(this.btnCopyToken);
         this.Controls.Add(this.lblRelayStatus);
         this.Controls.Add(this.btnStart);
         this.Controls.Add(this.btnStop);

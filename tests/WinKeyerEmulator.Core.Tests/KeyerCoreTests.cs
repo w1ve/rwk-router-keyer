@@ -75,7 +75,9 @@ public class KeyerCoreTests
         // Assert: keyer is created successfully with accessible state
         Assert.NotNull(keyer);
         Assert.NotNull(keyer.State);
-        Assert.False(keyer.State.HostMode);
+        // Note: HostMode defaults to true so the emulator works immediately 
+        // if the host connects mid-session (e.g., after emulator restart)
+        Assert.True(keyer.State.HostMode);
         Assert.Equal(15, keyer.State.CurrentWpm); // Default WPM
     }
 

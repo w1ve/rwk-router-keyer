@@ -17,6 +17,8 @@ public partial class MainForm : Form
     private CancellationTokenSource? _cts;
     private readonly List<byte> _keyBuffer = new();
     private System.Threading.Timer? _keyFlushTimer;
+    private byte _lastPotWpm;           // For filtering spurious pot changes
+    private DateTime _lastPotTime;       // For debouncing rapid pot changes
 
     public MainForm()
     {
@@ -152,6 +154,20 @@ public partial class MainForm : Form
                     _winKeyerPort.Read(resp, 0, resp.Length);
                     Log($"WinKeyer found on {portName}, version: {resp[0]}");
 
+                    // Speed Pot Setup (cmd 0x05): min=5, range=45 (5-50 WPM), step=0
+                    _winKeyerPort.Write(new byte[] { 0x05, 0x05, 0x2D, 0x00 }, 0, 4);
+                    Thread.Sleep(50);
+
+                    // Enable paddle echo — this also makes pot control speed directly
+                    _winKeyerPort.Write(new byte[] { 0x0D, 0x40 }, 0, 2);
+                    Thread.Sleep(50);
+
+                    // Reset debounce so first pot change is always sent
+                    _lastPotWpm = 0;
+                    _lastPotTime = DateTime.MinValue;
+
+                    Log("Paddle echo ON, pot controls local speed directly");
+
                     _winKeyerPort.ReadTimeout = 500;
                     _readThread = new Thread(ReadWinKeyerLoop) { IsBackground = true, Name = "WKR-SerialRead" };
                     _readThread.Start();
@@ -203,16 +219,74 @@ public partial class MainForm : Form
                 int n = _winKeyerPort.Read(buffer, 0, buffer.Length);
                 if (n > 0)
                 {
-                    var data = new byte[n];
-                    Array.Copy(buffer, data, n);
-                    SendToServer(data);
-                    Log($"WK→Server: {FormatHex(data)}");
+                    var commands = new List<byte>(n);
+                    for (int i = 0; i < n; i++)
+                    {
+                        byte b = buffer[i];
+                        if (b >= 0xC0)
+                        {
+                            // Status byte — discard
+                        }
+                        else if (b >= 0x80)
+                        {
+                            // Speed pot status: 0x80 | pot_position
+                            // WinKeyer is already using this speed locally (0x0D 0x40 mode)
+                            // Just forward to server so it matches
+                            byte potPos = (byte)(b & 0x3F);
+                            byte wpm = (byte)(5 + potPos);
+
+                            // Debounce: only send if WPM actually changed AND
+                            // at least 25ms since last change (filter ADC noise)
+                            var now = DateTime.UtcNow;
+                            bool wpmChanged = wpm != _lastPotWpm;
+                            bool enoughTime = (now - _lastPotTime).TotalMilliseconds >= 25;
+
+                            if (wpmChanged && enoughTime)
+                            {
+                                _lastPotWpm = wpm;
+                                _lastPotTime = now;
+                                commands.Add(0x02);
+                                commands.Add(wpm);
+                                Log($"Speed pot → {wpm} WPM");
+                            }
+                        }
+                        else
+                        {
+                            // Character echo — forward to server
+                            commands.Add(b);
+                        }
+                    }
+
+                    if (commands.Count > 0)
+                    {
+                        var data = commands.ToArray();
+                        SendToServer(data);
+                        Log($"WK→Server: {FormatHex(data)}");
+                    }
                 }
             }
             catch (TimeoutException) { }
             catch (OperationCanceledException) { break; }
-            catch (IOException) { if (_running) { Log("WinKeyer disconnected"); _running = false; } break; }
+            catch (IOException) { if (_running) { Log("WinKeyer disconnected"); } break; }
             catch (InvalidOperationException) { break; }
+            catch (UnauthorizedAccessException) { break; }
+        }
+
+        // If the loop exited unexpectedly while running, notify the UI
+        if (_running)
+        {
+            _running = false;
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    Log("WinKeyer connection lost.");
+                    Cleanup();
+                    SetRunningState(false);
+                    lblRelayStatus.Text = "";
+                });
+            }
+            catch { }
         }
     }
 
@@ -311,8 +385,8 @@ public partial class MainForm : Form
                 {
                     _keyBuffer.Add(b);
                 }
-                // Reset flush timer — sends after 150ms of typing pause
-                _keyFlushTimer?.Change(150, Timeout.Infinite);
+                // Reset flush timer — sends after 75ms of typing pause
+                _keyFlushTimer?.Change(75, Timeout.Infinite);
                 return;
             }
         }
@@ -323,6 +397,14 @@ public partial class MainForm : Form
 
     private void FlushKeyBuffer(object? state)
     {
+        FlushKeyBufferInternal(requireRunning: true);
+    }
+
+    /// <summary>
+    /// Internal flush that can optionally bypass the _running check (for shutdown).
+    /// </summary>
+    private void FlushKeyBufferInternal(bool requireRunning)
+    {
         byte[] data;
         lock (_keyBuffer)
         {
@@ -331,7 +413,7 @@ public partial class MainForm : Form
             _keyBuffer.Clear();
         }
 
-        if (_running)
+        if (!requireRunning || _running)
         {
             try
             {
@@ -345,11 +427,14 @@ public partial class MainForm : Form
 
     private void Cleanup()
     {
+        // Flush any pending keystrokes BEFORE setting _running = false
+        try { _keyFlushTimer?.Change(Timeout.Infinite, Timeout.Infinite); } catch { }
+        FlushKeyBufferInternal(requireRunning: false);
+
         _running = false;
         _cts?.Cancel();
         try { _keyFlushTimer?.Dispose(); } catch { }
         _keyFlushTimer = null;
-        FlushKeyBuffer(null);
         try { _winKeyerPort?.Close(); } catch { }
         try { _winKeyerPort?.Dispose(); } catch { }
         _winKeyerPort = null;

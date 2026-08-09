@@ -7,6 +7,7 @@ namespace WinKeyerEmulator.Core;
 /// <summary>
 /// Orchestrates the WinKeyer protocol parsing and timing engine execution.
 /// This is the central coordination class that wires protocol commands to keying output.
+/// Thread-safe: ProcessCommand can be called from multiple threads (serial, UDP, relay).
 /// </summary>
 public class KeyerCore : IDisposable
 {
@@ -15,6 +16,7 @@ public class KeyerCore : IDisposable
     private readonly ILogger _logger;
     private readonly WinKeyerProtocol _protocol;
     private readonly System.Threading.Timer _flushTimer;
+    private readonly object _protocolLock = new(); // Serialize access to protocol state
     private bool _disposed;
 
     /// <summary>
@@ -50,32 +52,40 @@ public class KeyerCore : IDisposable
     /// <summary>
     /// Processes incoming command bytes through the WinKeyer protocol state machine.
     /// Text characters received in host mode are routed to the TimingEngine.
+    /// Thread-safe: can be called from multiple transport threads.
     /// </summary>
     /// <param name="data">The raw command bytes to process.</param>
     /// <returns>All response bytes produced (concatenated), or null if no responses were generated.</returns>
     public byte[]? ProcessCommand(ReadOnlySpan<byte> data)
     {
-        List<byte>? allResponses = null;
-        foreach (byte b in data)
+        lock (_protocolLock)
         {
-            var response = _protocol.ProcessByte(b);
-            if (response != null)
+            List<byte>? allResponses = null;
+            foreach (byte b in data)
             {
-                allResponses ??= new List<byte>();
-                allResponses.AddRange(response);
+                var response = _protocol.ProcessByte(b);
+                if (response != null)
+                {
+                    allResponses ??= new List<byte>();
+                    allResponses.AddRange(response);
+                }
             }
+            return allResponses?.ToArray();
         }
-        return allResponses?.ToArray();
     }
 
     /// <summary>
     /// Cancels the current transmission and clears the text buffer.
+    /// Thread-safe.
     /// </summary>
     public void AbortMessage()
     {
-        _timingEngine.AbortCurrent();
-        _protocol.State.TextBuffer.Clear();
-        _protocol.State.BufferState = BufferState.Idle;
+        lock (_protocolLock)
+        {
+            _timingEngine.AbortCurrent();
+            _protocol.State.TextBuffer.Clear();
+            _protocol.State.BufferState = BufferState.Idle;
+        }
         _logger.Log("Message aborted", LogSeverity.Info, "KeyerCore");
     }
 
@@ -86,8 +96,9 @@ public class KeyerCore : IDisposable
     private void OnTextReceived(object? sender, char c)
     {
         // Reset the flush timer - we'll drain the buffer after a short pause
-        // to allow multi-character sequences to accumulate
-        _flushTimer.Change(50, Timeout.Infinite);
+        // to allow multi-character sequences to accumulate (25ms is fast enough
+        // for CW but still batches rapid input)
+        _flushTimer.Change(25, Timeout.Infinite);
     }
 
     /// <summary>
@@ -99,15 +110,24 @@ public class KeyerCore : IDisposable
 
         try
         {
-            var buffer = _protocol.State.TextBuffer;
-            if (buffer.Count > 0)
+            string? text = null;
+            int wpm;
+
+            lock (_protocolLock)
             {
-                var text = new string(buffer.ToArray());
+                var buffer = _protocol.State.TextBuffer;
+                if (buffer.Count == 0) return;
+
+                text = new string(buffer.ToArray());
+                wpm = _protocol.State.CurrentWpm;
                 buffer.Clear();
                 _protocol.State.BufferState = BufferState.Idle;
+            }
 
-                _logger.Log($"Keying: \"{text}\" at {_protocol.State.CurrentWpm} WPM", LogSeverity.Info, "KeyerCore");
-                _timingEngine.EnqueueMessage(text, _protocol.State.CurrentWpm);
+            if (text != null)
+            {
+                _logger.Log($"Keying: \"{text}\" at {wpm} WPM", LogSeverity.Info, "KeyerCore");
+                _timingEngine.EnqueueMessage(text, wpm);
 
                 // Echo each character back to the host (WinKeyer protocol requirement)
                 var echoBytes = new List<byte>();
@@ -129,6 +149,7 @@ public class KeyerCore : IDisposable
 
     /// <summary>
     /// Handles buffer clear from the protocol layer — aborts current keying.
+    /// Called under lock from ProcessByte via event.
     /// </summary>
     private void OnBufferCleared(object? sender, EventArgs e)
     {

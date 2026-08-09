@@ -133,21 +133,21 @@ partial class MainForm
         this.lblRelayStatus.ForeColor = System.Drawing.Color.Gray;
 
         // btnStart
-        this.btnStart.Location = new Point(350, 78);
+        this.btnStart.Location = new Point(12, 112);
         this.btnStart.Size = new Size(80, 28);
         this.btnStart.Text = "Start";
         this.btnStart.Click += new EventHandler(this.BtnStart_Click);
 
         // btnStop
-        this.btnStop.Location = new Point(350, 78);
+        this.btnStop.Location = new Point(12, 112);
         this.btnStop.Size = new Size(80, 28);
         this.btnStop.Text = "Stop";
         this.btnStop.Visible = false;
         this.btnStop.Click += new EventHandler(this.BtnStop_Click);
 
         // tabControl
-        this.tabControl.Location = new Point(12, 115);
-        this.tabControl.Size = new Size(460, 310);
+        this.tabControl.Location = new Point(12, 148);
+        this.tabControl.Size = new Size(460, 275);
         this.tabControl.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         this.tabControl.TabPages.Add(this.tabLog);
         this.tabControl.TabPages.Add(this.tabSendText);
@@ -191,9 +191,9 @@ partial class MainForm
         this.Controls.Add(this.lblPairingToken);
         this.Controls.Add(this.txtPairingToken);
         this.Controls.Add(this.lblRelayStatus);
+        this.Controls.Add(this.tabControl);
         this.Controls.Add(this.btnStart);
         this.Controls.Add(this.btnStop);
-        this.Controls.Add(this.tabControl);
         this.MinimumSize = new Size(450, 400);
         this.Name = "MainForm";
         this.Text = "WinKey Remote Client by W1VE";

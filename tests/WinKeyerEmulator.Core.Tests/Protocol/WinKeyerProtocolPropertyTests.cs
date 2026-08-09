@@ -118,13 +118,17 @@ public class WinKeyerProtocolPropertyTests
     /// <summary>
     /// **Validates: Requirements 1.7**
     ///
-    /// Property 6.12: Invalid command bytes in any state do not change protocol state.
+    /// Property 6.12: Invalid command bytes in non-host mode do not change protocol state.
     /// In non-host mode, anything other than Admin Open (0x00 followed by 0x02) should not change state.
     /// </summary>
     [Property(Arbitrary = new[] { typeof(InvalidByteArbitrary) })]
     public void InvalidBytesInNonHostMode_DoNotChangeState(InvalidByte invalidByte)
     {
         var protocol = CreateProtocol();
+        
+        // HostMode defaults to true, so close first to get to non-host mode
+        AdminClose(protocol);
+        Assert.False(protocol.State.HostMode);
 
         // Record state before
         bool hostModeBefore = protocol.State.HostMode;

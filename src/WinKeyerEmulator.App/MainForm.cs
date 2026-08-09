@@ -117,6 +117,15 @@ public partial class MainForm : Form
     private void BtnGenerateToken_Click(object? sender, EventArgs e)
     {
         txtPairingToken.Text = TokenGenerator.Generate();
+        btnCopyToken.Enabled = true;
+    }
+
+    private void BtnCopyToken_Click(object? sender, EventArgs e)
+    {
+        if (!string.IsNullOrWhiteSpace(txtPairingToken.Text))
+        {
+            Clipboard.SetText(txtPairingToken.Text);
+        }
     }
 
     private void UpdateTransportUI()
@@ -133,6 +142,8 @@ public partial class MainForm : Form
         lblPairingToken.Visible = isRelay;
         txtPairingToken.Visible = isRelay;
         btnGenerateToken.Visible = isRelay;
+        btnCopyToken.Visible = isRelay;
+        btnCopyToken.Enabled = isRelay && !string.IsNullOrWhiteSpace(txtPairingToken.Text);
     }
 
     private void OnRelayStatusChanged(object? sender, RelayStatusEventArgs e)
@@ -278,6 +289,7 @@ public partial class MainForm : Form
         nudUdpPort.Enabled = !running;
         txtPairingToken.Enabled = !running;
         btnGenerateToken.Enabled = !running;
+        btnCopyToken.Enabled = !running && !string.IsNullOrWhiteSpace(txtPairingToken.Text);
     }
 
     private string? GetSelectedCommandPort()

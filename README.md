@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/.NET-9.0-512BD4?logo=dotnet" alt=".NET 9" />
   <img src="https://img.shields.io/badge/platform-Windows%20x64-0078D6?logo=windows" alt="Windows x64" />
   <img src="https://img.shields.io/badge/protocol-K1EL%20WinKeyer-orange" alt="WinKeyer Protocol" />
-  <img src="https://img.shields.io/badge/transport-UDP-green" alt="UDP" />
+  <img src="https://img.shields.io/badge/transport-UDP%20%7C%20Cloud%20Relay-green" alt="UDP | Cloud Relay" />
   <img src="https://img.shields.io/badge/license-free%20to%20use-blue" alt="Free" />
   <img src="https://img.shields.io/badge/status-beta-yellow" alt="Beta" />
 </p>
@@ -21,42 +21,55 @@ This Remote WinKeyer project was designed to overcome the challenge of operating
 
 | Component | Role |
 |-----------|------|
-| **RWKServer** | Runs at the remote station. Emulates the full K1EL WinKeyer protocol in software. Accepts commands from a local logger (N1MM via serial) and/or a remote client (via UDP). Keys the radio by toggling DTR/RTS on a physical serial port. |
-| **RWKClient** | Runs at your local QTH. Connects to your physical WinKeyer hardware. Forwards all paddle keying and commands to the remote RWKServer over UDP. |
+| **RWKServer** | Runs at the remote station. Emulates the full K1EL WinKeyer protocol in software. Accepts commands from a local logger (N1MM via serial) and/or a remote client (via UDP or Cloud Relay). Keys the radio by toggling DTR/RTS on a physical serial port. |
+| **RWKClient** | Runs at your local QTH. Connects to your physical WinKeyer hardware. Forwards all paddle keying and commands to the remote RWKServer over UDP or Cloud Relay. |
+
+### Transport Options
+
+RWK supports two transport modes:
+
+| Transport | Best For | Setup Complexity |
+|-----------|----------|------------------|
+| **UDP** | LAN or VPN (Tailscale) connections with stable IP addresses | Medium — requires Tailscale or port forwarding |
+| **Cloud Relay** | Zero-config internet connectivity, works through any NAT/firewall | **Easy** — just share a pairing token |
 
 ### Three Connections on the Server
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        RWK Server                            │
+│                        RWK Server                           │
 │                                                             │
 │   Serial IN ──────→  Virtual WinKeyer  ──────→ Serial OUT   │
 │   (N1MM local)         Engine              (DTR/RTS key)    │
 │                          ↑                                  │
-│   UDP IN ────────────────┘                                  │
-│   (RWKClient remote)                                        │
+│   UDP IN ────────────────┤                                  │
+│   (RWKClient UDP)        │                                  │
+│                          │                                  │
+│   Cloud Relay ───────────┘                                  │
+│   (RWKClient Relay)                                         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 - **Keying Port (output):** Toggles DTR or RTS to key your transmitter
 - **Local WinKey Control Port (input):** Serial connection for N1MM or other logging software at the station
-- **UDP Listener (input):** Accepts WinKeyer protocol bytes from the remote RWKClient
+- **Remote Input:** UDP listener OR Cloud Relay — accepts WinKeyer protocol bytes from the remote RWKClient
 
 ### How the Client Works
 
 ```
-┌──────────────────────────────────┐         UDP          ┌──────────────┐
-│         RWK Client               │ ──────────────────→  │  RWK Server  │
-│                                  │                      │              │
-│  Physical WinKeyer ←→ Serial     │                      │  → Radio TX  │
-│  Keyboard typing   → UDP        │                      └──────────────┘
-│  Speed changes     → UDP        │
+┌──────────────────────────────────┐    UDP or Relay     ┌──────────────┐
+│         RWK Client               │ ──────────────────→ │  RWK Server  │
+│                                  │                     │              │
+│  Physical WinKeyer ←→ Serial     │                     │  → Radio TX  │
+│  Paddle keying     → Transport   │                     └──────────────┘
+│  Speed pot changes → Transport   │
+│  Keyboard typing   → Transport   │
 └──────────────────────────────────┘
 ```
 
 - Your **local WinKeyer** handles the paddle input and generates sidetone — zero latency for the operator
-- Speed changes on the local paddle knob are forwarded to the server
-- All WinKeyer protocol bytes are transparently relayed over UDP
+- Speed pot changes are forwarded to the server (with debouncing to filter noise)
+- All WinKeyer protocol bytes are transparently relayed
 - The **Send Text** tab lets you type characters directly from the keyboard
 
 ---
@@ -107,9 +120,69 @@ This two-tier buffering (client batches → server buffers) means "W1TU" typed q
 
 ---
 
-## 🌐 Networking — Setting Up Tailscale (Step by Step)
+## ☁️ Cloud Relay — Zero-Config Connectivity
 
-### Why You Need This
+### The Easiest Way to Connect
+
+Cloud Relay is the simplest way to connect RWKClient and RWKServer across the internet. It requires **no VPN, no port forwarding, and no firewall configuration**. Both endpoints connect outbound to a relay server hosted on Cloudflare's global edge network.
+
+### How It Works
+
+```
+┌──────────────┐         wss://          ┌─────────────────┐         wss://          ┌──────────────┐
+│  RWKClient   │ ──────────────────────→ │ Cloudflare Edge │ ←────────────────────── │  RWKServer   │
+│  (Home)      │    WebSocket + TLS      │  (wrs.w1ve.com) │    WebSocket + TLS      │  (Station)   │
+└──────────────┘                         └─────────────────┘                         └──────────────┘
+```
+
+1. Server generates a **64-character pairing token** and connects to the relay
+2. You copy the token to the client (via email, text message, etc.)
+3. Client connects using the same token — the relay pairs them together
+4. All WinKeyer data flows through the encrypted WebSocket tunnel
+
+### Setup — Cloud Relay (Recommended)
+
+**At the remote station (RWKServer):**
+1. Select the Keying Port (COM port connected to your radio keying circuit)
+2. Choose DTR or RTS
+3. Set **Transport** to **Cloud Relay**
+4. Click **Generate Token** — a 64-character hex token appears
+5. Click **Copy** to copy the token to clipboard
+6. Send this token to yourself (email, text, etc.)
+7. Click **Start** — status shows "Relay: Paired" when connected
+
+**At your local QTH (RWKClient):**
+1. Select your WinKeyer's COM port
+2. Set **Transport** to **Cloud Relay**
+3. Paste the **Pairing Token** from the server
+4. Click **Start** — status shows "✓ Paired" when connected
+5. Key with your paddle — or switch to the Send Text tab and type
+
+### Cloud Relay Features
+
+| Feature | Detail |
+|---------|--------|
+| **Zero Config** | No VPN, no port forwarding, no firewall rules needed |
+| **Automatic Reconnect** | If connection drops, both sides reconnect automatically |
+| **Heartbeat Keep-Alive** | 5-second heartbeats prevent NAT timeouts |
+| **End-to-End Encryption** | TLS 1.3 WebSocket connection |
+| **Global Edge Network** | Cloudflare routes to nearest data center |
+| **Session Pairing** | Unique token ensures only your client connects |
+
+### Security Notes
+
+- The pairing token is a cryptographically random 256-bit value
+- Tokens are single-use — generate a new one each session if desired
+- The relay only passes data between paired endpoints — no storage or logging
+- All traffic is encrypted via TLS 1.3
+
+---
+
+## 🌐 Networking — UDP with Tailscale
+
+> **Note:** This section is only needed if you're using **UDP transport** instead of Cloud Relay. If you're using Cloud Relay (recommended), skip to [Getting Started](#-getting-started).
+
+### Why You Need This (for UDP Mode)
 
 When your station PC and your operating PC are on different internet connections (different houses, different ISPs), they can't normally talk directly to each other via UDP. Home routers, cable modems, and firewalls all block incoming connections. This is a fundamental problem with the internet — it's not specific to RWK.
 
@@ -179,29 +252,49 @@ Tailscale handles everything else automatically:
 - Windows x64 (both machines)
 - A serial port or USB-to-serial adapter at the remote station (for keying)
 - A K1EL WinKeyer at your local QTH (optional — keyboard-only mode works without one)
-- [Tailscale](https://tailscale.com/) or any other way to route UDP between the machines
+- For **Cloud Relay**: Internet connection on both machines (no other setup needed)
+- For **UDP**: [Tailscale](https://tailscale.com/) or any other way to route UDP between the machines
 
 ### Installation
 
-No installer needed. Download the EXEs and run them:
+No installer needed. Download the EXEs from the [Releases](https://github.com/w1ve/rwk/releases) page or build from source:
 
 - **Remote station:** Run `WKRServer.exe`
 - **Local QTH:** Run `WKRClient.exe`
 
-### Quick Setup
+### Quick Setup — Cloud Relay (Easiest)
+
+**At the remote station (RWKServer):**
+1. Select the Keying Port (COM port connected to your radio keying circuit)
+2. Choose DTR or RTS
+3. Set **Transport** to **Cloud Relay**
+4. Click **Generate Token** — copy the 64-character token
+5. Send the token to yourself (email, text, etc.)
+6. Click **Start**
+
+**At your local QTH (RWKClient):**
+1. Select your WinKeyer's COM port
+2. Set **Transport** to **Cloud Relay**
+3. Paste the **Pairing Token**
+4. Click **Start**
+5. Status shows "✓ Paired" — you're connected!
+
+### Quick Setup — UDP Mode
 
 **At the remote station (RWKServer):**
 1. Select the Keying Port (COM port connected to your radio keying circuit)
 2. Choose DTR or RTS
 3. Optionally select a Local WinKey Control Port for N1MM
-4. Set the UDP listen port (default 7388)
-5. Click **Start**
+4. Set **Transport** to **UDP**
+5. Set the UDP listen port (default 7388)
+6. Click **Start**
 
 **At your local QTH (RWKClient):**
 1. Select your WinKeyer's COM port
-2. Enter the RWKServer's IP address and port
-3. Click **Start**
-4. Key with your paddle — or switch to the Send Text tab and type
+2. Set **Transport** to **UDP**
+3. Enter the RWKServer's IP address and port
+4. Click **Start**
+5. Key with your paddle — or switch to the Send Text tab and type
 
 ---
 
@@ -237,11 +330,19 @@ src/WKRClient/bin/Release/net9.0-windows/win-x64/publish/WKRClient.exe
 rwk/
 ├── src/
 │   ├── WinKeyerEmulator.Core/     # Protocol engine, timing, abstractions (no UI)
+│   │   ├── CloudRelay/            # WebSocket relay transport
+│   │   │   ├── CloudRelayTransport.cs  # WebSocket client with reconnect/heartbeat
+│   │   │   ├── WireProtocol.cs         # Binary frame serialization
+│   │   │   └── TokenGenerator.cs       # Pairing token generation
+│   │   ├── Protocol/              # WinKeyer protocol state machine
+│   │   ├── Timing/                # High-precision Morse timing engine
+│   │   └── IO/                    # Keying output abstractions
 │   ├── WinKeyerEmulator.App/      # WKRServer — WinForms app
 │   └── WKRClient/                 # WKRClient — WinForms app
 ├── tests/
 │   ├── WinKeyerEmulator.Core.Tests/        # Unit + property-based tests
 │   └── WinKeyerEmulator.Integration.Tests/ # UDP protocol tests
+├── binaries/                      # Pre-built executables
 └── WinKeyerEmulator.sln
 ```
 
@@ -252,7 +353,9 @@ rwk/
 - **Windows x64 only** — uses WinForms and Win32 P/Invoke
 - **Beta** — not all WinKeyer commands have full behavioral implementation (they are correctly parsed and consumed, but some like Weighting and Farnsworth are acknowledged without affecting timing)
 - **UDP is fire-and-forget** — a dropped packet means a missed character (acceptable trade-off for latency)
+- **Cloud Relay adds ~20-50ms latency** — traffic routes through Cloudflare; UDP via Tailscale is faster but requires more setup
 - **`timeBeginPeriod(1)`** affects system-wide timer resolution while running
+- **Speed pot range** — WinKeyer speed pot is mapped to 5-50 WPM; changes are debounced to filter ADC noise
 
 ---
 

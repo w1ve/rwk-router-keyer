@@ -48,6 +48,9 @@ public class WinKeyerProtocolTests
     public void AdminOpen_SetsHostModeTrue()
     {
         var protocol = CreateProtocol();
+        // HostMode defaults to true (for mid-session restart compatibility)
+        // Close first to test the Open transition
+        AdminClose(protocol);
         Assert.False(protocol.State.HostMode);
 
         AdminOpen(protocol);
@@ -210,6 +213,8 @@ public class WinKeyerProtocolTests
     public void NonHostMode_IgnoresNonAdminBytes()
     {
         var protocol = CreateProtocol();
+        // HostMode defaults to true, so close first to test non-host mode
+        AdminClose(protocol);
         Assert.False(protocol.State.HostMode);
 
         // Try speed command - should be ignored

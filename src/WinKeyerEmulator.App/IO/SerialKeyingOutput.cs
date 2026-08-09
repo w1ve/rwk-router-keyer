@@ -6,6 +6,15 @@ using WinKeyerEmulator.Core.IO;
 namespace WinKeyerEmulator.App.IO;
 
 /// <summary>
+/// Exception thrown when a keying operation fails.
+/// </summary>
+public sealed class KeyingException : Exception
+{
+    public KeyingException(string message) : base(message) { }
+    public KeyingException(string message, Exception inner) : base(message, inner) { }
+}
+
+/// <summary>
 /// Implements IKeyingOutput using native CreateFile and EscapeCommFunction
 /// for minimal-latency DTR/RTS control line toggling.
 /// </summary>
@@ -14,6 +23,7 @@ public sealed class SerialKeyingOutput : IKeyingOutput
     private SafeFileHandle? _handle;
     private KeyingLine _line;
     private bool _disposed;
+    private bool _isKeyDown; // Track current key state
 
     /// <inheritdoc/>
     public bool IsOpen => _handle is not null && !_handle.IsInvalid && !_handle.IsClosed;
@@ -25,6 +35,7 @@ public sealed class SerialKeyingOutput : IKeyingOutput
         if (IsOpen) throw new InvalidOperationException("Port is already open.");
 
         _line = line;
+        _isKeyDown = false;
 
         // Open the COM port using the \\.\COMx device path
         string devicePath = $"\\\\.\\{portName}";
@@ -52,7 +63,12 @@ public sealed class SerialKeyingOutput : IKeyingOutput
         if (!IsOpen) return;
 
         uint func = _line == KeyingLine.DTR ? NativeMethods.SETDTR : NativeMethods.SETRTS;
-        NativeMethods.EscapeCommFunction(_handle!, func);
+        if (!NativeMethods.EscapeCommFunction(_handle!, func))
+        {
+            int error = Marshal.GetLastWin32Error();
+            throw new KeyingException($"KeyDown failed: EscapeCommFunction returned false (error {error})");
+        }
+        _isKeyDown = true;
     }
 
     /// <inheritdoc/>
@@ -61,7 +77,25 @@ public sealed class SerialKeyingOutput : IKeyingOutput
         if (!IsOpen) return;
 
         uint func = _line == KeyingLine.DTR ? NativeMethods.CLRDTR : NativeMethods.CLRRTS;
-        NativeMethods.EscapeCommFunction(_handle!, func);
+        if (!NativeMethods.EscapeCommFunction(_handle!, func))
+        {
+            int error = Marshal.GetLastWin32Error();
+            // Log but don't throw on KeyUp - we always want to try to release the key
+            // The line may already be released or the port may have disconnected
+            System.Diagnostics.Debug.WriteLine($"KeyUp warning: EscapeCommFunction returned false (error {error})");
+        }
+        _isKeyDown = false;
+    }
+
+    /// <summary>
+    /// Ensures the key is released. Call this in cleanup paths.
+    /// </summary>
+    public void EnsureKeyUp()
+    {
+        if (_isKeyDown)
+        {
+            try { KeyUp(); } catch { /* Best effort */ }
+        }
     }
 
     /// <inheritdoc/>
@@ -70,14 +104,7 @@ public sealed class SerialKeyingOutput : IKeyingOutput
         if (_handle is not null && !_handle.IsInvalid && !_handle.IsClosed)
         {
             // Ensure lines are de-asserted before closing
-            try
-            {
-                KeyUp();
-            }
-            catch
-            {
-                // Best effort
-            }
+            EnsureKeyUp();
 
             _handle.Close();
             _handle = null;
