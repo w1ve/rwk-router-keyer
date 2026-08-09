@@ -18,7 +18,7 @@ public class TimingEngine : IDisposable
     private volatile bool _abortCurrent;
     private bool _disposed;
     private long _lastEdgeTimestamp; // When the last schedule finished keying
-    private int _lastWpm;            // WPM of last message (for gap calculation)
+    private volatile int _lastWpm;   // WPM of last message (for gap calculation) - volatile for cross-thread access
 
     /// <summary>
     /// Optional callback invoked when the keying thread starts.
@@ -116,7 +116,7 @@ public class TimingEngine : IDisposable
 
     /// <summary>
     /// Interrupts in-progress keying and clears all queued schedules.
-    /// Ensures the key is released.
+    /// Ensures the key is released and resets timing state.
     /// </summary>
     public void AbortCurrent()
     {
@@ -124,6 +124,9 @@ public class TimingEngine : IDisposable
         
         // Drain the schedule queue to prevent queued messages from playing
         while (_scheduleQueue.TryTake(out _)) { }
+        
+        // Reset timing state so next message doesn't use stale gap calculation
+        Interlocked.Exchange(ref _lastEdgeTimestamp, 0);
     }
 
     /// <summary>

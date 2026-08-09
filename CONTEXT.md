@@ -140,12 +140,18 @@ Speed (02 xx)
 
 ## Architecture Decisions
 - **Transport options**: UDP for lowest latency (via Tailscale), Cloud Relay for zero-config ease
+- **Cloud Relay non-blocking sends**: Channel-based send pump eliminates blocking and concurrent SendAsync issues
+- **TCP_NODELAY**: Custom ConnectCallback disables Nagle for minimal frame latency
+- **Exponential backoff with jitter**: Reconnects use min(30s, 500ms × 2^attempt) + 25% jitter
+- **Infinite retries for station side**: Default MaxReconnectAttempts=0 handles flaky connections
+- **Dead peer detection**: Tracks _lastRxTimestamp, forces reconnect after 3× heartbeat interval
 - UDP chosen over TCP for minimal latency (CW timing-critical)
 - No handshake needed — server starts in host mode
-- Two-tier buffering: client batches keystrokes (75ms) → server flush timer (25ms)
+- Two-tier buffering: client batches keystrokes (50ms) → server flush timer (5ms)
+- Paddle characters bypass client batching entirely (forwarded immediately)
 - Inter-message gap enforced in TimingEngine (3-dit between consecutive schedules)
 - Tailscale recommended for UDP NAT traversal (free, simple)
 - Cloud Relay uses Cloudflare Workers for global edge deployment
 - Thread-safe KeyerCore protects protocol state from concurrent serial/UDP/relay access
 - EscapeCommFunction return values checked, KeyUp guaranteed in all failure paths
-- Abort clears both current keying AND queued schedules
+- Abort clears both current keying AND queued schedules, resets _lastEdgeTimestamp

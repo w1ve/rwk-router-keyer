@@ -95,10 +95,12 @@ public class KeyerCore : IDisposable
     /// </summary>
     private void OnTextReceived(object? sender, char c)
     {
-        // Reset the flush timer - we'll drain the buffer after a short pause
-        // to allow multi-character sequences to accumulate (25ms is fast enough
-        // for CW but still batches rapid input)
-        _flushTimer.Change(25, Timeout.Infinite);
+        // Reset the flush timer - we'll drain the buffer after a very short pause
+        // to allow rapid multi-character sequences to accumulate.
+        // Note: TimingEngine enforces 3-dit inter-character gaps between separately-
+        // enqueued schedules, so this is purely for batching efficiency, not correctness.
+        // 5ms is enough to batch rapid input while minimizing latency for paddle echo.
+        _flushTimer.Change(5, Timeout.Infinite);
     }
 
     /// <summary>

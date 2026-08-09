@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Security;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Security.Authentication;
+using System.Threading.Channels;
 
 namespace WinKeyerEmulator.Core.CloudRelay;
 
@@ -33,11 +35,17 @@ public sealed class RelayConfig
     /// <summary>Heartbeat interval in milliseconds.</summary>
     public int HeartbeatIntervalMs { get; init; } = 5000;
 
-    /// <summary>Reconnect delay in milliseconds after a disconnect.</summary>
-    public int ReconnectDelayMs { get; init; } = 3000;
+    /// <summary>Initial reconnect delay in milliseconds after a disconnect.</summary>
+    public int ReconnectDelayMs { get; init; } = 500;
 
-    /// <summary>Maximum reconnect attempts before giving up (0 = infinite).</summary>
-    public int MaxReconnectAttempts { get; init; } = 10;
+    /// <summary>Maximum reconnect delay in milliseconds (for exponential backoff).</summary>
+    public int MaxReconnectDelayMs { get; init; } = 30000;
+
+    /// <summary>
+    /// Maximum reconnect attempts before giving up (0 = infinite).
+    /// Default is 0 (infinite) for station side to handle flaky connections.
+    /// </summary>
+    public int MaxReconnectAttempts { get; init; } = 0;
 }
 
 /// <summary>
@@ -65,6 +73,14 @@ public enum RelayStatus
 /// <summary>
 /// WebSocket-based transport that connects to the WRS Cloudflare relay.
 /// Implements ICommandSource and ICommandSink for drop-in use with the existing architecture.
+/// 
+/// Key design decisions:
+/// - Single-writer send pump via Channel to avoid blocking callers and concurrent SendAsync
+/// - TCP_NODELAY disabled (Nagle off) for minimal latency on small frames
+/// - Exponential backoff with jitter for reconnects
+/// - Dead peer detection via last-receive timestamp
+/// - Proper WebSocket message reassembly for fragmented frames
+/// - Sequence gap detection for dropped frame awareness
 /// </summary>
 public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, IDisposable
 {
@@ -72,10 +88,19 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
     private ClientWebSocket? _ws;
     private CancellationTokenSource? _cts;
     private Task? _receiveTask;
+    private Task? _sendTask;
     private Task? _heartbeatTask;
     private bool _disposed;
     private uint _sequenceNumber;
+    private uint _lastReceivedSeq;
+    private long _droppedFrameCount;
     private RelayStatus _status = RelayStatus.Disconnected;
+    private DateTime _lastRxTimestamp = DateTime.UtcNow;
+    private readonly Random _jitterRandom = new();
+
+    // Single-writer send queue - callers never block, one task handles all sends
+    private readonly Channel<byte[]> _sendQueue = Channel.CreateUnbounded<byte[]>(
+        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
 
     /// <inheritdoc/>
     public event EventHandler<byte[]>? DataReceived;
@@ -88,6 +113,9 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
 
     /// <summary>Gets the current connection status.</summary>
     public RelayStatus Status => _status;
+
+    /// <summary>Gets the count of dropped frames detected via sequence gaps.</summary>
+    public long DroppedFrameCount => Interlocked.Read(ref _droppedFrameCount);
 
     public CloudRelayTransport(RelayConfig config)
     {
@@ -109,12 +137,15 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
     {
         _cts?.Cancel();
 
+        // Complete the send queue to stop the send pump
+        _sendQueue.Writer.TryComplete();
+
         try
         {
             if (_ws?.State == WebSocketState.Open)
             {
                 // Send SESSION_CLOSE frame before disconnecting
-                SendSessionCloseFrame();
+                SendSessionCloseFrameSync();
                 _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Stopped", CancellationToken.None)
                     .Wait(TimeSpan.FromSeconds(2));
             }
@@ -122,14 +153,17 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
         catch { }
 
         try { _receiveTask?.Wait(TimeSpan.FromSeconds(3)); } catch { }
+        try { _sendTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
         try { _heartbeatTask?.Wait(TimeSpan.FromSeconds(2)); } catch { }
 
         CleanupWebSocket();
         _cts?.Dispose();
         _cts = null;
         _receiveTask = null;
+        _sendTask = null;
         _heartbeatTask = null;
         _sequenceNumber = 0;
+        _lastReceivedSeq = 0;
 
         SetStatus(RelayStatus.Disconnected, "Stopped");
     }
@@ -137,26 +171,28 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
     /// <inheritdoc/>
     public void SendResponse(byte[] data)
     {
-        if (_ws?.State != WebSocketState.Open || _status != RelayStatus.Paired)
+        if (_status != RelayStatus.Paired)
+        {
+            // Surface dropped data during non-paired state
+            Interlocked.Increment(ref _droppedFrameCount);
             return;
-
-        try
-        {
-            var seq = Interlocked.Increment(ref _sequenceNumber);
-            var frame = new WireFrame(
-                Version: 1,
-                Flags: FrameFlags.None,
-                SessionId: 0,
-                SequenceNumber: (uint)seq,
-                Payload: data);
-
-            var bytes = WireProtocol.Serialize(frame);
-            _ws.SendAsync(bytes, WebSocketMessageType.Binary, true, CancellationToken.None)
-                .Wait(TimeSpan.FromSeconds(5));
         }
-        catch (Exception ex)
+
+        var seq = Interlocked.Increment(ref _sequenceNumber);
+        var frame = new WireFrame(
+            Version: 1,
+            Flags: FrameFlags.None,
+            SessionId: 0,
+            SequenceNumber: seq,
+            Payload: data);
+
+        var bytes = WireProtocol.Serialize(frame);
+        
+        // Non-blocking enqueue - send pump handles actual transmission
+        if (!_sendQueue.Writer.TryWrite(bytes))
         {
-            Error?.Invoke(this, $"Send failed: {ex.Message}");
+            Interlocked.Increment(ref _droppedFrameCount);
+            Error?.Invoke(this, "Send queue full, frame dropped");
         }
     }
 
@@ -175,6 +211,48 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
         }
     }
 
+    /// <summary>
+    /// Dedicated send pump task - only this task ever calls WebSocket.SendAsync.
+    /// This eliminates concurrent send issues and makes SendResponse non-blocking.
+    /// </summary>
+    private async Task SendPump(CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var frame in _sendQueue.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+            {
+                if (_ws?.State != WebSocketState.Open)
+                {
+                    Interlocked.Increment(ref _droppedFrameCount);
+                    continue;
+                }
+
+                try
+                {
+                    await _ws.SendAsync(frame, WebSocketMessageType.Binary, true, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (WebSocketException)
+                {
+                    // Let receive loop drive reconnect
+                    Interlocked.Increment(ref _droppedFrameCount);
+                }
+                catch (Exception ex)
+                {
+                    Error?.Invoke(this, $"Send failed: {ex.Message}");
+                    Interlocked.Increment(ref _droppedFrameCount);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown
+        }
+    }
+
     private async Task ConnectAndReceiveLoop(CancellationToken ct)
     {
         int attempts = 0;
@@ -189,16 +267,24 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
                 if (_ws?.State == WebSocketState.Open)
                 {
                     attempts = 0;
+                    _lastRxTimestamp = DateTime.UtcNow;
                     SetStatus(RelayStatus.Connected, "Connected, waiting for pairing...");
 
                     // Send SESSION_OPEN frame
-                    SendSessionOpenFrame();
+                    await SendSessionOpenFrameAsync(ct).ConfigureAwait(false);
 
-                    // Start heartbeat
+                    // Start send pump (new task for this connection)
+                    _sendTask = Task.Run(() => SendPump(ct), ct);
+
+                    // Start heartbeat with dead peer detection
                     _heartbeatTask = Task.Run(() => HeartbeatLoop(ct), ct);
 
                     // Receive loop
                     await ReceiveLoop(ct).ConfigureAwait(false);
+
+                    // Wait for send pump to finish
+                    try { if (_sendTask != null) await _sendTask.ConfigureAwait(false); }
+                    catch { }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -215,7 +301,7 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
 
             if (ct.IsCancellationRequested) break;
 
-            // Reconnect logic
+            // Reconnect logic with exponential backoff
             attempts++;
             if (_config.MaxReconnectAttempts > 0 && attempts >= _config.MaxReconnectAttempts)
             {
@@ -224,8 +310,16 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
             }
 
             CleanupWebSocket();
-            SetStatus(RelayStatus.Reconnecting, $"Reconnecting (attempt {attempts})...");
-            try { await Task.Delay(_config.ReconnectDelayMs, ct).ConfigureAwait(false); }
+
+            // Exponential backoff: min(maxDelay, baseDelay * 2^attempt) + jitter
+            int delay = Math.Min(
+                _config.MaxReconnectDelayMs,
+                _config.ReconnectDelayMs * (1 << Math.Min(attempts, 10)));
+            int jitter = _jitterRandom.Next(0, delay / 4); // 0-25% jitter
+            delay += jitter;
+
+            SetStatus(RelayStatus.Reconnecting, $"Reconnecting in {delay}ms (attempt {attempts})...");
+            try { await Task.Delay(delay, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
         }
     }
@@ -242,8 +336,26 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
         var token = _config.PairingToken.Trim();
         var uri = new Uri($"{_config.RelayUrl}?token={token}&type={typeStr}");
 
+        // Custom handler with TCP_NODELAY for minimal latency
         var handler = new SocketsHttpHandler
         {
+            ConnectCallback = async (ctx, ct) =>
+            {
+                var socket = new Socket(SocketType.Stream, ProtocolType.Tcp)
+                {
+                    NoDelay = true // Disable Nagle's algorithm for low latency
+                };
+                try
+                {
+                    await socket.ConnectAsync(ctx.DnsEndPoint, ct).ConfigureAwait(false);
+                    return new NetworkStream(socket, ownsSocket: true);
+                }
+                catch
+                {
+                    socket.Dispose();
+                    throw;
+                }
+            },
             SslOptions = new SslClientAuthenticationOptions
             {
                 EnabledSslProtocols = SslProtocols.Tls13 | SslProtocols.Tls12
@@ -257,7 +369,7 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
         {
             await _ws.ConnectAsync(uri, new HttpMessageInvoker(handler), connectCts.Token).ConfigureAwait(false);
         }
-        catch (WebSocketException wsEx)
+        catch (WebSocketException)
         {
             // On failure, probe the endpoint with plain HTTP to get the actual response body
             try
@@ -286,6 +398,7 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
     private async Task ReceiveLoop(CancellationToken ct)
     {
         var buffer = new byte[4096];
+        var messageBuffer = new List<byte>();
 
         while (!ct.IsCancellationRequested && _ws?.State == WebSocketState.Open)
         {
@@ -300,8 +413,16 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
 
                 if (result.MessageType == WebSocketMessageType.Binary && result.Count > 0)
                 {
-                    var data = new ReadOnlySpan<byte>(buffer, 0, result.Count);
-                    HandleIncomingFrame(data);
+                    // Accumulate fragments until EndOfMessage
+                    messageBuffer.AddRange(new ArraySegment<byte>(buffer, 0, result.Count));
+
+                    if (result.EndOfMessage)
+                    {
+                        _lastRxTimestamp = DateTime.UtcNow;
+                        var data = messageBuffer.ToArray();
+                        messageBuffer.Clear();
+                        HandleIncomingFrame(data);
+                    }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -315,12 +436,27 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
         }
     }
 
-    private void HandleIncomingFrame(ReadOnlySpan<byte> data)
+    private void HandleIncomingFrame(byte[] data)
     {
         if (!WireProtocol.TryDeserialize(data, out var frame, out var error))
         {
             Error?.Invoke(this, $"Invalid frame: {error}");
             return;
+        }
+
+        // Sequence gap detection for data frames
+        if (!frame.Flags.HasFlag(FrameFlags.Control) && 
+            !frame.Flags.HasFlag(FrameFlags.Heartbeat) &&
+            !frame.Flags.HasFlag(FrameFlags.SessionOpen) &&
+            !frame.Flags.HasFlag(FrameFlags.SessionClose))
+        {
+            if (_lastReceivedSeq > 0 && frame.SequenceNumber > _lastReceivedSeq + 1)
+            {
+                var gap = frame.SequenceNumber - _lastReceivedSeq - 1;
+                Interlocked.Add(ref _droppedFrameCount, gap);
+                Error?.Invoke(this, $"Sequence gap detected: dropped {gap} frame(s)");
+            }
+            _lastReceivedSeq = frame.SequenceNumber;
         }
 
         // Determine packet type from flags
@@ -334,7 +470,7 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
         }
         else if (frame.Flags.HasFlag(FrameFlags.Heartbeat))
         {
-            // Heartbeat response — no action needed
+            // Heartbeat response received - _lastRxTimestamp already updated
         }
         else
         {
@@ -362,11 +498,22 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
 
     private async Task HeartbeatLoop(CancellationToken ct)
     {
+        var deadPeerThreshold = TimeSpan.FromMilliseconds(_config.HeartbeatIntervalMs * 3);
+
         while (!ct.IsCancellationRequested && _ws?.State == WebSocketState.Open)
         {
             try
             {
                 await Task.Delay(_config.HeartbeatIntervalMs, ct).ConfigureAwait(false);
+
+                // Dead peer detection: if no data received for 3x heartbeat interval, reconnect
+                var timeSinceLastRx = DateTime.UtcNow - _lastRxTimestamp;
+                if (timeSinceLastRx > deadPeerThreshold)
+                {
+                    Error?.Invoke(this, $"Dead peer detected (no data for {timeSinceLastRx.TotalSeconds:F1}s)");
+                    try { _ws?.Abort(); } catch { }
+                    break;
+                }
 
                 if (_ws?.State == WebSocketState.Open)
                 {
@@ -378,7 +525,9 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
                         Payload: Array.Empty<byte>());
 
                     var bytes = WireProtocol.Serialize(frame);
-                    await _ws.SendAsync(bytes, WebSocketMessageType.Binary, true, ct).ConfigureAwait(false);
+                    
+                    // Heartbeats go through send queue like everything else
+                    _sendQueue.Writer.TryWrite(bytes);
                 }
             }
             catch (OperationCanceledException) { break; }
@@ -386,7 +535,7 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
         }
     }
 
-    private void SendSessionOpenFrame()
+    private async Task SendSessionOpenFrameAsync(CancellationToken ct)
     {
         if (_ws?.State != WebSocketState.Open) return;
 
@@ -398,11 +547,12 @@ public sealed class CloudRelayTransport : IO.ICommandSource, IO.ICommandSink, ID
             Payload: Array.Empty<byte>());
 
         var bytes = WireProtocol.Serialize(frame);
-        _ws.SendAsync(bytes, WebSocketMessageType.Binary, true, CancellationToken.None)
-            .Wait(TimeSpan.FromSeconds(5));
+        
+        // Session open is sent directly (before send pump starts)
+        await _ws.SendAsync(bytes, WebSocketMessageType.Binary, true, ct).ConfigureAwait(false);
     }
 
-    private void SendSessionCloseFrame()
+    private void SendSessionCloseFrameSync()
     {
         if (_ws?.State != WebSocketState.Open) return;
 

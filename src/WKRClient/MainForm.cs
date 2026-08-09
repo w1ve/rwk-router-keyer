@@ -385,8 +385,10 @@ public partial class MainForm : Form
                 {
                     _keyBuffer.Add(b);
                 }
-                // Reset flush timer — sends after 75ms of typing pause
-                _keyFlushTimer?.Change(75, Timeout.Infinite);
+                // Reset flush timer — sends after 50ms of typing pause.
+                // This batches rapid keystrokes so "CQ" goes as one packet.
+                // Paddle characters bypass this entirely (forwarded immediately via WinKeyer echo).
+                _keyFlushTimer?.Change(50, Timeout.Infinite);
                 return;
             }
         }

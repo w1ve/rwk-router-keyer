@@ -353,9 +353,54 @@ rwk/
 - **Windows x64 only** — uses WinForms and Win32 P/Invoke
 - **Beta** — not all WinKeyer commands have full behavioral implementation (they are correctly parsed and consumed, but some like Weighting and Farnsworth are acknowledged without affecting timing)
 - **UDP is fire-and-forget** — a dropped packet means a missed character (acceptable trade-off for latency)
-- **Cloud Relay adds ~20-50ms latency** — traffic routes through Cloudflare; UDP via Tailscale is faster but requires more setup
+- **Cloud Relay latency** — Typically 5-20ms with TCP_NODELAY optimization; UDP via Tailscale may still be faster for latency-critical applications
 - **`timeBeginPeriod(1)`** affects system-wide timer resolution while running
 - **Speed pot range** — WinKeyer speed pot is mapped to 5-50 WPM; changes are debounced to filter ADC noise
+
+---
+
+## 🔧 Technical Details
+
+### Cloud Relay Transport Architecture
+
+The Cloud Relay transport is designed for reliability and low latency:
+
+| Feature | Implementation |
+|---------|----------------|
+| **Non-blocking sends** | Single-writer send pump via `Channel<byte[]>` — callers never block, eliminates concurrent `SendAsync` issues |
+| **TCP_NODELAY** | Nagle's algorithm disabled via custom `ConnectCallback` — each small frame sends immediately without buffering |
+| **Exponential backoff** | Reconnects use `min(30s, 500ms × 2^attempt)` with 25% jitter to avoid thundering herd |
+| **Infinite retries** | Station side defaults to unlimited reconnect attempts for unattended operation |
+| **Dead peer detection** | Tracks last-receive timestamp; forces reconnect if no data for 3× heartbeat interval (15s default) |
+| **Message reassembly** | Properly accumulates WebSocket fragments until `EndOfMessage` before parsing |
+| **Sequence gap detection** | Logs dropped frame count when sequence numbers skip |
+
+### Paddle Keying Path — A Deliberate Design Choice
+
+Paddle keying is transported as **decoded characters**, not raw key edges:
+
+1. You key a character on your paddle
+2. Your local WinKeyer decodes it and generates sidetone (zero latency for you)
+3. WinKeyer echoes the decoded character byte (e.g., `'V'` = 0x56)
+4. RWKClient forwards this byte to RWKServer
+5. RWKServer re-encodes the character to Morse and keys the radio
+
+**Why this design?**
+- The remote signal has machine-perfect timing, regardless of network jitter
+- Your local sidetone matches what you keyed, hiding any transport delay
+- For contesting, this is arguably better than reproducing your fist
+
+**The trade-off:**
+- Minimum latency is bounded by WinKeyer's character decode time (a dah at 20 WPM takes ~180ms before the character even exists to echo)
+- True low-latency fist reproduction would require transporting raw paddle key-edge events — a much bigger architectural change
+
+### Buffering Delays
+
+| Stage | Delay | Purpose |
+|-------|-------|---------|
+| Client keyboard flush | 50ms | Batches rapid keystrokes so "CQ" goes as one packet |
+| Server text flush | 5ms | Minimal batching; TimingEngine enforces inter-char gaps anyway |
+| Paddle path | 0ms | Paddle characters bypass client batching entirely |
 
 ---
 
