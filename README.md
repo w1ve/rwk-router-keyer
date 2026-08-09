@@ -367,4 +367,50 @@ This code is freely available to use and modify as you wish.
 
 ---
 
+## 🧪 Help Wanted — Testing with Different WinKeyer Versions
+
+This project has been developed and tested primarily with a **WinKeyer 3 (WK3) version 31** at the client side. The K1EL WinKeyer family spans multiple hardware generations and firmware versions, each with subtle protocol differences.
+
+### We Need Your Help!
+
+If you have any of the following hardware, we'd love your feedback:
+
+| Hardware | Firmware | Status |
+|----------|----------|--------|
+| WinKeyer 1 (WK1) | Any | **Untested** — please report! |
+| WinKeyer 2 (WK2) | Any | **Untested** — please report! |
+| WinKeyer 3 (WK3) | v23-v30 | **Untested** — please report! |
+| WinKeyer 3 (WK3) | v31 | ✅ Tested — working |
+| WinKeyer USB | Any | **Untested** — please report! |
+| WinKeyer Lite | Any | **Untested** — please report! |
+| WKUSB-SMT | Any | **Untested** — please report! |
+| K1EL Keyer Kits | Any | **Untested** — please report! |
+
+### How to Help
+
+1. **Try it out** — Download the binaries and test with your WinKeyer
+2. **Note your hardware** — WinKeyer model, firmware version (shown in RWKClient log on connect)
+3. **Report what works and what doesn't:**
+   - Does paddle keying work?
+   - Does the speed pot control local speed?
+   - Are speed changes forwarded to the server?
+   - Any unexpected behavior?
+
+### Known Compatibility Notes
+
+- **Paddle echo mode** (`0x0D 0x40`) — Required for forwarding paddle characters, but may interact differently with speed pot commands on some firmware versions
+- **Speed pot status bytes** — Format is `0x80 | pot_position`; debouncing filters ADC noise but behavior may vary
+- **WK2 vs WK3 mode** — The client currently uses WK3-style initialization
+
+### Report Issues
+
+Please open a [GitHub Issue](https://github.com/w1ve/rwk/issues) with:
+- Your WinKeyer model and firmware version
+- What worked / what didn't work
+- Any log output showing the problem
+
+Your testing helps make RWK work for everyone. Thanks! 🙏
+
+---
+
 <p align="center"><i>73 de W1VE</i></p>
