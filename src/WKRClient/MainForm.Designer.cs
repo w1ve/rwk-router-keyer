@@ -36,8 +36,20 @@ partial class MainForm
     private TabControl tabControl;
     private TabPage tabLog;
     private TabPage tabSendText;
+    private TabPage tabSoftKeyer;
     private TextBox txtLog;
     private TextBox txtSendText;
+
+    // Soft Keyer tab controls
+    private Button btnDit;
+    private Button btnDah;
+    private Label lblSoftSpeed;
+    private NumericUpDown nudSoftSpeed;
+    private Label lblSoftKeyMode;
+    private ComboBox cboSoftKeyMode;
+    private TextBox txtSoftKeyerOutput;
+    private Label lblSoftKeyerStatus;
+    private CheckBox chkSoftKeyerEnabled;
 
     protected override void Dispose(bool disposing)
     {
@@ -70,14 +82,26 @@ partial class MainForm
         this.tabControl = new TabControl();
         this.tabLog = new TabPage();
         this.tabSendText = new TabPage();
+        this.tabSoftKeyer = new TabPage();
         this.txtLog = new TextBox();
         this.txtSendText = new TextBox();
+        this.btnDit = new Button();
+        this.btnDah = new Button();
+        this.lblSoftSpeed = new Label();
+        this.nudSoftSpeed = new NumericUpDown();
+        this.lblSoftKeyMode = new Label();
+        this.cboSoftKeyMode = new ComboBox();
+        this.txtSoftKeyerOutput = new TextBox();
+        this.lblSoftKeyerStatus = new Label();
+        this.chkSoftKeyerEnabled = new CheckBox();
 
         this.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)this.nudServerPort).BeginInit();
+        ((System.ComponentModel.ISupportInitialize)this.nudSoftSpeed).BeginInit();
         this.tabControl.SuspendLayout();
         this.tabLog.SuspendLayout();
         this.tabSendText.SuspendLayout();
+        this.tabSoftKeyer.SuspendLayout();
 
         // lblWinKeyerPort
         this.lblWinKeyerPort.AutoSize = true;
@@ -183,6 +207,7 @@ partial class MainForm
         this.tabControl.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         this.tabControl.TabPages.Add(this.tabLog);
         this.tabControl.TabPages.Add(this.tabSendText);
+        this.tabControl.TabPages.Add(this.tabSoftKeyer);
 
         // tabLog
         this.tabLog.Text = "Log";
@@ -193,6 +218,86 @@ partial class MainForm
         this.tabSendText.Text = "Send Text";
         this.tabSendText.Padding = new Padding(3);
         this.tabSendText.Controls.Add(this.txtSendText);
+
+        // tabSoftKeyer
+        this.tabSoftKeyer.Text = "Soft Keyer";
+        this.tabSoftKeyer.Padding = new Padding(3);
+        this.tabSoftKeyer.Controls.Add(this.chkSoftKeyerEnabled);
+        this.tabSoftKeyer.Controls.Add(this.lblSoftSpeed);
+        this.tabSoftKeyer.Controls.Add(this.nudSoftSpeed);
+        this.tabSoftKeyer.Controls.Add(this.lblSoftKeyMode);
+        this.tabSoftKeyer.Controls.Add(this.cboSoftKeyMode);
+        this.tabSoftKeyer.Controls.Add(this.btnDit);
+        this.tabSoftKeyer.Controls.Add(this.btnDah);
+        this.tabSoftKeyer.Controls.Add(this.txtSoftKeyerOutput);
+        this.tabSoftKeyer.Controls.Add(this.lblSoftKeyerStatus);
+
+        // chkSoftKeyerEnabled
+        this.chkSoftKeyerEnabled.AutoSize = true;
+        this.chkSoftKeyerEnabled.Location = new Point(10, 12);
+        this.chkSoftKeyerEnabled.Text = "Enable Soft Keyer (no WinKeyer needed)";
+        this.chkSoftKeyerEnabled.CheckedChanged += new EventHandler(this.ChkSoftKeyerEnabled_CheckedChanged);
+
+        // lblSoftSpeed
+        this.lblSoftSpeed.AutoSize = true;
+        this.lblSoftSpeed.Location = new Point(10, 42);
+        this.lblSoftSpeed.Text = "Speed:";
+
+        // nudSoftSpeed
+        this.nudSoftSpeed.Location = new Point(60, 40);
+        this.nudSoftSpeed.Size = new Size(60, 23);
+        this.nudSoftSpeed.Minimum = 5;
+        this.nudSoftSpeed.Maximum = 60;
+        this.nudSoftSpeed.Value = 25;
+        this.nudSoftSpeed.ValueChanged += new EventHandler(this.NudSoftSpeed_ValueChanged);
+
+        // lblSoftKeyMode
+        this.lblSoftKeyMode.AutoSize = true;
+        this.lblSoftKeyMode.Location = new Point(135, 42);
+        this.lblSoftKeyMode.Text = "Mode:";
+
+        // cboSoftKeyMode
+        this.cboSoftKeyMode.DropDownStyle = ComboBoxStyle.DropDownList;
+        this.cboSoftKeyMode.Location = new Point(180, 40);
+        this.cboSoftKeyMode.Size = new Size(90, 23);
+        this.cboSoftKeyMode.Items.AddRange(new object[] { "Iambic B", "Iambic A", "Ultimatic", "Bug" });
+        this.cboSoftKeyMode.SelectedIndex = 0;
+        this.cboSoftKeyMode.SelectedIndexChanged += new EventHandler(this.CboSoftKeyMode_SelectedIndexChanged);
+
+        // lblSoftKeyerStatus
+        this.lblSoftKeyerStatus.AutoSize = true;
+        this.lblSoftKeyerStatus.Location = new Point(290, 42);
+        this.lblSoftKeyerStatus.Text = "";
+        this.lblSoftKeyerStatus.ForeColor = System.Drawing.Color.Gray;
+
+        // btnDit
+        this.btnDit.Location = new Point(10, 75);
+        this.btnDit.Size = new Size(100, 60);
+        this.btnDit.Text = "DIT\n(, or LMB)";
+        this.btnDit.Font = new Font("Segoe UI", 12F, FontStyle.Bold);
+        this.btnDit.BackColor = System.Drawing.Color.LightGray;
+        this.btnDit.FlatStyle = FlatStyle.Flat;
+        this.btnDit.MouseDown += new MouseEventHandler(this.BtnDit_MouseDown);
+        this.btnDit.MouseUp += new MouseEventHandler(this.BtnDit_MouseUp);
+
+        // btnDah
+        this.btnDah.Location = new Point(120, 75);
+        this.btnDah.Size = new Size(100, 60);
+        this.btnDah.Text = "DAH\n(. or RMB)";
+        this.btnDah.Font = new Font("Segoe UI", 12F, FontStyle.Bold);
+        this.btnDah.BackColor = System.Drawing.Color.LightGray;
+        this.btnDah.FlatStyle = FlatStyle.Flat;
+        this.btnDah.MouseDown += new MouseEventHandler(this.BtnDah_MouseDown);
+        this.btnDah.MouseUp += new MouseEventHandler(this.BtnDah_MouseUp);
+
+        // txtSoftKeyerOutput
+        this.txtSoftKeyerOutput.Location = new Point(10, 145);
+        this.txtSoftKeyerOutput.Size = new Size(430, 90);
+        this.txtSoftKeyerOutput.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        this.txtSoftKeyerOutput.Multiline = true;
+        this.txtSoftKeyerOutput.ReadOnly = true;
+        this.txtSoftKeyerOutput.ScrollBars = ScrollBars.Vertical;
+        this.txtSoftKeyerOutput.Font = new Font("Consolas", 11F);
 
         // txtLog
         this.txtLog.Dock = DockStyle.Fill;
@@ -236,10 +341,13 @@ partial class MainForm
         this.StartPosition = FormStartPosition.CenterScreen;
 
         ((System.ComponentModel.ISupportInitialize)this.nudServerPort).EndInit();
+        ((System.ComponentModel.ISupportInitialize)this.nudSoftSpeed).EndInit();
         this.tabLog.ResumeLayout(false);
         this.tabLog.PerformLayout();
         this.tabSendText.ResumeLayout(false);
         this.tabSendText.PerformLayout();
+        this.tabSoftKeyer.ResumeLayout(false);
+        this.tabSoftKeyer.PerformLayout();
         this.tabControl.ResumeLayout(false);
         this.ResumeLayout(false);
         this.PerformLayout();

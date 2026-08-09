@@ -2,6 +2,7 @@ using System.IO.Ports;
 using System.Net;
 using System.Net.Sockets;
 using WinKeyerEmulator.Core.CloudRelay;
+using WinKeyerEmulator.Core.Keying;
 
 namespace WKRClient;
 
@@ -20,6 +21,7 @@ public partial class MainForm : Form
     private byte _lastPotWpm;           // For filtering spurious pot changes
     private DateTime _lastPotTime;       // For debouncing rapid pot changes
     private ClientSettings _settings = new(); // Current settings for paddle config
+    private SoftKeyer? _softKeyer;       // Software keyer for testing without WinKeyer
 
     public MainForm()
     {
@@ -535,6 +537,233 @@ public partial class MainForm : Form
     {
         GatherSettings().Save();
         Cleanup();
+        _softKeyer?.Dispose();
         base.OnFormClosed(e);
     }
+
+    #region Soft Keyer
+
+    private void ChkSoftKeyerEnabled_CheckedChanged(object? sender, EventArgs e)
+    {
+        bool enabled = chkSoftKeyerEnabled.Checked;
+
+        if (enabled)
+        {
+            // Create and start soft keyer
+            _softKeyer = new SoftKeyer
+            {
+                Wpm = (int)nudSoftSpeed.Value,
+                Mode = (SoftKeyerMode)cboSoftKeyMode.SelectedIndex
+            };
+            _softKeyer.CharacterDecoded += OnSoftKeyerCharacterDecoded;
+            _softKeyer.ElementStarted += OnSoftKeyerElementStarted;
+            _softKeyer.ElementEnded += OnSoftKeyerElementEnded;
+            _softKeyer.Start();
+
+            lblSoftKeyerStatus.Text = "● Ready";
+            lblSoftKeyerStatus.ForeColor = System.Drawing.Color.Green;
+            Log("Soft Keyer enabled — use buttons or keyboard (, = dit, . = dah)");
+
+            // Send initial speed to server if running
+            if (_running)
+            {
+                SendToServer(new byte[] { 0x02, (byte)nudSoftSpeed.Value });
+                Log($"Soft Keyer speed → {nudSoftSpeed.Value} WPM");
+            }
+        }
+        else
+        {
+            // Stop and dispose soft keyer
+            if (_softKeyer != null)
+            {
+                _softKeyer.CharacterDecoded -= OnSoftKeyerCharacterDecoded;
+                _softKeyer.ElementStarted -= OnSoftKeyerElementStarted;
+                _softKeyer.ElementEnded -= OnSoftKeyerElementEnded;
+                _softKeyer.Dispose();
+                _softKeyer = null;
+            }
+
+            lblSoftKeyerStatus.Text = "";
+            btnDit.BackColor = System.Drawing.Color.LightGray;
+            btnDah.BackColor = System.Drawing.Color.LightGray;
+            Log("Soft Keyer disabled");
+        }
+
+        // Update UI state
+        nudSoftSpeed.Enabled = enabled;
+        cboSoftKeyMode.Enabled = enabled;
+        btnDit.Enabled = enabled;
+        btnDah.Enabled = enabled;
+    }
+
+    private void NudSoftSpeed_ValueChanged(object? sender, EventArgs e)
+    {
+        if (_softKeyer != null)
+        {
+            _softKeyer.Wpm = (int)nudSoftSpeed.Value;
+
+            // Forward speed to server if running
+            if (_running)
+            {
+                SendToServer(new byte[] { 0x02, (byte)nudSoftSpeed.Value });
+                Log($"Soft Keyer speed → {nudSoftSpeed.Value} WPM");
+            }
+        }
+    }
+
+    private void CboSoftKeyMode_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_softKeyer != null)
+        {
+            _softKeyer.Mode = (SoftKeyerMode)cboSoftKeyMode.SelectedIndex;
+            Log($"Soft Keyer mode → {cboSoftKeyMode.SelectedItem}");
+        }
+    }
+
+    private void OnSoftKeyerCharacterDecoded(object? sender, char c)
+    {
+        // Send character to server
+        if (_running)
+        {
+            SendToServer(new byte[] { (byte)c });
+        }
+
+        // Update UI (must invoke on UI thread)
+        try
+        {
+            if (IsDisposed || Disposing) return;
+            BeginInvoke(() =>
+            {
+                txtSoftKeyerOutput.AppendText(c.ToString());
+                Log($"SoftKeyer→Server: '{c}'");
+            });
+        }
+        catch { }
+    }
+
+    private void OnSoftKeyerElementStarted(object? sender, bool isDit)
+    {
+        try
+        {
+            if (IsDisposed || Disposing) return;
+            BeginInvoke(() =>
+            {
+                if (isDit)
+                    btnDit.BackColor = System.Drawing.Color.Yellow;
+                else
+                    btnDah.BackColor = System.Drawing.Color.Yellow;
+            });
+        }
+        catch { }
+    }
+
+    private void OnSoftKeyerElementEnded(object? sender, EventArgs e)
+    {
+        try
+        {
+            if (IsDisposed || Disposing) return;
+            BeginInvoke(() =>
+            {
+                btnDit.BackColor = _softKeyer?.DitPressed == true 
+                    ? System.Drawing.Color.LightBlue 
+                    : System.Drawing.Color.LightGray;
+                btnDah.BackColor = _softKeyer?.DahPressed == true 
+                    ? System.Drawing.Color.LightBlue 
+                    : System.Drawing.Color.LightGray;
+            });
+        }
+        catch { }
+    }
+
+    // Mouse button handlers for dit/dah buttons
+    private void BtnDit_MouseDown(object? sender, MouseEventArgs e)
+    {
+        if (_softKeyer != null)
+        {
+            _softKeyer.DitPressed = true;
+            btnDit.BackColor = System.Drawing.Color.LightBlue;
+        }
+    }
+
+    private void BtnDit_MouseUp(object? sender, MouseEventArgs e)
+    {
+        if (_softKeyer != null)
+        {
+            _softKeyer.DitPressed = false;
+            btnDit.BackColor = System.Drawing.Color.LightGray;
+        }
+    }
+
+    private void BtnDah_MouseDown(object? sender, MouseEventArgs e)
+    {
+        if (_softKeyer != null)
+        {
+            _softKeyer.DahPressed = true;
+            btnDah.BackColor = System.Drawing.Color.LightBlue;
+        }
+    }
+
+    private void BtnDah_MouseUp(object? sender, MouseEventArgs e)
+    {
+        if (_softKeyer != null)
+        {
+            _softKeyer.DahPressed = false;
+            btnDah.BackColor = System.Drawing.Color.LightGray;
+        }
+    }
+
+    // Keyboard handlers for the soft keyer tab
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        // Only handle keys when soft keyer tab is active and keyer is enabled
+        if (tabControl.SelectedTab == tabSoftKeyer && _softKeyer != null)
+        {
+            bool handled = false;
+
+            // Check for key down
+            if (msg.Msg == 0x0100) // WM_KEYDOWN
+            {
+                if (keyData == Keys.Oemcomma) // , = dit
+                {
+                    _softKeyer.DitPressed = true;
+                    btnDit.BackColor = System.Drawing.Color.LightBlue;
+                    handled = true;
+                }
+                else if (keyData == Keys.OemPeriod) // . = dah
+                {
+                    _softKeyer.DahPressed = true;
+                    btnDah.BackColor = System.Drawing.Color.LightBlue;
+                    handled = true;
+                }
+            }
+
+            if (handled) return true;
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    protected override void OnKeyUp(KeyEventArgs e)
+    {
+        // Handle key up for soft keyer
+        if (tabControl.SelectedTab == tabSoftKeyer && _softKeyer != null)
+        {
+            if (e.KeyCode == Keys.Oemcomma) // , = dit
+            {
+                _softKeyer.DitPressed = false;
+                btnDit.BackColor = System.Drawing.Color.LightGray;
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.OemPeriod) // . = dah
+            {
+                _softKeyer.DahPressed = false;
+                btnDah.BackColor = System.Drawing.Color.LightGray;
+                e.Handled = true;
+            }
+        }
+
+        base.OnKeyUp(e);
+    }
+
+    #endregion
 }
