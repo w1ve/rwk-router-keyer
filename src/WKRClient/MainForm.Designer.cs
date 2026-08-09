@@ -23,6 +23,12 @@ partial class MainForm
     private TextBox txtPairingToken;
     private Label lblRelayStatus;
 
+    // Paddle settings
+    private Label lblKeyMode;
+    private ComboBox cboKeyMode;
+    private CheckBox chkPaddleSwap;
+    private CheckBox chkAutospace;
+
     private Button btnStart;
     private Button btnStop;
 
@@ -55,6 +61,10 @@ partial class MainForm
         this.lblPairingToken = new Label();
         this.txtPairingToken = new TextBox();
         this.lblRelayStatus = new Label();
+        this.lblKeyMode = new Label();
+        this.cboKeyMode = new ComboBox();
+        this.chkPaddleSwap = new CheckBox();
+        this.chkAutospace = new CheckBox();
         this.btnStart = new Button();
         this.btnStop = new Button();
         this.tabControl = new TabControl();
@@ -132,6 +142,28 @@ partial class MainForm
         this.lblRelayStatus.Text = "";
         this.lblRelayStatus.ForeColor = System.Drawing.Color.Gray;
 
+        // lblKeyMode
+        this.lblKeyMode.AutoSize = true;
+        this.lblKeyMode.Location = new Point(270, 15);
+        this.lblKeyMode.Text = "Key Mode:";
+
+        // cboKeyMode
+        this.cboKeyMode.DropDownStyle = ComboBoxStyle.DropDownList;
+        this.cboKeyMode.Location = new Point(270, 33);
+        this.cboKeyMode.Size = new Size(90, 23);
+        this.cboKeyMode.Items.AddRange(new object[] { "Iambic B", "Iambic A", "Ultimatic", "Bug" });
+        this.cboKeyMode.SelectedIndex = 0;
+
+        // chkPaddleSwap
+        this.chkPaddleSwap.AutoSize = true;
+        this.chkPaddleSwap.Location = new Point(370, 20);
+        this.chkPaddleSwap.Text = "Swap";
+
+        // chkAutospace
+        this.chkAutospace.AutoSize = true;
+        this.chkAutospace.Location = new Point(370, 40);
+        this.chkAutospace.Text = "Autospace";
+
         // btnStart
         this.btnStart.Location = new Point(12, 112);
         this.btnStart.Size = new Size(80, 28);
@@ -191,10 +223,14 @@ partial class MainForm
         this.Controls.Add(this.lblPairingToken);
         this.Controls.Add(this.txtPairingToken);
         this.Controls.Add(this.lblRelayStatus);
+        this.Controls.Add(this.lblKeyMode);
+        this.Controls.Add(this.cboKeyMode);
+        this.Controls.Add(this.chkPaddleSwap);
+        this.Controls.Add(this.chkAutospace);
         this.Controls.Add(this.tabControl);
         this.Controls.Add(this.btnStart);
         this.Controls.Add(this.btnStop);
-        this.MinimumSize = new Size(450, 400);
+        this.MinimumSize = new Size(500, 400);
         this.Name = "MainForm";
         this.Text = "WinKey Remote Client by W1VE";
         this.StartPosition = FormStartPosition.CenterScreen;

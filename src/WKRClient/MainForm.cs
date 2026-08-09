@@ -19,13 +19,14 @@ public partial class MainForm : Form
     private System.Threading.Timer? _keyFlushTimer;
     private byte _lastPotWpm;           // For filtering spurious pot changes
     private DateTime _lastPotTime;       // For debouncing rapid pot changes
+    private ClientSettings _settings = new(); // Current settings for paddle config
 
     public MainForm()
     {
         InitializeComponent();
         RefreshPorts();
-        var settings = ClientSettings.Load();
-        ApplySettings(settings);
+        _settings = ClientSettings.Load();
+        ApplySettings(_settings);
         txtSendText.KeyPress += TxtSendText_KeyPress;
     }
 
@@ -49,6 +50,9 @@ public partial class MainForm : Form
         txtServerAddress.Text = s.ServerAddress;
         nudServerPort.Value = s.ServerPort;
         txtPairingToken.Text = s.PairingToken ?? "";
+        cboKeyMode.SelectedIndex = (int)s.KeyMode;
+        chkPaddleSwap.Checked = s.PaddleSwap;
+        chkAutospace.Checked = s.Autospace;
         UpdateTransportUI();
     }
 
@@ -59,6 +63,9 @@ public partial class MainForm : Form
         ServerAddress = txtServerAddress.Text.Trim(),
         ServerPort = (int)nudServerPort.Value,
         PairingToken = txtPairingToken.Text.Trim(),
+        KeyMode = (KeyMode)cboKeyMode.SelectedIndex,
+        PaddleSwap = chkPaddleSwap.Checked,
+        Autospace = chkAutospace.Checked,
     };
 
     private void CboTransport_SelectedIndexChanged(object? sender, EventArgs e)
@@ -144,29 +151,53 @@ public partial class MainForm : Form
                 };
                 _winKeyerPort.Open();
 
-                // Send Admin Open and wait for version response with timeout
+                // Send Admin Open (0x00 0x02) and wait for version response
                 _winKeyerPort.Write(new byte[] { 0x00, 0x02 }, 0, 2);
-                Thread.Sleep(500);
-
-                if (_winKeyerPort.BytesToRead > 0)
+                
+                // Retry loop for version byte (more robust than fixed sleep)
+                int? version = null;
+                for (int attempt = 0; attempt < 10 && version == null; attempt++)
                 {
-                    var resp = new byte[_winKeyerPort.BytesToRead];
-                    _winKeyerPort.Read(resp, 0, resp.Length);
-                    Log($"WinKeyer found on {portName}, version: {resp[0]}");
+                    Thread.Sleep(50);
+                    if (_winKeyerPort.BytesToRead > 0)
+                    {
+                        var resp = new byte[_winKeyerPort.BytesToRead];
+                        _winKeyerPort.Read(resp, 0, resp.Length);
+                        // Validate plausible version (10-50 covers WK1 through WK3)
+                        if (resp[0] >= 10 && resp[0] <= 50)
+                            version = resp[0];
+                    }
+                }
+
+                if (version.HasValue)
+                {
+                    // Determine generation from version byte
+                    string gen = version >= 30 ? "WK3" : version >= 20 ? "WK2" : "WK1";
+                    Log($"WinKeyer found on {portName}: {gen} (rev {version})");
+
+                    if (version < 20)
+                        Log("WARNING: WK1 detected — mode register layout may differ; paddle echo untested.");
 
                     // Speed Pot Setup (cmd 0x05): min=5, range=45 (5-50 WPM), step=0
                     _winKeyerPort.Write(new byte[] { 0x05, 0x05, 0x2D, 0x00 }, 0, 4);
                     Thread.Sleep(50);
 
-                    // Enable paddle echo — this also makes pot control speed directly
-                    _winKeyerPort.Write(new byte[] { 0x0D, 0x40 }, 0, 2);
+                    // Mode register (0x0E) — CORRECT command for paddle echo!
+                    // Previous code used 0x0D which is Farnsworth (wrong command).
+                    // Build mode byte from settings: paddle echo + key mode + swap + autospace
+                    _settings = GatherSettings();
+                    byte mode = _settings.BuildModeRegister();
+                    _winKeyerPort.Write(new byte[] { 0x0E, mode }, 0, 2);
                     Thread.Sleep(50);
 
                     // Reset debounce so first pot change is always sent
                     _lastPotWpm = 0;
                     _lastPotTime = DateTime.MinValue;
 
-                    Log("Paddle echo ON, pot controls local speed directly");
+                    string modeDesc = $"{_settings.KeyMode}";
+                    if (_settings.PaddleSwap) modeDesc += ", swapped";
+                    if (_settings.Autospace) modeDesc += ", autospace";
+                    Log($"Paddle echo ON ({modeDesc})");
 
                     _winKeyerPort.ReadTimeout = 500;
                     _readThread = new Thread(ReadWinKeyerLoop) { IsBackground = true, Name = "WKR-SerialRead" };
@@ -469,6 +500,9 @@ public partial class MainForm : Form
         txtServerAddress.Enabled = !running;
         nudServerPort.Enabled = !running;
         txtPairingToken.Enabled = !running;
+        cboKeyMode.Enabled = !running;
+        chkPaddleSwap.Enabled = !running;
+        chkAutospace.Enabled = !running;
     }
 
     private void Log(string msg)
