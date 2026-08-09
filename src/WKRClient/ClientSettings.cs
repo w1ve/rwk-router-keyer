@@ -5,8 +5,11 @@ namespace WKRClient;
 public class ClientSettings
 {
     public string? WinKeyerPort { get; set; }
+    public string Transport { get; set; } = "UDP";
     public string ServerAddress { get; set; } = "127.0.0.1";
     public int ServerPort { get; set; } = 7388;
+    public string RelayUrl { get; set; } = "wss://wrs.w1ve.com/ws";
+    public string? PairingToken { get; set; }
 
     private static string SettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),

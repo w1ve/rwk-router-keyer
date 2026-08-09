@@ -2,6 +2,7 @@ using System.Net;
 using WinKeyerEmulator.App.IO;
 using WinKeyerEmulator.App.Services;
 using WinKeyerEmulator.Core;
+using WinKeyerEmulator.Core.CloudRelay;
 using WinKeyerEmulator.Core.IO;
 using WinKeyerEmulator.Core.Timing;
 
@@ -17,6 +18,7 @@ public class AppController
     private SerialKeyingOutput? _keyingOutput;
     private SerialCommandSource? _serialCommandSource;
     private UdpCommandSource? _udpCommandSource;
+    private CloudRelayTransport? _relayTransport;
     private TimingEngine? _timingEngine;
     private KeyerCore? _keyerCore;
 
@@ -34,6 +36,11 @@ public class AppController
     /// Raised when the emulator stops, including on port disconnection.
     /// </summary>
     public event EventHandler? Stopped;
+
+    /// <summary>
+    /// Raised when the cloud relay connection status changes.
+    /// </summary>
+    public event EventHandler<RelayStatusEventArgs>? RelayStatusChanged;
 
     /// <summary>
     /// Creates a new AppController with the specified logger.
@@ -69,11 +76,32 @@ public class AppController
                 _logger.Log($"Command port {config.CommandPortName} opened", LogSeverity.Info, "AppController");
             }
 
-            // 3. Start UDP listener
-            var udpEndpoint = new IPEndPoint(IPAddress.Parse(config.UdpAddress), config.UdpPort);
-            _udpCommandSource = new UdpCommandSource();
-            _udpCommandSource.Start(udpEndpoint);
-            _logger.Log($"UDP listener started on {config.UdpAddress}:{config.UdpPort}", LogSeverity.Info, "AppController");
+            // 3. Start remote transport (UDP or Cloud Relay)
+            if (config.Transport == TransportMode.CloudRelay)
+            {
+                if (string.IsNullOrEmpty(config.PairingToken) || !TokenGenerator.IsValid(config.PairingToken))
+                    throw new ArgumentException("A valid 64-character pairing token is required for Cloud Relay mode.");
+
+                var relayConfig = new RelayConfig
+                {
+                    RelayUrl = config.RelayUrl,
+                    PairingToken = config.PairingToken,
+                    EndpointType = RelayEndpointType.StationSide,
+                };
+                _relayTransport = new CloudRelayTransport(relayConfig);
+                _relayTransport.StatusChanged += OnRelayStatusChanged;
+                _relayTransport.Error += OnRelayError;
+                _relayTransport.DataReceived += OnCommandReceived_Relay;
+                _relayTransport.Start();
+                _logger.Log($"Cloud Relay transport started (token: {config.PairingToken[..8]}...)", LogSeverity.Info, "AppController");
+            }
+            else
+            {
+                var udpEndpoint = new IPEndPoint(IPAddress.Parse(config.UdpAddress), config.UdpPort);
+                _udpCommandSource = new UdpCommandSource();
+                _udpCommandSource.Start(udpEndpoint);
+                _logger.Log($"UDP listener started on {config.UdpAddress}:{config.UdpPort}", LogSeverity.Info, "AppController");
+            }
 
             // 4. Create TimingEngine with keying output and StopwatchClock
             var clock = new StopwatchClock();
@@ -92,7 +120,10 @@ public class AppController
             {
                 _serialCommandSource.DataReceived += OnCommandReceived_Serial;
             }
-            _udpCommandSource.DataReceived += OnCommandReceived_Udp;
+            if (_udpCommandSource is not null)
+            {
+                _udpCommandSource.DataReceived += OnCommandReceived_Udp;
+            }
 
             // 8. Start TimingEngine
             _timingEngine.Start();
@@ -144,6 +175,12 @@ public class AppController
                 _serialCommandSource.DataReceived -= OnCommandReceived_Serial;
             if (_udpCommandSource is not null)
                 _udpCommandSource.DataReceived -= OnCommandReceived_Udp;
+            if (_relayTransport is not null)
+            {
+                _relayTransport.DataReceived -= OnCommandReceived_Relay;
+                _relayTransport.StatusChanged -= OnRelayStatusChanged;
+                _relayTransport.Error -= OnRelayError;
+            }
         }
         catch { }
 
@@ -194,7 +231,18 @@ public class AppController
         }
         catch { }
 
-        // 6. Close keying output
+        // 6. Stop Cloud Relay transport
+        try
+        {
+            if (_relayTransport is not null)
+            {
+                _relayTransport.Dispose();
+                _relayTransport = null;
+            }
+        }
+        catch { }
+
+        // 7. Close keying output
         try
         {
             if (_keyingOutput is not null)
@@ -238,6 +286,33 @@ public class AppController
         }
     }
 
+    private void OnCommandReceived_Relay(object? sender, byte[] data)
+    {
+        if (!IsRunning || _keyerCore is null) return;
+
+        if (LogRawData)
+            _logger.Log($"Relay RX: {FormatHex(data)}", LogSeverity.Info, "RawData");
+
+        var response = _keyerCore.ProcessCommand(data);
+        if (response is not null && _relayTransport is not null)
+        {
+            if (LogRawData)
+                _logger.Log($"Relay TX: {FormatHex(response)}", LogSeverity.Info, "RawData");
+            _relayTransport.SendResponse(response);
+        }
+    }
+
+    private void OnRelayStatusChanged(object? sender, RelayStatusEventArgs e)
+    {
+        _logger.Log($"Relay: {e.Status} — {e.Message}", LogSeverity.Info, "CloudRelay");
+        RelayStatusChanged?.Invoke(this, e);
+    }
+
+    private void OnRelayError(object? sender, string message)
+    {
+        _logger.Log($"Relay error: {message}", LogSeverity.Warning, "CloudRelay");
+    }
+
     private static string FormatHex(byte[] data)
     {
         // If all bytes are printable ASCII (0x20-0x7E), show as text with hex prefix
@@ -272,5 +347,8 @@ public class AppController
 
         // Send to UDP source if connected and has a client
         try { _udpCommandSource?.SendResponse(data); } catch { }
+
+        // Send to cloud relay if connected
+        try { _relayTransport?.SendResponse(data); } catch { }
     }
 }

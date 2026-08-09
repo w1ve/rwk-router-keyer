@@ -3,6 +3,7 @@ using WinKeyerEmulator.App.Logging;
 using WinKeyerEmulator.App.Services;
 using WinKeyerEmulator.App.Settings;
 using WinKeyerEmulator.Core;
+using WinKeyerEmulator.Core.CloudRelay;
 using WinKeyerEmulator.Core.IO;
 
 namespace WinKeyerEmulator.App;
@@ -23,6 +24,7 @@ public partial class MainForm : Form
         // Create controller
         _appController = new AppController(_logger);
         _appController.Stopped += OnAppControllerStopped;
+        _appController.RelayStatusChanged += OnRelayStatusChanged;
 
         // Set up port monitor
         _portMonitor = new PortMonitor();
@@ -48,6 +50,18 @@ public partial class MainForm : Form
             return;
         }
 
+        var transport = cboTransport.SelectedIndex == 1 ? TransportMode.CloudRelay : TransportMode.Udp;
+
+        if (transport == TransportMode.CloudRelay)
+        {
+            if (string.IsNullOrWhiteSpace(txtPairingToken.Text) || !TokenGenerator.IsValid(txtPairingToken.Text.Trim()))
+            {
+                MessageBox.Show("Please enter or generate a valid 64-character pairing token.",
+                    "Configuration Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+        }
+
         GatherSettings().Save();
 
         var config = new AppConfig
@@ -55,8 +69,10 @@ public partial class MainForm : Form
             KeyingPortName = cboKeyingPort.SelectedItem.ToString()!,
             KeyingLine = rdoDTR.Checked ? KeyingLine.DTR : KeyingLine.RTS,
             CommandPortName = GetSelectedCommandPort(),
+            Transport = transport,
             UdpAddress = txtUdpAddress.Text.Trim(),
-            UdpPort = (int)nudUdpPort.Value
+            UdpPort = (int)nudUdpPort.Value,
+            PairingToken = txtPairingToken.Text.Trim(),
         };
 
         try
@@ -79,6 +95,7 @@ public partial class MainForm : Form
             _appController.Stop();
             _logger?.Log("Stop completed", LogSeverity.Info, "UI");
             SetRunningState(false);
+            lblRelayStatus.Text = "";
         }
         catch (Exception ex)
         {
@@ -90,6 +107,66 @@ public partial class MainForm : Form
     private void ChkLogRawData_CheckedChanged(object? sender, EventArgs e)
     {
         _appController.LogRawData = chkLogRawData.Checked;
+    }
+
+    private void CboTransport_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        UpdateTransportUI();
+    }
+
+    private void BtnGenerateToken_Click(object? sender, EventArgs e)
+    {
+        txtPairingToken.Text = TokenGenerator.Generate();
+    }
+
+    private void UpdateTransportUI()
+    {
+        bool isRelay = cboTransport.SelectedIndex == 1;
+
+        // UDP controls
+        lblUdpAddress.Visible = !isRelay;
+        txtUdpAddress.Visible = !isRelay;
+        lblUdpPort.Visible = !isRelay;
+        nudUdpPort.Visible = !isRelay;
+
+        // Relay controls
+        lblPairingToken.Visible = isRelay;
+        txtPairingToken.Visible = isRelay;
+        btnGenerateToken.Visible = isRelay;
+    }
+
+    private void OnRelayStatusChanged(object? sender, RelayStatusEventArgs e)
+    {
+        try
+        {
+            if (IsDisposed || Disposing) return;
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(() => OnRelayStatusChanged(sender, e));
+                return;
+            }
+
+            lblRelayStatus.Text = e.Status switch
+            {
+                RelayStatus.Connecting => "⟳ Connecting...",
+                RelayStatus.Connected => "◉ Connected",
+                RelayStatus.Paired => "✓ Paired",
+                RelayStatus.Reconnecting => "⟳ Reconnecting...",
+                RelayStatus.Error => "✗ Error",
+                _ => "",
+            };
+
+            lblRelayStatus.ForeColor = e.Status switch
+            {
+                RelayStatus.Paired => System.Drawing.Color.Green,
+                RelayStatus.Connected => System.Drawing.Color.DarkOrange,
+                RelayStatus.Connecting or RelayStatus.Reconnecting => System.Drawing.Color.Gray,
+                RelayStatus.Error => System.Drawing.Color.Red,
+                _ => System.Drawing.Color.Gray,
+            };
+        }
+        catch { }
     }
 
     private void OnAppControllerStopped(object? sender, EventArgs e)
@@ -162,10 +239,9 @@ public partial class MainForm : Form
         // Command port always has a "None" option
         cboCommandPort.Items.Add("None");
 
-        foreach (var port in ports.OrderBy(p => 
+        foreach (var port in ports.OrderBy(p =>
         {
-            // Sort numerically by port number (COM1, COM2, ..., COM27, COM128)
-            if (p.StartsWith("COM", StringComparison.OrdinalIgnoreCase) && 
+            if (p.StartsWith("COM", StringComparison.OrdinalIgnoreCase) &&
                 int.TryParse(p.AsSpan(3), out int num))
                 return num;
             return int.MaxValue;
@@ -197,8 +273,11 @@ public partial class MainForm : Form
         rdoDTR.Enabled = !running;
         rdoRTS.Enabled = !running;
         cboCommandPort.Enabled = !running;
+        cboTransport.Enabled = !running;
         txtUdpAddress.Enabled = !running;
         nudUdpPort.Enabled = !running;
+        txtPairingToken.Enabled = !running;
+        btnGenerateToken.Enabled = !running;
     }
 
     private string? GetSelectedCommandPort()
@@ -220,9 +299,14 @@ public partial class MainForm : Form
         if (settings.CommandPortName != null && cboCommandPort.Items.Contains(settings.CommandPortName))
             cboCommandPort.SelectedItem = settings.CommandPortName;
 
+        cboTransport.SelectedIndex = settings.Transport == "CloudRelay" ? 1 : 0;
+
         txtUdpAddress.Text = settings.UdpAddress;
         nudUdpPort.Value = settings.UdpPort;
+        txtPairingToken.Text = settings.PairingToken ?? "";
         chkLogRawData.Checked = settings.LogRawData;
+
+        UpdateTransportUI();
     }
 
     private AppSettings GatherSettings()
@@ -232,8 +316,10 @@ public partial class MainForm : Form
             KeyingPortName = cboKeyingPort.SelectedItem?.ToString(),
             KeyingLine = rdoRTS.Checked ? "RTS" : "DTR",
             CommandPortName = GetSelectedCommandPort(),
+            Transport = cboTransport.SelectedIndex == 1 ? "CloudRelay" : "UDP",
             UdpAddress = txtUdpAddress.Text.Trim(),
             UdpPort = (int)nudUdpPort.Value,
+            PairingToken = txtPairingToken.Text.Trim(),
             LogRawData = chkLogRawData.Checked
         };
     }
@@ -248,6 +334,7 @@ public partial class MainForm : Form
         }
 
         _appController.Stopped -= OnAppControllerStopped;
+        _appController.RelayStatusChanged -= OnRelayStatusChanged;
         _portMonitor.PortsChanged -= OnPortsChanged;
         _portMonitor.Dispose();
 

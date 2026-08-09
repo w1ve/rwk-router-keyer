@@ -7,10 +7,22 @@ partial class MainForm
     // Top config controls
     private Label lblWinKeyerPort;
     private ComboBox cboWinKeyerPort;
+
+    // Transport mode
+    private Label lblTransport;
+    private ComboBox cboTransport;
+
+    // UDP controls
     private Label lblServerAddress;
     private TextBox txtServerAddress;
     private Label lblServerPort;
     private NumericUpDown nudServerPort;
+
+    // Cloud Relay controls
+    private Label lblPairingToken;
+    private TextBox txtPairingToken;
+    private Label lblRelayStatus;
+
     private Button btnStart;
     private Button btnStop;
 
@@ -34,10 +46,15 @@ partial class MainForm
     {
         this.lblWinKeyerPort = new Label();
         this.cboWinKeyerPort = new ComboBox();
+        this.lblTransport = new Label();
+        this.cboTransport = new ComboBox();
         this.lblServerAddress = new Label();
         this.txtServerAddress = new TextBox();
         this.lblServerPort = new Label();
         this.nudServerPort = new NumericUpDown();
+        this.lblPairingToken = new Label();
+        this.txtPairingToken = new TextBox();
+        this.lblRelayStatus = new Label();
         this.btnStart = new Button();
         this.btnStop = new Button();
         this.tabControl = new TabControl();
@@ -62,44 +79,75 @@ partial class MainForm
         this.cboWinKeyerPort.Location = new Point(12, 33);
         this.cboWinKeyerPort.Size = new Size(100, 23);
 
+        // lblTransport
+        this.lblTransport.AutoSize = true;
+        this.lblTransport.Location = new Point(130, 15);
+        this.lblTransport.Text = "Transport:";
+
+        // cboTransport
+        this.cboTransport.DropDownStyle = ComboBoxStyle.DropDownList;
+        this.cboTransport.Location = new Point(130, 33);
+        this.cboTransport.Size = new Size(120, 23);
+        this.cboTransport.Items.AddRange(new object[] { "UDP Direct", "Cloud Relay" });
+        this.cboTransport.SelectedIndex = 0;
+        this.cboTransport.SelectedIndexChanged += new EventHandler(this.CboTransport_SelectedIndexChanged);
+
         // lblServerAddress
         this.lblServerAddress.AutoSize = true;
-        this.lblServerAddress.Location = new Point(130, 15);
+        this.lblServerAddress.Location = new Point(12, 64);
         this.lblServerAddress.Text = "WKR Server IP:";
 
         // txtServerAddress
-        this.txtServerAddress.Location = new Point(130, 33);
+        this.txtServerAddress.Location = new Point(12, 82);
         this.txtServerAddress.Size = new Size(120, 23);
         this.txtServerAddress.Text = "127.0.0.1";
 
         // lblServerPort
         this.lblServerPort.AutoSize = true;
-        this.lblServerPort.Location = new Point(260, 15);
+        this.lblServerPort.Location = new Point(140, 64);
         this.lblServerPort.Text = "Port:";
 
         // nudServerPort
-        this.nudServerPort.Location = new Point(260, 33);
+        this.nudServerPort.Location = new Point(140, 82);
         this.nudServerPort.Size = new Size(70, 23);
         this.nudServerPort.Minimum = 1;
         this.nudServerPort.Maximum = 65535;
         this.nudServerPort.Value = 7388;
 
+        // lblPairingToken
+        this.lblPairingToken.AutoSize = true;
+        this.lblPairingToken.Location = new Point(12, 64);
+        this.lblPairingToken.Text = "Pairing Token (from server):";
+        this.lblPairingToken.Visible = false;
+
+        // txtPairingToken
+        this.txtPairingToken.Location = new Point(12, 82);
+        this.txtPairingToken.Size = new Size(420, 23);
+        this.txtPairingToken.Font = new Font("Consolas", 8.5F);
+        this.txtPairingToken.Visible = false;
+
+        // lblRelayStatus
+        this.lblRelayStatus.AutoSize = true;
+        this.lblRelayStatus.Location = new Point(270, 36);
+        this.lblRelayStatus.Text = "";
+        this.lblRelayStatus.ForeColor = System.Drawing.Color.Gray;
+
         // btnStart
-        this.btnStart.Location = new Point(350, 30);
-        this.btnStart.Size = new Size(80, 26);
+        this.btnStart.Location = new Point(350, 78);
+        this.btnStart.Size = new Size(80, 28);
         this.btnStart.Text = "Start";
         this.btnStart.Click += new EventHandler(this.BtnStart_Click);
 
         // btnStop
-        this.btnStop.Location = new Point(350, 30);
-        this.btnStop.Size = new Size(80, 26);
+        this.btnStop.Location = new Point(350, 78);
+        this.btnStop.Size = new Size(80, 28);
         this.btnStop.Text = "Stop";
         this.btnStop.Visible = false;
         this.btnStop.Click += new EventHandler(this.BtnStop_Click);
 
         // tabControl
-        this.tabControl.Location = new Point(12, 65);
-        this.tabControl.Size = new Size(460, 340);
+        this.tabControl.Location = new Point(12, 115);
+        this.tabControl.Size = new Size(460, 310);
         this.tabControl.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
         this.tabControl.TabPages.Add(this.tabLog);
         this.tabControl.TabPages.Add(this.tabSendText);
@@ -131,17 +179,22 @@ partial class MainForm
         // MainForm
         this.AutoScaleDimensions = new SizeF(7F, 15F);
         this.AutoScaleMode = AutoScaleMode.Font;
-        this.ClientSize = new Size(484, 411);
+        this.ClientSize = new Size(484, 431);
         this.Controls.Add(this.lblWinKeyerPort);
         this.Controls.Add(this.cboWinKeyerPort);
+        this.Controls.Add(this.lblTransport);
+        this.Controls.Add(this.cboTransport);
         this.Controls.Add(this.lblServerAddress);
         this.Controls.Add(this.txtServerAddress);
         this.Controls.Add(this.lblServerPort);
         this.Controls.Add(this.nudServerPort);
+        this.Controls.Add(this.lblPairingToken);
+        this.Controls.Add(this.txtPairingToken);
+        this.Controls.Add(this.lblRelayStatus);
         this.Controls.Add(this.btnStart);
         this.Controls.Add(this.btnStop);
         this.Controls.Add(this.tabControl);
-        this.MinimumSize = new Size(450, 350);
+        this.MinimumSize = new Size(450, 400);
         this.Name = "MainForm";
         this.Text = "WinKey Remote Client by W1VE";
         this.StartPosition = FormStartPosition.CenterScreen;

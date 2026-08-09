@@ -1,6 +1,7 @@
 using System.IO.Ports;
 using System.Net;
 using System.Net.Sockets;
+using WinKeyerEmulator.Core.CloudRelay;
 
 namespace WKRClient;
 
@@ -9,6 +10,7 @@ public partial class MainForm : Form
     private SerialPort? _winKeyerPort;
     private UdpClient? _udpClient;
     private IPEndPoint? _serverEndpoint;
+    private CloudRelayTransport? _relayTransport;
     private Thread? _readThread;
     private volatile bool _running;
     private Task? _udpReceiveTask;
@@ -41,16 +43,41 @@ public partial class MainForm : Form
     {
         if (s.WinKeyerPort != null && cboWinKeyerPort.Items.Contains(s.WinKeyerPort))
             cboWinKeyerPort.SelectedItem = s.WinKeyerPort;
+        cboTransport.SelectedIndex = s.Transport == "CloudRelay" ? 1 : 0;
         txtServerAddress.Text = s.ServerAddress;
         nudServerPort.Value = s.ServerPort;
+        txtPairingToken.Text = s.PairingToken ?? "";
+        UpdateTransportUI();
     }
 
     private ClientSettings GatherSettings() => new()
     {
         WinKeyerPort = cboWinKeyerPort.SelectedItem?.ToString(),
+        Transport = cboTransport.SelectedIndex == 1 ? "CloudRelay" : "UDP",
         ServerAddress = txtServerAddress.Text.Trim(),
-        ServerPort = (int)nudServerPort.Value
+        ServerPort = (int)nudServerPort.Value,
+        PairingToken = txtPairingToken.Text.Trim(),
     };
+
+    private void CboTransport_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        UpdateTransportUI();
+    }
+
+    private void UpdateTransportUI()
+    {
+        bool isRelay = cboTransport.SelectedIndex == 1;
+
+        // UDP controls
+        lblServerAddress.Visible = !isRelay;
+        txtServerAddress.Visible = !isRelay;
+        lblServerPort.Visible = !isRelay;
+        nudServerPort.Visible = !isRelay;
+
+        // Relay controls
+        lblPairingToken.Visible = isRelay;
+        txtPairingToken.Visible = isRelay;
+    }
 
     private void BtnStart_Click(object? sender, EventArgs e)
     {
@@ -60,18 +87,49 @@ public partial class MainForm : Form
             return;
         }
 
+        bool isRelay = cboTransport.SelectedIndex == 1;
+
+        if (isRelay)
+        {
+            if (string.IsNullOrWhiteSpace(txtPairingToken.Text) || !TokenGenerator.IsValid(txtPairingToken.Text.Trim()))
+            {
+                MessageBox.Show("Please enter the pairing token from the server (64 hex characters).",
+                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+        }
+
         GatherSettings().Save();
 
         try
         {
-            _serverEndpoint = new IPEndPoint(IPAddress.Parse(txtServerAddress.Text.Trim()), (int)nudServerPort.Value);
-            _udpClient = new UdpClient();
             _running = true;
             _cts = new CancellationTokenSource();
             _keyFlushTimer = new System.Threading.Timer(FlushKeyBuffer, null, Timeout.Infinite, Timeout.Infinite);
 
-            // Start receiving UDP responses from server
-            _udpReceiveTask = Task.Run(() => UdpReceiveLoop(_cts.Token));
+            if (isRelay)
+            {
+                // Start Cloud Relay transport
+                var relayConfig = new RelayConfig
+                {
+                    RelayUrl = "wss://wrs.w1ve.com/ws",
+                    PairingToken = txtPairingToken.Text.Trim(),
+                    EndpointType = RelayEndpointType.RemoteSide,
+                };
+                _relayTransport = new CloudRelayTransport(relayConfig);
+                _relayTransport.StatusChanged += OnRelayStatusChanged;
+                _relayTransport.DataReceived += OnRelayDataReceived;
+                _relayTransport.Error += (_, msg) => Log($"Relay error: {msg}");
+                _relayTransport.Start();
+                Log("Cloud Relay started, connecting...");
+            }
+            else
+            {
+                // Start UDP transport
+                _serverEndpoint = new IPEndPoint(IPAddress.Parse(txtServerAddress.Text.Trim()), (int)nudServerPort.Value);
+                _udpClient = new UdpClient();
+                _udpReceiveTask = Task.Run(() => UdpReceiveLoop(_cts.Token));
+            }
 
             // Try to open local WinKeyer serial port
             string portName = cboWinKeyerPort.SelectedItem.ToString()!;
@@ -86,7 +144,7 @@ public partial class MainForm : Form
 
                 // Send Admin Open and wait for version response with timeout
                 _winKeyerPort.Write(new byte[] { 0x00, 0x02 }, 0, 2);
-                Thread.Sleep(500); // Give WinKeyer time to respond
+                Thread.Sleep(500);
 
                 if (_winKeyerPort.BytesToRead > 0)
                 {
@@ -94,7 +152,6 @@ public partial class MainForm : Form
                     _winKeyerPort.Read(resp, 0, resp.Length);
                     Log($"WinKeyer found on {portName}, version: {resp[0]}");
 
-                    // Start reading from local WinKeyer and forwarding to server
                     _winKeyerPort.ReadTimeout = 500;
                     _readThread = new Thread(ReadWinKeyerLoop) { IsBackground = true, Name = "WKR-SerialRead" };
                     _readThread.Start();
@@ -115,7 +172,8 @@ public partial class MainForm : Form
                 _winKeyerPort = null;
             }
 
-            Log("Started. Server target: " + _serverEndpoint + (_winKeyerPort == null ? " (keyboard only)" : ""));
+            string transportInfo = isRelay ? "Cloud Relay" : $"UDP → {_serverEndpoint}";
+            Log($"Started. Transport: {transportInfo}" + (_winKeyerPort == null ? " (keyboard only)" : ""));
             SetRunningState(true);
         }
         catch (Exception ex)
@@ -131,6 +189,7 @@ public partial class MainForm : Form
         Cleanup();
         Log("Stopped.");
         SetRunningState(false);
+        lblRelayStatus.Text = "";
     }
 
     private void ReadWinKeyerLoop()
@@ -146,8 +205,7 @@ public partial class MainForm : Form
                 {
                     var data = new byte[n];
                     Array.Copy(buffer, data, n);
-                    // Forward to server over UDP
-                    _udpClient?.Send(data, data.Length, _serverEndpoint);
+                    SendToServer(data);
                     Log($"WK→Server: {FormatHex(data)}");
                 }
             }
@@ -155,6 +213,18 @@ public partial class MainForm : Form
             catch (OperationCanceledException) { break; }
             catch (IOException) { if (_running) { Log("WinKeyer disconnected"); _running = false; } break; }
             catch (InvalidOperationException) { break; }
+        }
+    }
+
+    private void SendToServer(byte[] data)
+    {
+        if (_relayTransport is not null)
+        {
+            _relayTransport.SendData(data);
+        }
+        else if (_udpClient is not null && _serverEndpoint is not null)
+        {
+            _udpClient.Send(data, data.Length, _serverEndpoint);
         }
     }
 
@@ -166,7 +236,6 @@ public partial class MainForm : Form
             {
                 var result = await _udpClient!.ReceiveAsync(ct);
                 Log($"Server→: {FormatHex(result.Buffer)}");
-                // Could forward back to WinKeyer or just log
             }
             catch (OperationCanceledException) { break; }
             catch (SocketException) { break; }
@@ -174,15 +243,57 @@ public partial class MainForm : Form
         }
     }
 
+    private void OnRelayDataReceived(object? sender, byte[] data)
+    {
+        Log($"Server→: {FormatHex(data)}");
+        // Could forward back to WinKeyer for status display if needed
+    }
+
+    private void OnRelayStatusChanged(object? sender, RelayStatusEventArgs e)
+    {
+        try
+        {
+            if (IsDisposed || Disposing) return;
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(() => OnRelayStatusChanged(sender, e));
+                return;
+            }
+
+            lblRelayStatus.Text = e.Status switch
+            {
+                RelayStatus.Connecting => "⟳ Connecting...",
+                RelayStatus.Connected => "◉ Connected",
+                RelayStatus.Paired => "✓ Paired",
+                RelayStatus.Reconnecting => "⟳ Reconnecting...",
+                RelayStatus.Error => "✗ Error",
+                _ => "",
+            };
+
+            lblRelayStatus.ForeColor = e.Status switch
+            {
+                RelayStatus.Paired => System.Drawing.Color.Green,
+                RelayStatus.Connected => System.Drawing.Color.DarkOrange,
+                RelayStatus.Connecting or RelayStatus.Reconnecting => System.Drawing.Color.Gray,
+                RelayStatus.Error => System.Drawing.Color.Red,
+                _ => System.Drawing.Color.Gray,
+            };
+
+            if (e.Message != null)
+                Log($"Relay: {e.Message}");
+        }
+        catch { }
+    }
+
     private void TxtSendText_KeyPress(object? sender, KeyPressEventArgs e)
     {
         // ESC key (0x1B) = immediate abort
         if (e.KeyChar == 0x1B)
         {
-            if (_running && _udpClient != null && _serverEndpoint != null)
+            if (_running)
             {
-                // Send Clear Buffer command (0x0A) to abort transmission on server
-                _udpClient.Send(new byte[] { 0x0A }, 1, _serverEndpoint);
+                SendToServer(new byte[] { 0x0A });
                 Log("ESC → Abort sent to server");
             }
             e.Handled = true;
@@ -190,7 +301,7 @@ public partial class MainForm : Form
         }
 
         // Send printable ASCII immediately to server as WinKeyer text bytes
-        if (_running && _udpClient != null && _serverEndpoint != null)
+        if (_running)
         {
             char c = e.KeyChar;
             if (c >= 0x20 && c <= 0x7E)
@@ -220,11 +331,11 @@ public partial class MainForm : Form
             _keyBuffer.Clear();
         }
 
-        if (_running && _udpClient != null && _serverEndpoint != null)
+        if (_running)
         {
             try
             {
-                _udpClient.Send(data, data.Length, _serverEndpoint);
+                SendToServer(data);
                 string text = System.Text.Encoding.ASCII.GetString(data);
                 Log($"Key→Server: \"{text}\"");
             }
@@ -238,7 +349,6 @@ public partial class MainForm : Form
         _cts?.Cancel();
         try { _keyFlushTimer?.Dispose(); } catch { }
         _keyFlushTimer = null;
-        // Flush any remaining buffered keys
         FlushKeyBuffer(null);
         try { _winKeyerPort?.Close(); } catch { }
         try { _winKeyerPort?.Dispose(); } catch { }
@@ -246,6 +356,17 @@ public partial class MainForm : Form
         try { _udpClient?.Close(); } catch { }
         try { _udpClient?.Dispose(); } catch { }
         _udpClient = null;
+        try
+        {
+            if (_relayTransport is not null)
+            {
+                _relayTransport.StatusChanged -= OnRelayStatusChanged;
+                _relayTransport.DataReceived -= OnRelayDataReceived;
+                _relayTransport.Dispose();
+                _relayTransport = null;
+            }
+        }
+        catch { }
         _readThread?.Join(500);
         _readThread = null;
         _cts?.Dispose();
@@ -257,8 +378,10 @@ public partial class MainForm : Form
         btnStart.Visible = !running;
         btnStop.Visible = running;
         cboWinKeyerPort.Enabled = !running;
+        cboTransport.Enabled = !running;
         txtServerAddress.Enabled = !running;
         nudServerPort.Enabled = !running;
+        txtPairingToken.Enabled = !running;
     }
 
     private void Log(string msg)

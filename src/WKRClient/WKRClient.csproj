@@ -21,4 +21,7 @@
   <ItemGroup>
     <PackageReference Include="System.IO.Ports" Version="9.*" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\WinKeyerEmulator.Core\WinKeyerEmulator.Core.csproj" />
+  </ItemGroup>
 </Project>

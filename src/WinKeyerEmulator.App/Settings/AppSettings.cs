@@ -7,8 +7,11 @@ public class AppSettings
     public string? KeyingPortName { get; set; }
     public string KeyingLine { get; set; } = "DTR";
     public string? CommandPortName { get; set; }
+    public string Transport { get; set; } = "UDP";
     public string UdpAddress { get; set; } = "127.0.0.1";
     public int UdpPort { get; set; } = 7388;
+    public string RelayUrl { get; set; } = "wss://wrs.w1ve.com/ws";
+    public string? PairingToken { get; set; }
     public bool LogRawData { get; set; }
 
     private static string SettingsPath => Path.Combine(
