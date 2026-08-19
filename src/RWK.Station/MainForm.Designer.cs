@@ -386,7 +386,7 @@ partial class MainForm
         // Main menu
         _mainMenu = new MenuStrip();
         _mainMenu.Name = "_mainMenu";
-        var rwkMenuItem = new ToolStripMenuItem("RWK");
+        var rwkMenuItem = new ToolStripMenuItem("&File");
         var aboutMenuItem = new ToolStripMenuItem("About RWK");
         aboutMenuItem.Click += (_, _) => { using var dlg = new AboutDialog(); dlg.ShowDialog(this); };
         var showPairingKeyMenuItem = new ToolStripMenuItem("Show Pairing Key...");
@@ -402,7 +402,7 @@ partial class MainForm
                 UseShellExecute = true
             });
         };
-        var exitMenuItem = new ToolStripMenuItem("Exit");
+        var exitMenuItem = new ToolStripMenuItem("E&xit");
         exitMenuItem.Click += (_, _) => Close();
         rwkMenuItem.DropDownItems.Add(aboutMenuItem);
         rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
@@ -418,6 +418,11 @@ partial class MainForm
         Name = "MainForm";
         StartPosition = FormStartPosition.CenterScreen;
         Text = "RWK Station";
+
+        // Form icon
+        string icoPath = Path.Combine(AppContext.BaseDirectory, "rwk.ico");
+        if (File.Exists(icoPath))
+            Icon = new Icon(icoPath);
 
         ResumeLayout(false);
         PerformLayout();

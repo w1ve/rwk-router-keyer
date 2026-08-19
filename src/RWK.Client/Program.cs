@@ -11,9 +11,22 @@ namespace RWK.Client;
 
 internal static class Program
 {
+    private const string MutexName = "Global\\RWK_Client_SingleInstance";
+
     [STAThread]
     private static void Main()
     {
+        using var mutex = new Mutex(true, MutexName, out bool createdNew);
+        if (!createdNew)
+        {
+            MessageBox.Show(
+                "RWK Client is already running.",
+                "RWK Client",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Exclamation);
+            return;
+        }
+
         ApplicationConfiguration.Initialize();
         Application.Run(new MainForm());
     }

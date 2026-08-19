@@ -14,9 +14,22 @@ namespace RWK.Station;
 /// </summary>
 internal static class Program
 {
+    private const string MutexName = "Global\\RWK_Station_SingleInstance";
+
     [STAThread]
     private static void Main()
     {
+        using var mutex = new Mutex(true, MutexName, out bool createdNew);
+        if (!createdNew)
+        {
+            MessageBox.Show(
+                "RWK Station is already running.",
+                "RWK Station",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Exclamation);
+            return;
+        }
+
         // A stuck transmitter is the worst failure this application can produce, so an
         // unhandled exception must never take the process down silently (F7, F8 in
         // Requirement 9). Logging here keeps a record; the fail-safe wiring that forces
