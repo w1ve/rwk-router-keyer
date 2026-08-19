@@ -124,6 +124,12 @@ public sealed class StationController : IDisposable
     /// </summary>
     public event EventHandler<string>? AuthUrlAvailable;
 
+    /// <summary>
+    /// Raised when the Client pushes forward rules over the control channel.
+    /// The list contains the rules received (for UI display on the Station).
+    /// </summary>
+    public event EventHandler<List<ForwardRuleInfo>>? ForwardRulesReceived;
+
     // ──────────────────────────────────────────────────────────────────────────────
     //  Construction
     // ──────────────────────────────────────────────────────────────────────────────
@@ -876,6 +882,8 @@ public sealed class StationController : IDisposable
             string? msgType = typeProp.GetString();
             if (msgType == "forward_rules" && root.TryGetProperty("rules", out var rulesArray))
             {
+                var receivedRules = new List<ForwardRuleInfo>();
+
                 foreach (var ruleEl in rulesArray.EnumerateArray())
                 {
                     int port = ruleEl.GetProperty("port").GetInt32();
@@ -884,16 +892,16 @@ public sealed class StationController : IDisposable
                         ? taProp.GetString() ?? "127.0.0.1"
                         : "127.0.0.1";
 
+                    receivedRules.Add(new ForwardRuleInfo(port, protocol, targetAddress));
+
                     try
                     {
                         if (protocol == "udp")
                         {
-                            // Register a UDP inbound forward: tailnet:port → targetAddress:port
                             await _sidecarHost!.CreateInboundUdpForwardAsync(port, port, targetAddress).ConfigureAwait(false);
                         }
                         else
                         {
-                            // Register a TCP inbound forward: tailnet:port → targetAddress:port
                             await _sidecarHost!.CreateInboundForwardAsync(port, port, targetAddress).ConfigureAwait(false);
                         }
                         _diagnostics?.Invoke($"✓ Inbound forward registered: tailnet:{port} → {targetAddress}:{port} ({protocol})");
@@ -903,6 +911,9 @@ public sealed class StationController : IDisposable
                         _diagnostics?.Invoke($"✗ Inbound forward failed for port {port}: {ex.Message}");
                     }
                 }
+
+                // Notify UI so the grid is updated.
+                ForwardRulesReceived?.Invoke(this, receivedRules);
             }
         }
         catch (System.Text.Json.JsonException ex)
@@ -993,6 +1004,11 @@ public sealed class StationController : IDisposable
 // ──────────────────────────────────────────────────────────────────────────────
 //  Supporting types
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Info about a forward rule received from the Client, for UI display on the Station.
+/// </summary>
+public record ForwardRuleInfo(int Port, string Protocol, string TargetAddress);
 
 /// <summary>
 /// Controller lifecycle states.

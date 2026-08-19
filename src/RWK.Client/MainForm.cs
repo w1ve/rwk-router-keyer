@@ -208,7 +208,6 @@ public partial class MainForm : Form
                 try
                 {
                     _controller.SetForwardRuleEnabled(ruleId.Value, enabled);
-                    row.Cells["Status"].Value = enabled ? "Starting..." : "Idle";
                 }
                 catch (Exception ex)
                 {

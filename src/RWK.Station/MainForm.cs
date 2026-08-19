@@ -115,6 +115,7 @@ public partial class MainForm : Form
         _controller.SidecarFailureStateChanged += OnControllerSidecarFailureStateChanged;
         _controller.StartupFailed += OnControllerStartupFailed;
         _controller.AuthUrlAvailable += OnControllerAuthUrlAvailable;
+        _controller.ForwardRulesReceived += OnForwardRulesReceived;
 
         // Start the controller — it will skip keying output if no port is configured,
         // and auto-connect Tailscale if an auth key is present.
@@ -803,6 +804,23 @@ public partial class MainForm : Form
 
             try { _controller.Dispose(); } catch { /* best effort */ }
             _controller = null;
+        }
+    }
+
+    private void OnForwardRulesReceived(object? sender, List<ForwardRuleInfo> rules)
+    {
+        if (InvokeRequired) { Invoke(() => OnForwardRulesReceived(sender, rules)); return; }
+
+        _forwardRulesGrid.Rows.Clear();
+        foreach (var rule in rules)
+        {
+            _forwardRulesGrid.Rows.Add(
+                $"{rule.Protocol.ToUpperInvariant()} :{rule.Port}",
+                rule.Protocol.ToUpperInvariant(),
+                rule.Port,
+                rule.Port,
+                true, // Allow by default
+                rule.TargetAddress);
         }
     }
 
