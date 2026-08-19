@@ -475,14 +475,18 @@ public sealed class ClientController : IDisposable
     public void SetToneFrequency(int hz)
     {
         _sidetone.ToneFrequency = hz;
+        _sidetone.Initialize(_config.Sidetone.DeviceId); // Re-init to apply new frequency
         _config = _config with { Sidetone = _config.Sidetone with { FrequencyHz = hz } };
+        _configStore.TrySave(_config);
     }
 
     /// <summary>Updates sidetone volume live from the UI.</summary>
     public void SetToneVolume(double volume)
     {
         _sidetone.Volume = volume;
+        _sidetone.Initialize(_config.Sidetone.DeviceId); // Re-init to apply new volume
         _config = _config with { Sidetone = _config.Sidetone with { Volume = volume } };
+        _configStore.TrySave(_config);
     }
 
     /// <summary>

@@ -361,8 +361,8 @@ partial class MainForm
 
         freqPanel.Controls.AddRange(new Control[] { _toneFreqSlider, _toneFreqValueLabel });
 
-        // Level row: label + panel containing slider + value label
-        _toneLevelCaptionLabel.Text = "Level:";
+        // Volume row: label + panel containing slider + value label
+        _toneLevelCaptionLabel.Text = "Volume:";
         _toneLevelCaptionLabel.AutoSize = true;
         _toneLevelCaptionLabel.Dock = DockStyle.Fill;
         _toneLevelCaptionLabel.TextAlign = ContentAlignment.MiddleLeft;

@@ -430,6 +430,11 @@ public partial class MainForm : Form
             _speedLabel.Text = _speedSlider.Value.ToString();
             _weightSlider.Value = Math.Clamp(_controller.Config.Weight, _weightSlider.Minimum, _weightSlider.Maximum);
             _weightValueLabel.Text = $"{_weightSlider.Value}%";
+            _toneFreqSlider.Value = Math.Clamp(_controller.Config.Sidetone.FrequencyHz, _toneFreqSlider.Minimum, _toneFreqSlider.Maximum);
+            _toneFreqValueLabel.Text = $"{_toneFreqSlider.Value} Hz";
+            int volPct = (int)(_controller.Config.Sidetone.Volume * 100);
+            _toneLevelSlider.Value = Math.Clamp(volPct, _toneLevelSlider.Minimum, _toneLevelSlider.Maximum);
+            _toneLevelValueLabel.Text = $"{_toneLevelSlider.Value}%";
 
             UpdateStatusForState(TailscaleState.Connecting);
 
