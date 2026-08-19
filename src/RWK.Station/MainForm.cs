@@ -175,12 +175,6 @@ public partial class MainForm : Form
         _keyIndicator.ForeColor = showKey ? Color.FromArgb(255, 60, 60) : SystemColors.GrayText;
         _pttIndicator.ForeColor = showPtt ? Color.FromArgb(255, 180, 0) : SystemColors.GrayText;
 
-        // Debug: also update the status text so we can SEE the polling values
-        if (keyDown || pttOn)
-        {
-            SetStatusText($"KEY={keyDown} PTT={pttOn}");
-        }
-
         // Update session duration display
         if (_sessionStartTime.HasValue)
         {
@@ -319,7 +313,9 @@ public partial class MainForm : Form
         {
             case StationControllerState.Armed:
                 SetSafeState(latched: false);
-                _sessionStateStatus.Text = "Session: Idle";
+                // Don't overwrite "Session: Active" if a session is already connected
+                if (_controller?.CurrentSession is null)
+                    _sessionStateStatus.Text = "Session: Idle";
                 _linkIndicatorStatus.Text = "● Link: Up";
                 _linkIndicatorStatus.ForeColor = Color.LimeGreen;
                 break;
@@ -388,9 +384,8 @@ public partial class MainForm : Form
             _ => "Path: —"
         };
 
-        _rttStatus.Text = e.RoundTripTime > TimeSpan.Zero
-            ? $"RTT: {e.RoundTripTime.TotalMilliseconds:F0}ms"
-            : "RTT: —";
+        if (e.RoundTripTime > TimeSpan.Zero)
+            _rttStatus.Text = $"RTT: {e.RoundTripTime.TotalMilliseconds:F0}ms";
 
         if (e.State == TailscaleState.Connected)
         {

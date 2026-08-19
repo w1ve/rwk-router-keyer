@@ -564,8 +564,6 @@ public partial class MainForm : Form
 
         if (e.RoundTripTime > TimeSpan.Zero)
             _rttLabel.Text = $"RTT: {e.RoundTripTime.TotalMilliseconds:F0}ms";
-        else
-            _rttLabel.Text = "RTT: --";
     }
 
     private void OnControllerPaddleStateChanged(object? sender, PaddleStateChangedEventArgs e)
@@ -865,13 +863,11 @@ public partial class MainForm : Form
                 _linkIndicator.ForeColor = WarningRed;
                 _linkIndicator.Text = "●";
                 _pathLabel.Text = "Path lost";
-                _rttLabel.Text = "RTT: --";
                 break;
             default:
                 _linkIndicator.ForeColor = Color.Gray;
                 _linkIndicator.Text = "●";
                 _pathLabel.Text = "Disconnected";
-                _rttLabel.Text = "RTT: --";
                 break;
         }
     }
