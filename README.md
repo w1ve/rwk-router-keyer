@@ -1,461 +1,364 @@
-# 🎙️ RWK — Remote WinKeyer
+# RWK Router/Keyer
 
-<p align="center">
-  <img src="https://img.shields.io/badge/.NET-9.0-512BD4?logo=dotnet" alt=".NET 9" />
-  <img src="https://img.shields.io/badge/platform-Windows%20x64-0078D6?logo=windows" alt="Windows x64" />
-  <img src="https://img.shields.io/badge/protocol-K1EL%20WinKeyer-orange" alt="WinKeyer Protocol" />
-  <img src="https://img.shields.io/badge/transport-UDP%20%7C%20Cloud%20Relay-green" alt="UDP | Cloud Relay" />
-  <img src="https://img.shields.io/badge/license-free%20to%20use-blue" alt="Free" />
-  <img src="https://img.shields.io/badge/status-beta-yellow" alt="Beta" />
-</p>
+**Any Rig, Any Internet, Anytime.**
 
-<p align="center"><b>Pretty trivial remote CW with a paddle.</b></p>
+Free, open-source CW remoting and port forwarding for amateur radio — hand-generated Morse code sent across any internet connection without timing distortion.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform: Windows x64](https://img.shields.io/badge/Platform-Windows%20x64-lightgrey.svg)]()
+[![.NET 9](https://img.shields.io/badge/.NET-9.0-purple.svg)]()
+[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8.svg)]()
 
 ---
 
-## 📡 What Is This?
+## Why This Project Exists
 
-This Remote WinKeyer project was designed to overcome the challenge of operating CW remotely. If you already use simple remote desktop and audio for remote operation (as described at [remote.radio](https://remote.radio)), RWK lets you **use a paddle** at your local QTH to key your remote station — with proper timing and zero sidetone latency.
+Remote amateur radio operation has a fundamental problem: **hand-generated CW cannot tolerate network latency and jitter.** When an operator sends Morse code with a paddle, each dit and dah is precisely timed — a 25 WPM dit is exactly 48 milliseconds. If those timing events cross a network with variable delay, the code arrives distorted. Characters merge, spacing is destroyed, and the result is unreadable.
 
-### The Design
+Commercial solutions exist (most notably in high-end radios like the FlexRadio 6000 series), but they require expensive hardware, are locked to a single vendor's ecosystem, and often demand either a public IP address or a complex VPN configuration that's beyond most operators.
 
-| Component | Role |
-|-----------|------|
-| **RWKServer** | Runs at the remote station. Emulates the full K1EL WinKeyer protocol in software. Accepts commands from a local logger (N1MM via serial) and/or a remote client (via UDP or Cloud Relay). Keys the radio by toggling DTR/RTS on a physical serial port. |
-| **RWKClient** | Runs at your local QTH. Connects to your physical WinKeyer hardware. Forwards all paddle keying and commands to the remote RWKServer over UDP or Cloud Relay. |
+**RWK solves both problems:**
 
-### Transport Options
+1. **Timing-accurate CW remoting** — The keyer runs at the operator's position. Edge transitions (key-down, key-up) are timestamped with microsecond-resolution QPC clocks, packed into UDP datagrams, and replayed at the remote station with an adaptive jitter buffer that absorbs network variation while preserving the original timing relationships. The technique is inspired by commercial implementations but was designed and built from scratch using property-based testing to prove correctness at every speed from 5 to 60 WPM.
 
-RWK supports two transport modes:
-
-| Transport | Best For | Setup Complexity |
-|-----------|----------|------------------|
-| **UDP** | LAN or VPN (Tailscale) connections with stable IP addresses | Medium — requires Tailscale or port forwarding |
-| **Cloud Relay** | Zero-config internet connectivity, works through any NAT/firewall | **Easy** — just share a pairing token |
-
-### Three Connections on the Server
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        RWK Server                           │
-│                                                             │
-│   Serial IN ──────→  Virtual WinKeyer  ──────→ Serial OUT   │
-│   (N1MM local)         Engine              (DTR/RTS key)    │
-│                          ↑                                  │
-│   UDP IN ────────────────┤                                  │
-│   (RWKClient UDP)        │                                  │
-│                          │                                  │
-│   Cloud Relay ───────────┘                                  │
-│   (RWKClient Relay)                                         │
-└─────────────────────────────────────────────────────────────┘
-```
-
-- **Keying Port (output):** Toggles DTR or RTS to key your transmitter
-- **Local WinKey Control Port (input):** Serial connection for N1MM or other logging software at the station
-- **Remote Input:** UDP listener OR Cloud Relay — accepts WinKeyer protocol bytes from the remote RWKClient
-
-### How the Client Works
-
-```
-┌──────────────────────────────────┐    UDP or Relay     ┌──────────────┐
-│         RWK Client               │ ──────────────────→ │  RWK Server  │
-│                                  │                     │              │
-│  Physical WinKeyer ←→ Serial     │                     │  → Radio TX  │
-│  Paddle keying     → Transport   │                     └──────────────┘
-│  Speed pot changes → Transport   │
-│  Keyboard typing   → Transport   │
-└──────────────────────────────────┘
-```
-
-- Your **local WinKeyer** handles the paddle input and generates sidetone — zero latency for the operator
-- Speed pot changes are forwarded to the server (with debouncing to filter noise)
-- All WinKeyer protocol bytes are transparently relayed
-- The **Send Text** tab lets you type characters directly from the keyboard
+2. **Zero-configuration private networking** — RWK uses [Tailscale](https://tailscale.com) to create a private WireGuard mesh between the operator and the remote station. No port forwarding, no dynamic DNS, no public IP addresses required. Works over DSL, cable, satellite, 4G LTE, or any combination — on either end.
 
 ---
 
-## 🏗️ Architecture
+## What You Can Remote
 
-### Virtual WinKeyer Engine (RWKServer)
+RWK's port forwarding makes it easy to tunnel any TCP or UDP traffic between your operating position and your remote station:
 
-The server implements the K1EL WinKeyer2/3 protocol from scratch in C#. It's not a simple pass-through — it's a **full protocol state machine** that:
+- **RemoteHams** audio/control connections
+- **Icom** IP-based radios (IC-705, IC-7610 remote head, IC-R8600)
+- **Kenwood** KENWOOD-ARCP connections
+- **Elecraft** K3/K4 serial CAT control
+- **Microham microKeyer** / **RRC** (RemoteRig) control and audio
+- **FlexRadio** SmartSDR DAX/CAT streams
+- **Any application** that communicates over TCP or UDP ports
 
-1. **Parses all WinKeyer commands** — Admin Open/Close, Speed, Weighting, PTT Lead/Tail, Pin Config, WK2 Mode, Load Defaults, Clear Buffer, and more
-2. **Handles multi-byte command framing** — correctly consumes follow-on bytes for each command type
-3. **Echoes characters** back to the host (required by N1MM to track transmission state)
-4. **Reports status bytes** with the 0xC0 prefix format expected by host software
-5. **Starts in host mode** by default so it works immediately after restart without requiring Admin Open
-
-### Sub-Millisecond CW Timing
-
-Accurate Morse timing is critical. A dit at 40 WPM is only 30ms — any jitter is audible. The server achieves consistent timing through:
-
-| Technique | Purpose |
-|-----------|---------|
-| **Precomputed Edge Schedules** | Converts text to an array of absolute timestamps before keying begins — no computation during transmission |
-| **PARIS Timing Standard** | dit = 1200/WPM ms; dah = 3×dit; inter-char = 3×dit; word gap = 7×dit |
-| **Dedicated High-Priority Thread** | Keying runs on `ThreadPriority.Highest` to minimize scheduling interference |
-| **GCLatencyMode.SustainedLowLatency** | Suppresses garbage collection pauses during keying |
-| **Hybrid Wait Strategy** | `Thread.Sleep(1)` for coarse approach, then `SpinWait` for final sub-ms precision |
-| **timeBeginPeriod(1)** | Sets Windows timer resolution to 1ms during active keying |
-| **EscapeCommFunction** | Toggles DTR/RTS via a single IOCTL — no SerialPort property setter overhead |
-| **Cached SafeFileHandle** | Port opened once with `CreateFile`; no open/close overhead per edge |
-| **Absolute Deadline Scheduling** | Never uses relative sleeps between edges — USB latency cancels rather than accumulates |
-
-### Inter-Message Spacing
-
-When characters arrive as separate UDP packets (typed slowly), the timing engine automatically inserts the correct **3-dit inter-character gap** between consecutively-queued messages. This prevents letters from running together even when each character arrives in its own packet.
-
-### UDP Packet Handling (RWKClient)
-
-To avoid characters being split across many tiny UDP packets over a long internet path:
-
-| Strategy | Detail |
-|----------|--------|
-| **Keystroke Batching** | Characters typed within 150ms of each other are grouped into a single UDP datagram |
-| **Server-Side Buffering** | The server's 50ms flush timer accumulates characters before committing them to the timing engine |
-| **Abort Support** | ESC key immediately sends Clear Buffer (0x0A), which aborts the current transmission within 1ms |
-
-This two-tier buffering (client batches → server buffers) means "W1TU" typed quickly arrives and keys as a single coherent word, not four separate letters.
+All of this works regardless of your ISP type. Both ends can be behind NAT, on CGNAT, on cellular — it doesn't matter. Tailscale handles the connectivity.
 
 ---
 
-## ☁️ Cloud Relay — Zero-Config Connectivity
-
-### The Easiest Way to Connect
-
-Cloud Relay is the simplest way to connect RWKClient and RWKServer across the internet. It requires **no VPN, no port forwarding, and no firewall configuration**. Both endpoints connect outbound to a relay server hosted on Cloudflare's global edge network.
-
-### How It Works
+## Architecture
 
 ```
-┌──────────────┐         wss://          ┌─────────────────┐         wss://          ┌──────────────┐
-│  RWKClient   │ ──────────────────────→ │ Cloudflare Edge │ ←────────────────────── │  RWKServer   │
-│  (Home)      │    WebSocket + TLS      │  (wrs.w1ve.com) │    WebSocket + TLS      │  (Station)   │
-└──────────────┘                         └─────────────────┘                         └──────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           OPERATOR POSITION (Client)                             │
+│                                                                                 │
+│  ┌──────────┐  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐   │
+│  │  Paddle  │  │   Logger     │  │  Hardware    │  │  Local Applications   │   │
+│  │  (CTS/   │  │  (N1MM,      │  │  WinKeyer    │  │  (CAT, Audio, RRC)    │   │
+│  │  DSR/DCD)│  │  DXLog, etc) │  │  (K1EL)      │  │                       │   │
+│  └────┬─────┘  └──────┬───────┘  └──────┬───────┘  └───────────┬───────────┘   │
+│       │ Serial         │ Serial          │ Serial               │ TCP/UDP       │
+│       ▼                ▼                 ▼                      ▼               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                        RWK Client Application                           │    │
+│  │  ┌────────────┐ ┌───────────────┐ ┌───────────┐ ┌──────────────────┐   │    │
+│  │  │ Paddle     │ │ WinKeyer      │ │ Soft      │ │ Port Forward     │   │    │
+│  │  │ Input      │ │ Protocol Host │ │ Keyer     │ │ Manager          │   │    │
+│  │  │ Poller     │ │ (Logger/HW)   │ │ Core      │ │ (TCP + UDP)      │   │    │
+│  │  └─────┬──────┘ └───────┬───────┘ └─────┬─────┘ └────────┬─────────┘   │    │
+│  │        │                 │               │                │             │    │
+│  │        └────────────┬────┘      Sidetone │                │             │    │
+│  │                     ▼            ▼       ▼                ▼             │    │
+│  │              ┌─────────────┐  ┌──────┐  ┌──────────────────────┐        │    │
+│  │              │ Edge Frame  │  │Audio │  │  Tailscale Sidecar   │        │    │
+│  │              │ Builder     │  │Output│  │  (Go tsnet process)  │        │    │
+│  │              └──────┬──────┘  └──────┘  └──────────┬───────────┘        │    │
+│  └─────────────────────┼──────────────────────────────┼────────────────────┘    │
+│                        │ UDP Datagrams                 │ TCP/UDP tunnels         │
+└────────────────────────┼──────────────────────────────┼─────────────────────────┘
+                         │          WireGuard Mesh       │
+                         ▼        (Tailscale Network)    ▼
+┌────────────────────────┼──────────────────────────────┼─────────────────────────┐
+│                        │                              │                         │
+│  ┌─────────────────────┼──────────────────────────────┼────────────────────┐    │
+│  │              ┌──────┴──────┐           ┌───────────┴───────────┐        │    │
+│  │              │  Tailscale  │           │  Tailscale Sidecar    │        │    │
+│  │              │  Sidecar    │           │  (Go tsnet process)   │        │    │
+│  │              └──────┬──────┘           └───────────┬───────────┘        │    │
+│  │                     ▼                              ▼                    │    │
+│  │  ┌──────────────────────────┐    ┌──────────────────────────────────┐   │    │
+│  │  │     Edge Replayer        │    │     Port Forward Manager         │   │    │
+│  │  │  (TIME_CRITICAL thread,  │    │  (inbound TCP/UDP → LAN devices) │   │    │
+│  │  │   jitter buffer, anchor) │    │                                  │   │    │
+│  │  └────────────┬─────────────┘    └──────────────────┬───────────────┘   │    │
+│  │               │                                     │                   │    │
+│  │               ▼                                     ▼                   │    │
+│  │  ┌────────────────────────┐           ┌──────────────────────────┐      │    │
+│  │  │   Keying Output        │           │  Station LAN Devices     │      │    │
+│  │  │   (Serial DTR/RTS)     │           │  (Radio, RRC, etc.)      │      │    │
+│  │  └────────────┬───────────┘           └──────────────────────────┘      │    │
+│  │               │                                                         │    │
+│  │               │                        RWK Station Application          │    │
+│  └───────────────┼─────────────────────────────────────────────────────────┘    │
+│                  ▼                                                               │
+│            ┌──────────┐                   REMOTE STATION                        │
+│            │  Radio   │                                                         │
+│            │  Key     │                                                         │
+│            │  Jack    │                                                         │
+│            └──────────┘                                                         │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
-
-1. Server generates a **64-character pairing token** and connects to the relay
-2. You copy the token to the client (via email, text message, etc.)
-3. Client connects using the same token — the relay pairs them together
-4. All WinKeyer data flows through the encrypted WebSocket tunnel
-
-### Setup — Cloud Relay (Recommended)
-
-**At the remote station (RWKServer):**
-1. Select the Keying Port (COM port connected to your radio keying circuit)
-2. Choose DTR or RTS
-3. Set **Transport** to **Cloud Relay**
-4. Click **Generate Token** — a 64-character hex token appears
-5. Click **Copy** to copy the token to clipboard
-6. Send this token to yourself (email, text, etc.)
-7. Click **Start** — status shows "Relay: Paired" when connected
-
-**At your local QTH (RWKClient):**
-1. Select your WinKeyer's COM port
-2. Set **Transport** to **Cloud Relay**
-3. Paste the **Pairing Token** from the server
-4. Click **Start** — status shows "✓ Paired" when connected
-5. Key with your paddle — or switch to the Send Text tab and type
-
-### Cloud Relay Features
-
-| Feature | Detail |
-|---------|--------|
-| **Zero Config** | No VPN, no port forwarding, no firewall rules needed |
-| **Automatic Reconnect** | If connection drops, both sides reconnect automatically |
-| **Heartbeat Keep-Alive** | 5-second heartbeats prevent NAT timeouts |
-| **End-to-End Encryption** | TLS 1.3 WebSocket connection |
-| **Global Edge Network** | Cloudflare routes to nearest data center |
-| **Session Pairing** | Unique token ensures only your client connects |
-
-### Security Notes
-
-- The pairing token is a cryptographically random 256-bit value
-- Tokens are single-use — generate a new one each session if desired
-- The relay only passes data between paired endpoints — no storage or logging
-- All traffic is encrypted via TLS 1.3
 
 ---
 
-## 🌐 Networking — UDP with Tailscale
+## Core Technology: Timing-Accurate CW Remoting
 
-> **Note:** This section is only needed if you're using **UDP transport** instead of Cloud Relay. If you're using Cloud Relay (recommended), skip to [Getting Started](#-getting-started).
+### The Problem
 
-### Why You Need This (for UDP Mode)
+At 25 WPM, a dit lasts 48ms. At 35 WPM, it's 34ms. Internet connections typically have 20-100ms of jitter. If you simply key a remote transmitter in real-time over the network, the code is destroyed.
 
-When your station PC and your operating PC are on different internet connections (different houses, different ISPs), they can't normally talk directly to each other via UDP. Home routers, cable modems, and firewalls all block incoming connections. This is a fundamental problem with the internet — it's not specific to RWK.
+### The Solution
 
-**Tailscale** solves this completely. It's a free program that creates a private encrypted tunnel between your computers, giving each one a simple `100.x.x.x` address that works no matter where they are — behind NAT, on cellular, on hotel WiFi, anything. It just works.
+RWK separates the **timing decision** from the **physical keying:**
 
-### Step 1: Create a Tailscale Account (Once)
+1. **At the Client:** The paddle input is polled at 1ms intervals on a dedicated high-priority thread. Contact transitions are timestamped with Windows QPC (QueryPerformanceCounter) — sub-microsecond resolution. The soft keyer engine (running on its own `THREAD_PRIORITY_HIGHEST` thread) generates precisely-timed edge events: key-down at time T₁, key-up at time T₂, etc.
 
-1. Go to [https://tailscale.com/](https://tailscale.com/)
-2. Click **Get Started** — it's free for personal use (up to 100 devices)
-3. Sign in with your Google, Microsoft, or GitHub account
-4. That's it — no credit card, no trial period
+2. **Over the Network:** Edge events are packed into compact UDP datagrams (RWK-PADDLE frames) carrying sequence numbers and relative timestamps. True UDP datagrams travel over the WireGuard mesh — datagram boundaries are preserved end-to-end, which is critical for the jitter buffer.
 
-### Step 2: Install Tailscale on Your Station PC (Remote)
+3. **At the Station:** A `THREAD_PRIORITY_TIME_CRITICAL` replay thread receives the datagrams, buffers them in an adaptive jitter buffer, and fires the keying output at the correct relative times. An anchor system resets after idle periods (>2 seconds) so accumulated drift never builds up.
 
-1. Go to [https://tailscale.com/download/windows](https://tailscale.com/download/windows)
-2. Download and run the installer
-3. When it finishes, a Tailscale icon appears in your system tray (bottom-right near the clock)
-4. Click the icon and sign in with the same account you created in Step 1
-5. After signing in, the icon turns blue — you're connected
-6. **Note the IP address** — hover over the tray icon or right-click → "My IP" — it will be something like `100.64.x.x`
+The result: **timing accuracy within ±2ms at 35 WPM over sustained 5-minute sessions**, verified by automated integration tests with real serial port loopback.
 
-### Step 3: Install Tailscale on Your Operating PC (Local/Home)
+### Fail-Safe Protection
 
-1. Same process — download from [https://tailscale.com/download/windows](https://tailscale.com/download/windows)
-2. Install, sign in with the **same account**
-3. Both machines are now on your private Tailscale network
+The Station implements 10 independent fail-safe conditions (F1-F10) that guarantee the key is never stuck down:
 
-### Step 4: Test the Connection
+- **F1:** No heartbeat for 750ms while key is down → force key up
+- **F2:** No heartbeat for 3 seconds while idle → close session, latch SAFE
+- **F3:** Continuous key-down for 10 seconds → force key up (protects against TUNE)
+- **F6:** Serial port error → latch SAFE
+- **F9:** Tailscale path lost → force key up
 
-On your local PC, open a Command Prompt and type:
-```
-ping 100.64.x.x
-```
-(use the IP from your station PC in Step 2)
+A latched SAFE condition requires deliberate operator action (Re-Arm button or remote ARM) to resume keying.
 
-You should see replies. If so, everything is working.
-
-### Step 5: Use the Tailscale IP in RWKClient
-
-In the RWKClient app, enter the station PC's Tailscale IP (e.g., `100.64.0.2`) as the **WKR Server IP**. That's all the configuration needed.
-
-### That's It!
-
-Tailscale handles everything else automatically:
-- ✅ Works through any NAT or firewall
-- ✅ Works on different ISPs (cable, fiber, cellular, Starlink)
-- ✅ Encrypted end-to-end (WireGuard)
-- ✅ Starts automatically with Windows
-- ✅ Reconnects automatically if internet drops
-- ✅ Adds only 1-3ms of latency (negligible for CW)
-- ✅ Free for personal use
-
-### Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| Can't ping the other machine | Make sure both are signed in to Tailscale (icon should be blue/connected) |
-| Tailscale connected but RWK doesn't work | Check that port 7388 isn't blocked by Windows Firewall — add an exception for WKRServer.exe |
-| High latency (>100ms) | Tailscale is relaying through a server instead of going direct. This is rare but can happen. Try restarting Tailscale on both machines. |
-| Forgot the IP | Right-click the Tailscale tray icon → "My IP addresses" or visit [https://login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines) |
 ---
 
-## 🚀 Getting Started
+## Private VPN: Tailscale Networking
+
+### Why Tailscale
+
+RWK uses [Tailscale](https://tailscale.com) because it solves the networking problem completely:
+
+- **No port forwarding** — works behind any NAT, CGNAT, or firewall
+- **No public IP needed** — both ends can be on residential connections
+- **WireGuard encryption** — all traffic is encrypted end-to-end
+- **Direct connections** — peers connect directly when possible (typical latency: 1-5ms on same ISP)
+- **DERP fallback** — when direct connection isn't possible, traffic relays through Tailscale's servers (adds 20-50ms but still works)
+- **Always free** for personal use (up to 100 devices on a free plan — more than enough)
+
+### The Go Sidecar
+
+RWK embeds a Tailscale node using the `tsnet` library in a Go-based sidecar process (`rwk-tailscale-sidecar.exe`). This runs in **userspace** — no system Tailscale install, no TUN adapter, no administrator privileges. The sidecar:
+
+- Joins the tailnet using an OAuth key (one-time browser login)
+- Provides true UDP datagram transport for edge data
+- Handles TCP and UDP port forwarding over the mesh
+- Reports path type (Direct vs DERP), RTT, and connection health
+- Exits automatically if the parent process dies (stdin EOF detection)
+
+### Direct Mode vs DERP
+
+When both the Client and Station are on the same ISP or can reach each other directly, Tailscale establishes a **direct WireGuard tunnel** with latency typically under 5ms. This is the ideal case for CW.
+
+When direct connection isn't possible (double-NAT, symmetric NAT, restrictive firewalls), traffic is relayed through Tailscale's DERP (Designated Encrypted Relay for Packets) servers. This adds 20-50ms of latency but the jitter buffer compensates automatically — the adaptive algorithm widens its buffer window when it detects DERP-class jitter.
+
+The status bar shows the current path type and RTT so you always know your connection quality.
+
+---
+
+## Station Pairing Key
+
+Each Station generates a unique 8-character pairing key on first run. This key is the shared secret used for HMAC-SHA256 challenge/response authentication when a Client connects.
+
+**Setup flow:**
+1. Station operator: **RWK menu → Show Pairing Key** → copies the key (e.g., `K7XP3NWD`)
+2. Gives the key to the Client operator (phone, email, etc.)
+3. Client operator: clicks **Set Key** → pastes the key
+4. Client clicks **Connect** → HMAC handshake authenticates the session
+
+This allows one Client to connect to different Stations (home, contest site, portable) by entering the appropriate pairing key. Each Station has its own unique key.
+
+---
+
+## Client Inputs
+
+### Paddle Input (Serial Port)
+
+Connect a CW paddle directly to a serial port (or USB-to-serial adapter). The pin mapping follows the standard used by many amateur radio interfaces:
+
+```
+DB-9 Serial Connector          Paddle
+─────────────────────          ──────
+Pin 8  (CTS) ◄──────────────── Dit contact
+Pin 6  (DSR) ◄──────────────── Dah contact
+Pin 1  (DCD) ◄──────────────── Straight key (optional)
+Pin 4  (DTR) ──────────────────► +5V (paddle voltage source)
+Pin 5  (GND) ◄──────────────── Common / Ground
+```
+
+The poller asserts DTR as the voltage source for the paddle contacts. When a contact closes, the corresponding modem status pin goes active. Software debounce (default 5ms, configurable) prevents false triggers.
+
+### Logger App Input (WK2 Protocol)
+
+RWK emulates a K1EL WinKeyer2 on a serial port at 1200 baud, 8-N-2. Any logging software that supports WinKeyer can send CW through RWK:
+
+- **N1MM+** — select RWK's port as the WinKeyer port
+- **DXLog** — same configuration
+- **WriteLog, Win-Test, Logger32** — any logger with WK2 support
+
+The protocol handling is complete: Admin Open/Close, buffered text, speed changes, character echo, status reporting — all per the WK2 specification.
+
+### Hardware WinKeyer Input
+
+If you have a physical K1EL WinKeyer2 or WinKeyer3, RWK can drive it as a host. Select "Hardware WinKey" mode in the Input Ports panel, and RWK sends commands to the chip (speed, text) while reading status and character echoes back.
+
+### Using Virtual Serial Ports (VSPE or com0com)
+
+If your logging software and RWK are on the same PC, you need a virtual serial port pair (back-to-back ports). Tools like **VSPE** or **com0com** create paired virtual ports (e.g., COM10 ↔ COM11):
+
+1. Install [com0com](https://sourceforge.net/projects/com0com/) or [VSPE](https://www.eterlogic.com/Products.VSPE.html)
+2. Create a port pair (e.g., COM10 ↔ COM11)
+3. In your logger, set COM10 as the WinKeyer port
+4. In RWK Client, select COM11 as the WinKeyer port
+5. Select "Logger App" mode
+
+Your logger thinks it's talking to a real WinKeyer. RWK receives the commands and generates edges.
+
+---
+
+## Keying Output (Station Side)
+
+The Station keys the radio via a serial port control line (DTR or RTS). Many radios accept direct DTR/RTS keying on their serial/USB port:
+
+- **Elecraft K3/K4** — DTR keying via the serial CAT port
+- **Icom** — CI-V CW keying or external key jack
+- **Yaesu** — DTR on the CAT port (some models)
+
+For radios that only accept a key jack closure, a simple transistor switch on the DTR/RTS line provides the interface:
+
+```
+Serial DTR/RTS ──── 1kΩ ──── Base
+                              │
+                           2N2222
+                              │
+Radio Key Jack ────────── Collector
+Radio Key GND  ────────── Emitter
+```
+
+**Polarity note:** Configure the polarity so that a **dropped control line = key up.** This ensures the fail-safe (which de-asserts all lines on error/exit) produces key-up rather than a stuck transmitter.
+
+---
+
+## Installation & Configuration
 
 ### Prerequisites
 
-- Windows x64 (both machines)
-- A serial port or USB-to-serial adapter at the remote station (for keying)
-- A K1EL WinKeyer at your local QTH (optional — keyboard-only mode works without one)
-- For **Cloud Relay**: Internet connection on both machines (no other setup needed)
-- For **UDP**: [Tailscale](https://tailscale.com/) or any other way to route UDP between the machines
+- Windows 10 or 11, 64-bit
+- A free [Tailscale](https://tailscale.com) account
 
-### Installation
+### Step 1: Create a Tailscale Account
 
-No installer needed. Download the EXEs from the [Releases](https://github.com/w1ve/rwk/releases) page or build from source:
+> **Important:** Create a **new Google account** (or any supported OAuth provider) specifically for your RWK network. Do not use an account that already has a Tailscale network — you want a fresh, dedicated tailnet so you can always access the Tailscale admin page without conflicts.
 
-- **Remote station:** Run `WKRServer.exe`
-- **Local QTH:** Run `WKRClient.exe`
+1. Go to [https://login.tailscale.com](https://login.tailscale.com)
+2. Sign up with your new account
+3. The personal Tailscale plan is **always free** (up to 100 devices)
 
-### Quick Setup — Cloud Relay (Easiest)
+### Step 2: Install RWK
 
-**At the remote station (RWKServer):**
-1. Select the Keying Port (COM port connected to your radio keying circuit)
-2. Choose DTR or RTS
-3. Set **Transport** to **Cloud Relay**
-4. Click **Generate Token** — copy the 64-character token
-5. Send the token to yourself (email, text, etc.)
-6. Click **Start**
+Run `RWK-Setup.exe`. Choose which components to install:
 
-**At your local QTH (RWKClient):**
-1. Select your WinKeyer's COM port
-2. Set **Transport** to **Cloud Relay**
-3. Paste the **Pairing Token**
-4. Click **Start**
-5. Status shows "✓ Paired" — you're connected!
+- **Client** — install at your operating position
+- **Station** — install at the remote radio site
+- **Both** — if you're setting up on one machine for testing
 
-### Quick Setup — UDP Mode
+The installer places everything in `%LOCALAPPDATA%\RWK Router Keyer\` — no administrator rights required. All three files (Client, Station, sidecar) must be in the same directory.
 
-**At the remote station (RWKServer):**
-1. Select the Keying Port (COM port connected to your radio keying circuit)
-2. Choose DTR or RTS
-3. Optionally select a Local WinKey Control Port for N1MM
-4. Set **Transport** to **UDP**
-5. Set the UDP listen port (default 7388)
-6. Click **Start**
+### Step 3: First Run — Station
 
-**At your local QTH (RWKClient):**
-1. Select your WinKeyer's COM port
-2. Set **Transport** to **UDP**
-3. Enter the RWKServer's IP address and port
-4. Click **Start**
-5. Key with your paddle — or switch to the Send Text tab and type
+1. Launch **RWK Station**
+2. On first run, it will open a browser window for Tailscale login
+3. Log in with your dedicated Tailscale account
+4. The Station joins the tailnet and shows its Tailscale IP (e.g., `100.64.x.x`)
+5. Note the IP address (or copy it with the Copy button)
+6. Go to **RWK menu → Show Pairing Key** — note the 8-character key
+
+### Step 4: First Run — Client
+
+1. Launch **RWK Client**
+2. Log in to Tailscale with the **same account** used for the Station
+3. Once connected, enter the Station's Tailscale IP in "Station Address"
+4. Click **Set Key** and enter the Station's pairing key
+5. Click **Connect** — you should see "Session active"
+
+### Step 5: Configure Keying Output (Station)
+
+1. In the Station app, select the COM port connected to your radio
+2. Choose the key line (DTR or RTS) — match your radio's wiring
+3. Set polarity inversion if needed (remember: dropped line = key up)
+4. The Station should show "ARMED" in green
+
+### Step 6: Configure Client Input
+
+1. Select your paddle's COM port in the "Paddle" dropdown
+2. OR select your WinKeyer/Logger COM port in the "WinKeyer" dropdown
+3. Choose "Logger App" or "Hardware WinKey" mode as appropriate
+4. Test with the **WinKeyer Loopback Test** button (plays sidetone without keying the transmitter)
+
+### Step 7: Port Forwarding (Optional)
+
+To tunnel other traffic (CAT control, audio, RRC):
+
+1. In the Client's Port Forwards grid, click **+ Add**
+2. Set the protocol (TCP or UDP), Client port, Station port
+3. Set the **Station Target** address (the IP of the device on the Station's LAN)
+4. Click the "On" checkbox to enable
 
 ---
 
-## 🔨 Building from Source
+## Tailscale Administration
+
+- **RWK menu → Go to Tailscale Admin Page** opens [login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines)
+- **RWK menu → Delete Tailscale Authorization** removes the stored credentials (forces re-login on next start)
+- The **Station Armed** checkbox on the Client controls whether CW is sent to the transmitter
+
+---
+
+## Building from Source
 
 ```bash
-# Clone
-git clone https://github.com/w1ve/rwk.git
-cd rwk
-
-# Build
+# .NET apps
 dotnet build RWK.sln -c Release
 
-# Run tests
-dotnet test RWK.sln
+# Go sidecar
+cd src/RWK.TailscaleSidecar
+go build -o rwk-tailscale-sidecar.exe .
 
-# Publish single-file EXEs
-dotnet publish src/WinKeyerEmulator.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
-dotnet publish src/WKRClient -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
-```
-
-Output:
-```
-src/WinKeyerEmulator.App/bin/Release/net9.0-windows/win-x64/publish/WKRServer.exe
-src/WKRClient/bin/Release/net9.0-windows/win-x64/publish/WKRClient.exe
+# Installer (requires Inno Setup 6)
+iscc build/installer/rwk-setup.iss
 ```
 
 ---
 
-## 📋 Project Structure
+## License
 
-```
-rwk/
-├── src/
-│   ├── WinKeyerEmulator.Core/     # Protocol engine, timing, abstractions (no UI)
-│   │   ├── CloudRelay/            # WebSocket relay transport
-│   │   │   ├── CloudRelayTransport.cs  # WebSocket client with reconnect/heartbeat
-│   │   │   ├── WireProtocol.cs         # Binary frame serialization
-│   │   │   └── TokenGenerator.cs       # Pairing token generation
-│   │   ├── Protocol/              # WinKeyer protocol state machine
-│   │   ├── Timing/                # High-precision Morse timing engine
-│   │   └── IO/                    # Keying output abstractions
-│   ├── WinKeyerEmulator.App/      # WKRServer — WinForms app
-│   └── WKRClient/                 # WKRClient — WinForms app
-├── tests/
-│   ├── WinKeyerEmulator.Core.Tests/        # Unit + property-based tests
-│   └── WinKeyerEmulator.Integration.Tests/ # UDP protocol tests
-├── binaries/                      # Pre-built executables
-└── RWK.sln
-```
+MIT License — Copyright (c) 2026 Gerry Hull, W1VE
+
+Free and open-source. Use it, modify it, share it.
 
 ---
 
-## ⚠️ Known Limitations
+## Acknowledgments
 
-- **Windows x64 only** — uses WinForms and Win32 P/Invoke
-- **Beta** — not all WinKeyer commands have full behavioral implementation (they are correctly parsed and consumed, but some like Weighting and Farnsworth are acknowledged without affecting timing)
-- **UDP is fire-and-forget** — a dropped packet means a missed character (acceptable trade-off for latency)
-- **Cloud Relay latency** — Typically 5-20ms with TCP_NODELAY optimization; UDP via Tailscale may still be faster for latency-critical applications
-- **`timeBeginPeriod(1)`** affects system-wide timer resolution while running
-- **Speed pot range** — WinKeyer speed pot is mapped to 5-50 WPM; changes are debounced to filter ADC noise
+- [Tailscale](https://tailscale.com) — for making private networking trivially easy
+- [K1EL Electronics](https://www.k1el.com) — for the WinKeyer protocol that loggers universally support
+- The amateur radio community — for decades of innovation in CW operating
 
 ---
 
-## 🔧 Technical Details
-
-### Cloud Relay Transport Architecture
-
-The Cloud Relay transport is designed for reliability and low latency:
-
-| Feature | Implementation |
-|---------|----------------|
-| **Non-blocking sends** | Single-writer send pump via `Channel<byte[]>` — callers never block, eliminates concurrent `SendAsync` issues |
-| **TCP_NODELAY** | Nagle's algorithm disabled via custom `ConnectCallback` — each small frame sends immediately without buffering |
-| **Exponential backoff** | Reconnects use `min(30s, 500ms × 2^attempt)` with 25% jitter to avoid thundering herd |
-| **Infinite retries** | Station side defaults to unlimited reconnect attempts for unattended operation |
-| **Dead peer detection** | Tracks last-receive timestamp; forces reconnect if no data for 3× heartbeat interval (15s default) |
-| **Message reassembly** | Properly accumulates WebSocket fragments until `EndOfMessage` before parsing |
-| **Sequence gap detection** | Logs dropped frame count when sequence numbers skip |
-
-### Paddle Keying Path — A Deliberate Design Choice
-
-Paddle keying is transported as **decoded characters**, not raw key edges:
-
-1. You key a character on your paddle
-2. Your local WinKeyer decodes it and generates sidetone (zero latency for you)
-3. WinKeyer echoes the decoded character byte (e.g., `'V'` = 0x56)
-4. RWKClient forwards this byte to RWKServer
-5. RWKServer re-encodes the character to Morse and keys the radio
-
-**Why this design?**
-- The remote signal has machine-perfect timing, regardless of network jitter
-- Your local sidetone matches what you keyed, hiding any transport delay
-- For contesting, this is arguably better than reproducing your fist
-
-**The trade-off:**
-- Minimum latency is bounded by WinKeyer's character decode time (a dah at 20 WPM takes ~180ms before the character even exists to echo)
-- True low-latency fist reproduction would require transporting raw paddle key-edge events — a much bigger architectural change
-
-### Buffering Delays
-
-| Stage | Delay | Purpose |
-|-------|-------|---------|
-| Client keyboard flush | 50ms | Batches rapid keystrokes so "CQ" goes as one packet |
-| Server text flush | 5ms | Minimal batching; TimingEngine enforces inter-char gaps anyway |
-| Paddle path | 0ms | Paddle characters bypass client batching entirely |
-
----
-
-## 📜 License
-
-Copyright © 2026 by Gerry Hull, W1VE
-
-This code is freely available to use and modify as you wish.
-
----
-
-## 🧪 Help Wanted — Testing with Different WinKeyer Versions
-
-This project has been developed and tested primarily with a **WinKeyer 3 (WK3) version 31** at the client side. The K1EL WinKeyer family spans multiple hardware generations and firmware versions, each with subtle protocol differences.
-
-### We Need Your Help!
-
-If you have any of the following hardware, we'd love your feedback:
-
-| Hardware | Firmware | Status |
-|----------|----------|--------|
-| WinKeyer 1 (WK1) | Any | **Untested** — please report! |
-| WinKeyer 2 (WK2) | Any | **Untested** — please report! |
-| WinKeyer 3 (WK3) | v23-v30 | **Untested** — please report! |
-| WinKeyer 3 (WK3) | v31 | ✅ Tested — working |
-| WinKeyer USB | Any | **Untested** — please report! |
-| WinKeyer Lite | Any | **Untested** — please report! |
-| WKUSB-SMT | Any | **Untested** — please report! |
-| K1EL Keyer Kits | Any | **Untested** — please report! |
-
-### How to Help
-
-1. **Try it out** — Download the binaries and test with your WinKeyer
-2. **Note your hardware** — WinKeyer model, firmware version (shown in RWKClient log on connect)
-3. **Report what works and what doesn't:**
-   - Does paddle keying work?
-   - Does the speed pot control local speed?
-   - Are speed changes forwarded to the server?
-   - Any unexpected behavior?
-
-### Known Compatibility Notes
-
-- **Paddle echo mode** (`0x0D 0x40`) — Required for forwarding paddle characters, but may interact differently with speed pot commands on some firmware versions
-- **Speed pot status bytes** — Format is `0x80 | pot_position`; debouncing filters ADC noise but behavior may vary
-- **WK2 vs WK3 mode** — The client currently uses WK3-style initialization
-
-### Report Issues
-
-Please open a [GitHub Issue](https://github.com/w1ve/rwk/issues) with:
-- Your WinKeyer model and firmware version
-- What worked / what didn't work
-- Any log output showing the problem
-
-Your testing helps make RWK work for everyone. Thanks! 🙏
-
----
-
-<p align="center"><i>73 de W1VE</i></p>
+*73 de W1VE*
