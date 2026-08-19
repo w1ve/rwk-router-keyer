@@ -1321,7 +1321,7 @@ public sealed class ClientController : IDisposable
             // Simple length-prefixed JSON message: 4-byte big-endian length + UTF-8 JSON body.
             // Message format: { "type": "forward_rules", "rules": [ { "port": N, "protocol": "tcp"|"udp", "targetAddress": "...", "enabled": bool }, ... ] }
             var ruleList = rules
-                .Select(r => new { port = r.StationPort, protocol = r.Protocol.ToString().ToLowerInvariant(), targetAddress = r.StationTargetAddress, enabled = r.Enabled, name = r.Name })
+                .Select(r => new { port = r.StationPort, clientPort = r.ClientPort, protocol = r.Protocol.ToString().ToLowerInvariant(), targetAddress = r.StationTargetAddress, enabled = r.Enabled, name = r.Name })
                 .ToArray();
 
             string json = System.Text.Json.JsonSerializer.Serialize(new

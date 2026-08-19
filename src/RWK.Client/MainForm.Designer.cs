@@ -542,6 +542,12 @@ partial class MainForm
         _forwardGrid.Dock = DockStyle.Fill;
         _forwardGrid.Name = "_forwardGrid";
         _forwardGrid.CellValueChanged += OnForwardGridCellValueChanged;
+        _forwardGrid.CurrentCellDirtyStateChanged += (s, _) =>
+        {
+            // Commit checkbox edits immediately so CellValueChanged fires on click.
+            if (_forwardGrid.IsCurrentCellDirty)
+                _forwardGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+        };
 
         _enabledColumn.HeaderText = "On";
         _enabledColumn.Name = "Enabled";

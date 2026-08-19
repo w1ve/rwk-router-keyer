@@ -887,6 +887,7 @@ public sealed class StationController : IDisposable
                 foreach (var ruleEl in rulesArray.EnumerateArray())
                 {
                     int port = ruleEl.GetProperty("port").GetInt32();
+                    int clientPort = ruleEl.TryGetProperty("clientPort", out var cpProp) ? cpProp.GetInt32() : port;
                     string protocol = ruleEl.GetProperty("protocol").GetString() ?? "tcp";
                     string targetAddress = ruleEl.TryGetProperty("targetAddress", out var taProp)
                         ? taProp.GetString() ?? "127.0.0.1"
@@ -896,7 +897,7 @@ public sealed class StationController : IDisposable
                         ? nmProp.GetString() ?? $"{protocol}:{port}"
                         : $"{protocol}:{port}";
 
-                    receivedRules.Add(new ForwardRuleInfo(port, protocol, targetAddress, name, enabled));
+                    receivedRules.Add(new ForwardRuleInfo(port, clientPort, protocol, targetAddress, name, enabled));
 
                     // Only register inbound forward for enabled rules.
                     if (enabled)
@@ -1016,7 +1017,7 @@ public sealed class StationController : IDisposable
 /// <summary>
 /// Info about a forward rule received from the Client, for UI display on the Station.
 /// </summary>
-public record ForwardRuleInfo(int Port, string Protocol, string TargetAddress, string Name = "", bool Enabled = false);
+public record ForwardRuleInfo(int Port, int ClientPort, string Protocol, string TargetAddress, string Name = "", bool Enabled = false);
 
 /// <summary>
 /// Controller lifecycle states.

@@ -817,7 +817,7 @@ public partial class MainForm : Form
             _forwardRulesGrid.Rows.Add(
                 rule.Name,
                 rule.Protocol.ToUpperInvariant(),
-                rule.Port,
+                rule.ClientPort,
                 rule.Port,
                 rule.Enabled,
                 rule.TargetAddress);
