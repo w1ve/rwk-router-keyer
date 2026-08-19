@@ -116,7 +116,7 @@ partial class MainForm
         {
             Text = "Re-Arm",
             Size = new Size(100, 32),
-            Location = new Point(12, 68),
+            Location = new Point(12, 86),
             Enabled = false,
             UseVisualStyleBackColor = true,
             Font = new Font("Segoe UI", 10F, FontStyle.Bold),
@@ -132,7 +132,7 @@ partial class MainForm
             Font = new Font("Segoe UI", 22F),
             ForeColor = SystemColors.GrayText,
             AutoSize = true,
-            Location = new Point(125, 64),
+            Location = new Point(125, 82),
             Name = "_keyIndicator"
         };
 
@@ -140,7 +140,7 @@ partial class MainForm
         {
             Text = "KEY",
             AutoSize = true,
-            Location = new Point(129, 100),
+            Location = new Point(130, 118),
             Font = new Font("Segoe UI", 8F),
             Name = "_keyIndicatorCaption"
         };
@@ -151,7 +151,7 @@ partial class MainForm
             Font = new Font("Segoe UI", 22F),
             ForeColor = SystemColors.GrayText,
             AutoSize = true,
-            Location = new Point(168, 64),
+            Location = new Point(168, 82),
             Name = "_pttIndicator"
         };
 
@@ -159,7 +159,7 @@ partial class MainForm
         {
             Text = "PTT",
             AutoSize = true,
-            Location = new Point(172, 100),
+            Location = new Point(173, 118),
             Font = new Font("Segoe UI", 8F),
             Name = "_pttIndicatorCaption"
         };
@@ -262,7 +262,7 @@ partial class MainForm
 
         _disconnectButton = new Button
         {
-            Text = "Disconnect",
+            Text = "Unpair",
             Location = new Point(10, 96),
             Size = new Size(100, 26),
             Enabled = false,

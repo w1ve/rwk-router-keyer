@@ -948,14 +948,14 @@ public partial class MainForm : Form
             await _controller.ConnectToStationAsync(address).ConfigureAwait(true);
 
             _pathLabel.Text = $"Session active to {address}";
-            _connectButton.Text = "Connected";
+            _connectButton.Text = "Paired";
         }
         catch (Exception ex)
         {
             string msg = ex.InnerException?.Message ?? ex.Message;
             _pathLabel.Text = $"Connect failed: {msg}";
             try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "client.log"), $"[{DateTime.Now:HH:mm:ss.fff}] CONNECT ERROR: {ex}\n"); } catch { }
-            _connectButton.Text = "Connect";
+            _connectButton.Text = "Pair";
             _connectButton.Enabled = true;
         }
     }

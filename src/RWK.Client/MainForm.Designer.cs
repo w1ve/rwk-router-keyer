@@ -742,7 +742,7 @@ partial class MainForm
 
         _connectButton = new Button
         {
-            Text = "Connect",
+            Text = "Pair",
             Location = new Point(315, 3),
             Size = new Size(75, 25),
             UseVisualStyleBackColor = true,
