@@ -793,9 +793,23 @@ partial class MainForm
         var rwkMenuItem = new ToolStripMenuItem("RWK");
         var aboutMenuItem = new ToolStripMenuItem("About RWK");
         aboutMenuItem.Click += (_, _) => { using var dlg = new AboutDialog(); dlg.ShowDialog(this); };
+        var deleteTsAuthMenuItem = new ToolStripMenuItem("Delete Tailscale Authorization...");
+        deleteTsAuthMenuItem.Click += OnDeleteTailscaleAuthClick;
+        var tsAdminMenuItem = new ToolStripMenuItem("Go to Tailscale Admin Page...");
+        tsAdminMenuItem.Click += (_, _) =>
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "https://login.tailscale.com/admin/machines",
+                UseShellExecute = true
+            });
+        };
         var exitMenuItem = new ToolStripMenuItem("Exit");
         exitMenuItem.Click += (_, _) => Close();
         rwkMenuItem.DropDownItems.Add(aboutMenuItem);
+        rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
+        rwkMenuItem.DropDownItems.Add(deleteTsAuthMenuItem);
+        rwkMenuItem.DropDownItems.Add(tsAdminMenuItem);
         rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
         rwkMenuItem.DropDownItems.Add(exitMenuItem);
         _mainMenu.Items.Add(rwkMenuItem);

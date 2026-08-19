@@ -884,6 +884,17 @@ public sealed class ClientController : IDisposable
     }
 
     /// <summary>
+    /// Clears the persisted Tailscale auth key from config.
+    /// Called when the user chooses to delete their authorization.
+    /// </summary>
+    public void ClearTailscaleAuth()
+    {
+        _config = _config with { Tailscale = _config.Tailscale with { AuthKey = null } };
+        _configStore.TrySave(_config);
+        _log?.Info("Tailscale authorization cleared from config.");
+    }
+
+    /// <summary>
     /// Initiates a control-channel connection to the Station at the given Tailscale address.
     /// Performs the HMAC challenge/response handshake (11.2-11.4).
     /// Persists the address in config for reconnection on next launch.

@@ -969,6 +969,52 @@ public partial class MainForm : Form
         _controller.SetStationArmed(_stationArmToggle.Checked);
     }
 
+    private void OnDeleteTailscaleAuthClick(object? sender, EventArgs e)
+    {
+        var result = MessageBox.Show(
+            "Do you really want to delete the Tailscale authorization?\n\n" +
+            "You will need to re-authenticate on the next connection.",
+            "Delete Tailscale Authorization",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+
+        if (result != DialogResult.Yes) return;
+
+        try
+        {
+            // Delete the persisted Tailscale state directory
+            string stateDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "RWK", "tailscale", "rwk-client");
+
+            if (Directory.Exists(stateDir))
+            {
+                Directory.Delete(stateDir, recursive: true);
+            }
+
+            // Clear the auth key from config
+            if (_controller is not null)
+            {
+                _controller.ClearTailscaleAuth();
+            }
+
+            MessageBox.Show(
+                "Tailscale authorization has been deleted.\n\n" +
+                "Restart the application to re-authenticate.",
+                "Authorization Deleted",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Failed to delete authorization: {ex.Message}",
+                "Error",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+    }
+
     private void OnWinKeyerPortChanged(object? sender, EventArgs e)
     {
         string? port = _winKeyerPortCombo.SelectedItem as string;
