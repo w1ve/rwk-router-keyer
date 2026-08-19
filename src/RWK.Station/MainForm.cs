@@ -418,6 +418,13 @@ public partial class MainForm : Form
         {
             _linkIndicatorStatus.Text = "● Link: Waiting for login";
             _linkIndicatorStatus.ForeColor = Color.Gold;
+
+            // Show the login panel proactively when NeedsAuth is detected,
+            // even if the auth URL hasn't arrived yet from the sidecar poll.
+            if (!_loginDismissed && !HasPersistedTailscaleState() && _loginPanel is null)
+            {
+                ShowLoginPanel(_pendingAuthUrl ?? "");
+            }
         }
     }
 
