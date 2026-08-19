@@ -1,5 +1,9 @@
 # RWK Router/Keyer
 
+<p align="center">
+  <img src="splash.png" alt="RWK Router/Keyer" width="600">
+</p>
+
 **Any Rig, Any Internet, Anytime.**
 
 Free, open-source CW remoting and port forwarding for amateur radio — hand-generated Morse code sent across any internet connection without timing distortion.
