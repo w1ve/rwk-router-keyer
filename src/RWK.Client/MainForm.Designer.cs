@@ -1,3 +1,12 @@
+/*
+ * Copyright (c) 2026 Gerry Hull, W1VE
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction privileges...
+ *
+ * SPDX-License-Identifier: MIT
+ */
 namespace RWK.Client;
 
 partial class MainForm
@@ -82,6 +91,7 @@ partial class MainForm
     private Label _flexPlaceholderLabel = null!;
 
     // === Layout containers ===
+    private MenuStrip _mainMenu = null!;
     private TabControl _tabControl = null!;
     private TabPage _mainTab = null!;
     private TabPage _logTab = null!;
@@ -777,6 +787,19 @@ partial class MainForm
         // MAIN FORM (13.1, 13.9) — wrapped in TabControl
         // ============================================================
 
+        // Main menu
+        _mainMenu = new MenuStrip();
+        _mainMenu.Name = "_mainMenu";
+        var rwkMenuItem = new ToolStripMenuItem("RWK");
+        var aboutMenuItem = new ToolStripMenuItem("About RWK");
+        aboutMenuItem.Click += (_, _) => { using var dlg = new AboutDialog(); dlg.ShowDialog(this); };
+        var exitMenuItem = new ToolStripMenuItem("Exit");
+        exitMenuItem.Click += (_, _) => Close();
+        rwkMenuItem.DropDownItems.Add(aboutMenuItem);
+        rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
+        rwkMenuItem.DropDownItems.Add(exitMenuItem);
+        _mainMenu.Items.Add(rwkMenuItem);
+
         // Tab Control wrapping the entire body
         _tabControl = new TabControl();
         _tabControl.Dock = DockStyle.Fill;
@@ -830,6 +853,8 @@ partial class MainForm
 
         Controls.Add(_tabControl);
         Controls.Add(_statusStrip);
+        Controls.Add(_mainMenu);
+        MainMenuStrip = _mainMenu;
 
         ResumeLayout(false);
         PerformLayout();

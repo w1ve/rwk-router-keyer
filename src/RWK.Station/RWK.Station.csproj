@@ -24,6 +24,7 @@
     <Copyright>Copyright © 2026 by Gerry Hull, W1VE</Copyright>
     <Company>W1VE</Company>
     <Product>RWK Station</Product>
+    <ApplicationIcon>..\..\rwk.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

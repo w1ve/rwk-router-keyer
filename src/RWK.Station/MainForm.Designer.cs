@@ -1,3 +1,12 @@
+/*
+ * Copyright (c) 2026 Gerry Hull, W1VE
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction privileges...
+ *
+ * SPDX-License-Identifier: MIT
+ */
 namespace RWK.Station;
 
 partial class MainForm
@@ -50,6 +59,9 @@ partial class MainForm
     // ─── FlexRadio discovery capture (13.16, 15.6, 15.7) ───
     private GroupBox _flexDiscoveryGroup = null!;
     private CheckBox _flexDiscoveryEnable = null!;
+
+    // ─── Menu ───
+    private MenuStrip _mainMenu = null!;
 
     // ─── Status strip (13.10) ───
     private StatusStrip _statusStrip = null!;
@@ -370,6 +382,21 @@ partial class MainForm
         Controls.Add(_flexDiscoveryGroup);
         Controls.Add(_forwardRulesGroup);
         Controls.Add(_statusStrip);
+
+        // Main menu
+        _mainMenu = new MenuStrip();
+        _mainMenu.Name = "_mainMenu";
+        var rwkMenuItem = new ToolStripMenuItem("RWK");
+        var aboutMenuItem = new ToolStripMenuItem("About RWK");
+        aboutMenuItem.Click += (_, _) => { using var dlg = new AboutDialog(); dlg.ShowDialog(this); };
+        var exitMenuItem = new ToolStripMenuItem("Exit");
+        exitMenuItem.Click += (_, _) => Close();
+        rwkMenuItem.DropDownItems.Add(aboutMenuItem);
+        rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
+        rwkMenuItem.DropDownItems.Add(exitMenuItem);
+        _mainMenu.Items.Add(rwkMenuItem);
+        Controls.Add(_mainMenu);
+        MainMenuStrip = _mainMenu;
 
         Name = "MainForm";
         StartPosition = FormStartPosition.CenterScreen;

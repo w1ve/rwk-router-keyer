@@ -1,3 +1,12 @@
+/*
+ * Copyright (c) 2026 Gerry Hull, W1VE
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction privileges...
+ *
+ * SPDX-License-Identifier: MIT
+ */
 // Command rwk-tailscale-sidecar embeds a userspace Tailscale node (tsnet) and
 // exposes it to the RWK .NET applications over loopback IPC.
 //

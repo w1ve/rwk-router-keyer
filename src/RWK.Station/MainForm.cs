@@ -1,3 +1,12 @@
+/*
+ * Copyright (c) 2026 Gerry Hull, W1VE
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction privileges...
+ *
+ * SPDX-License-Identifier: MIT
+ */
 using RWK.Shared;
 using RWK.Shared.Config;
 using RWK.Shared.Net;
@@ -19,6 +28,10 @@ public partial class MainForm : Form
     private static readonly Color ArmedGreen = Color.FromArgb(0, 128, 0);
     private static readonly Color SafeRed = Color.FromArgb(180, 0, 0);
 
+    /// <summary>Gets the application version string from the assembly.</summary>
+    internal static string AppVersion =>
+        typeof(MainForm).Assembly.GetName().Version?.ToString() ?? "1.0.0";
+
     private bool _isSafeLatched;
     private readonly ToolTip _toolTip;
     private StationController? _controller;
@@ -29,6 +42,7 @@ public partial class MainForm : Form
     public MainForm()
     {
         InitializeComponent();
+        Text = $"RWK Router/Keyer Station Version {AppVersion} — Any Rig, Any Internet, Anytime";
 
         _toolTip = new ToolTip { InitialDelay = 300, ReshowDelay = 200 };
 

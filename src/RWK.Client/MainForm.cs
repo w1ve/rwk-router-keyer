@@ -1,3 +1,12 @@
+/*
+ * Copyright (c) 2026 Gerry Hull, W1VE
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction privileges...
+ *
+ * SPDX-License-Identifier: MIT
+ */
 using System.IO.Ports;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
@@ -27,6 +36,10 @@ public partial class MainForm : Form
     private static readonly Color IndicatorOn = Color.FromArgb(0, 220, 0);
     private static readonly Color IndicatorOff = SystemColors.GrayText;
 
+    /// <summary>Gets the application version string from the assembly.</summary>
+    internal static string AppVersion =>
+        typeof(MainForm).Assembly.GetName().Version?.ToString() ?? "1.0.0";
+
     private ClientController? _controller;
     private readonly LogService _logService = new();
 
@@ -39,6 +52,7 @@ public partial class MainForm : Form
     public MainForm()
     {
         InitializeComponent();
+        Text = $"RWK Router/Keyer Client Version {AppVersion} — Any Rig, Any Internet, Anytime";
         PopulateDefaults();
         InitializeDeviceMonitoring();
         InitializeLogService();
