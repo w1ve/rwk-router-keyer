@@ -347,19 +347,21 @@ partial class MainForm
         _toneFreqSlider.Maximum = 1000;
         _toneFreqSlider.Value = 600;
         _toneFreqSlider.TickFrequency = 100;
-        _toneFreqSlider.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        _toneFreqSlider.Location = new Point(0, 2);
-        _toneFreqSlider.Size = new Size(120, 45);
+        _toneFreqSlider.Dock = DockStyle.Top;
+        _toneFreqSlider.Height = 30;
+        _toneFreqSlider.AutoSize = false;
         _toneFreqSlider.Name = "_toneFreqSlider";
         _toneFreqSlider.Scroll += OnToneFreqSliderScroll;
 
         _toneFreqValueLabel.Text = "600 Hz";
         _toneFreqValueLabel.AutoSize = true;
-        _toneFreqValueLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _toneFreqValueLabel.Location = new Point(124, 6);
+        _toneFreqValueLabel.Dock = DockStyle.Top;
+        _toneFreqValueLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _toneFreqValueLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
         _toneFreqValueLabel.Name = "_toneFreqValueLabel";
 
-        freqPanel.Controls.AddRange(new Control[] { _toneFreqSlider, _toneFreqValueLabel });
+        freqPanel.Controls.Add(_toneFreqValueLabel); // Added first so Dock=Top renders below slider
+        freqPanel.Controls.Add(_toneFreqSlider);
 
         // Volume row: label + panel containing slider + value label
         _toneLevelCaptionLabel.Text = "Volume:";
@@ -376,19 +378,21 @@ partial class MainForm
         _toneLevelSlider.Maximum = 100;
         _toneLevelSlider.Value = 70;
         _toneLevelSlider.TickFrequency = 10;
-        _toneLevelSlider.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        _toneLevelSlider.Location = new Point(0, 2);
-        _toneLevelSlider.Size = new Size(120, 45);
+        _toneLevelSlider.Dock = DockStyle.Top;
+        _toneLevelSlider.Height = 30;
+        _toneLevelSlider.AutoSize = false;
         _toneLevelSlider.Name = "_toneLevelSlider";
         _toneLevelSlider.Scroll += OnToneLevelSliderScroll;
 
         _toneLevelValueLabel.Text = "70%";
         _toneLevelValueLabel.AutoSize = true;
-        _toneLevelValueLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        _toneLevelValueLabel.Location = new Point(124, 6);
+        _toneLevelValueLabel.Dock = DockStyle.Top;
+        _toneLevelValueLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _toneLevelValueLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
         _toneLevelValueLabel.Name = "_toneLevelValueLabel";
 
-        levelPanel.Controls.AddRange(new Control[] { _toneLevelSlider, _toneLevelValueLabel });
+        levelPanel.Controls.Add(_toneLevelValueLabel);
+        levelPanel.Controls.Add(_toneLevelSlider);
 
         sidetoneInnerLayout.Controls.Add(_toneDeviceCaptionLabel, 0, 0);
         sidetoneInnerLayout.Controls.Add(_audioDeviceCombo, 1, 0);
