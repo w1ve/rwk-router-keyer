@@ -945,7 +945,9 @@ public sealed class ClientController : IDisposable
             int read = await _controlStream.ReadAsync(nonce.AsMemory(totalRead, 32 - totalRead))
                 .ConfigureAwait(false);
             if (read == 0)
-                throw new InvalidOperationException("Station closed connection before sending nonce.");
+                throw new InvalidOperationException(
+                    "Station closed connection before sending nonce. " +
+                    "Ensure the Station has completed Tailscale login and is showing 'ARMED'.");
             totalRead += read;
         }
 
@@ -1016,7 +1018,9 @@ public sealed class ClientController : IDisposable
         {
             _controlStream.Dispose();
             _controlStream = null;
-            throw new InvalidOperationException($"Station rejected connection: {response}");
+            throw new InvalidOperationException(
+                $"Station rejected connection: {response}. " +
+                "Check that the Station Key matches (RWK menu → Show Pairing Key on Station).");
         }
     }
 
