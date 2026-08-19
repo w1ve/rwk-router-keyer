@@ -935,6 +935,9 @@ public partial class MainForm : Form
             return;
         }
 
+        // Save the address immediately so reconnect attempts use the new value
+        _controller.SetStationAddress(address);
+
         try
         {
             _connectButton.Enabled = false;

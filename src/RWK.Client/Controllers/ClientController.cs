@@ -907,6 +907,17 @@ public sealed class ClientController : IDisposable
     }
 
     /// <summary>
+    /// Sets the Station address and persists it immediately. Called by the UI before
+    /// Connect so that reconnect attempts and restarts use the new address.
+    /// </summary>
+    public void SetStationAddress(string address)
+    {
+        _config = _config with { Tailscale = _config.Tailscale with { StationAddress = address } };
+        _lastStationAddress = address;
+        _configStore.TrySave(_config);
+    }
+
+    /// <summary>
     /// Initiates a control-channel connection to the Station at the given Tailscale address.
     /// Performs the HMAC challenge/response handshake (11.2-11.4).
     /// Persists the address in config for reconnection on next launch.
