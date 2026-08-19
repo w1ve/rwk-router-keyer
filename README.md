@@ -29,9 +29,26 @@ Commercial solutions exist (most notably in high-end radios like the FlexRadio 6
 
 ---
 
-## What You Can Remote
+## Two Independent Features
 
-RWK's port forwarding makes it easy to tunnel any TCP or UDP traffic between your operating position and your remote station:
+RWK provides **two features that work independently** over the same Tailscale network:
+
+### 1. Remote WinKeyer (CW Remoting)
+Sends hand-generated Morse code from a paddle or logger at your operating position to a radio at a remote station. **Requires pairing** (Station Key authentication) to establish the keying session. This is the timing-critical path with fail-safe protection.
+
+### 2. Port Forwarding (TCP/UDP Tunneling)
+Tunnels arbitrary TCP and UDP traffic between your operating position and the remote station's LAN. Used for CAT control, audio streaming, RemoteRig connections, etc. **Does not require pairing** — port forwards are configured on the Client and pushed to the Station when paired, but the actual TCP/UDP relay uses the Tailscale mesh directly.
+
+You can use either feature alone:
+- **CW only:** Pair the Client and Station for remote keying, no port forwards needed.
+- **Port forwards only:** Configure forwards on the Client for CAT/audio/RRC access without ever pairing for CW.
+- **Both together:** Pair for CW and add port forwards for full remote operation.
+
+---
+
+## What You Can Forward (TCP/UDP)
+
+RWK's port forwarding tunnels any TCP or UDP traffic between your operating position and your remote station:
 
 - **RemoteHams** audio/control connections
 - **Icom** IP-based radios (IC-705, IC-7610 remote head, IC-R8600)
@@ -175,17 +192,19 @@ The status bar shows the current path type and RTT so you always know your conne
 
 ---
 
-## Station Pairing Key
+## Station Pairing Key (CW Remote Keying Only)
 
-Each Station generates a unique 8-character pairing key on first run. This key is the shared secret used for HMAC-SHA256 challenge/response authentication when a Client connects.
+Each Station generates a unique 8-character pairing key on first run. This key is the shared secret used for HMAC-SHA256 challenge/response authentication when a Client **pairs** for CW remote keying.
+
+> **Note:** Pairing is only required for CW remote keying. Port forwarding works over the Tailscale mesh without pairing.
 
 **Setup flow:**
-1. Station operator: **RWK menu → Show Pairing Key** → copies the key (e.g., `K7XP3NWD`)
+1. Station operator: **File menu → Show Pairing Key** → copies the key (e.g., `K7XP3NWD`)
 2. Gives the key to the Client operator (phone, email, etc.)
 3. Client operator: clicks **Set Key** → pastes the key
-4. Client clicks **Connect** → HMAC handshake authenticates the session
+4. Client clicks **Pair** → HMAC handshake authenticates the keying session
 
-This allows one Client to connect to different Stations (home, contest site, portable) by entering the appropriate pairing key. Each Station has its own unique key.
+This allows one Client to pair with different Stations (home, contest site, portable) by entering the appropriate pairing key. Each Station has its own unique key. The Station can **Unpair** the Client at any time, which sends "AS UNPAIRED" in sidetone to the operator.
 
 ---
 
@@ -290,7 +309,7 @@ The installer places everything in `%LOCALAPPDATA%\RWK Router Keyer\` — no adm
 3. Log in with your dedicated Tailscale account
 4. The Station joins the tailnet and shows its Tailscale IP (e.g., `100.64.x.x`)
 5. Note the IP address (or copy it with the Copy button)
-6. Go to **RWK menu → Show Pairing Key** — note the 8-character key
+6. Go to **File menu → Show Pairing Key** — note the 8-character key (needed only for CW pairing)
 
 ### Step 4: First Run — Client
 
@@ -298,7 +317,7 @@ The installer places everything in `%LOCALAPPDATA%\RWK Router Keyer\` — no adm
 2. Log in to Tailscale with the **same account** used for the Station
 3. Once connected, enter the Station's Tailscale IP in "Station Address"
 4. Click **Set Key** and enter the Station's pairing key
-5. Click **Connect** — you should see "Session active"
+5. Click **Pair** — you should see "Paired" and "Session active"
 
 ### Step 5: Configure Keying Output (Station)
 
@@ -314,22 +333,28 @@ The installer places everything in `%LOCALAPPDATA%\RWK Router Keyer\` — no adm
 3. Choose "Logger App" or "Hardware WinKey" mode as appropriate
 4. Test with the **WinKeyer Loopback Test** button (plays sidetone without keying the transmitter)
 
-### Step 7: Port Forwarding (Optional)
+### Step 7: Port Forwarding (Optional — does not require pairing)
 
 To tunnel other traffic (CAT control, audio, RRC):
 
 1. In the Client's Port Forwards grid, click **+ Add**
-2. Set the protocol (TCP or UDP), Client port, Station port
-3. Set the **Station Target** address (the IP of the device on the Station's LAN)
-4. Click the "On" checkbox to enable
+2. Edit the rule: set Name, Protocol (TCP or UDP), Client port, Station port
+3. Set the **Bind Address** (127.0.0.1 for local apps, 0.0.0.0 for LAN devices)
+4. Set the **Station Target** address (the IP of the device on the Station's LAN, or 127.0.0.1 for apps running on the Station itself)
+5. Select the rule and click **Enable Sel** to start forwarding
+6. Status column shows "Listening" when ready, "Active" when traffic flows
+
+Port forwards are persisted and automatically re-created on restart. Use **Disable Sel** or **Disable All** to stop forwarding without removing the rule.
 
 ---
 
 ## Tailscale Administration
 
-- **RWK menu → Go to Tailscale Admin Page** opens [login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines)
-- **RWK menu → Delete Tailscale Authorization** removes the stored credentials (forces re-login on next start)
-- The **Station Armed** checkbox on the Client controls whether CW is sent to the transmitter
+- **File menu → Go to Tailscale Admin Page** opens [login.tailscale.com/admin/machines](https://login.tailscale.com/admin/machines)
+- **File menu → Delete Tailscale Authorization** removes the stored credentials (forces re-login on next start)
+- **File menu → Show Pairing Key** (Station only) displays the key for CW pairing
+- The **Station Armed** checkbox on the Client controls whether CW edges are sent to the transmitter
+- The **Unpair** button on the Station disconnects the current CW session
 
 ---
 
