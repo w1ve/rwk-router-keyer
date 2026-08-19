@@ -34,6 +34,8 @@ public class KeyerCore : IDisposable
         _protocol = new WinKeyerProtocol(logger);
         _protocol.TextReceived += OnTextReceived;
         _protocol.BufferCleared += OnBufferCleared;
+        _protocol.SpeedChanged += OnSpeedChanged;
+        _timingEngine.TimingDiagnostic += OnTimingDiagnostic;
         _flushTimer = new System.Threading.Timer(FlushBuffer, null, Timeout.Infinite, Timeout.Infinite);
     }
 
@@ -43,6 +45,16 @@ public class KeyerCore : IDisposable
     /// the appropriate ICommandSink.
     /// </summary>
     public event EventHandler<byte[]>? ResponseAvailable;
+
+    /// <summary>
+    /// Raised when the keying speed changes (from WinKeyer protocol command).
+    /// </summary>
+    public event EventHandler<int>? SpeedChanged;
+
+    /// <summary>
+    /// Raised for timing diagnostic information during keying.
+    /// </summary>
+    public event EventHandler<TimingDiagnosticEventArgs>? TimingDiagnostic;
 
     /// <summary>
     /// Gets the current protocol state for inspection and testing.
@@ -159,6 +171,22 @@ public class KeyerCore : IDisposable
         _timingEngine.AbortCurrent();
     }
 
+    /// <summary>
+    /// Handles speed changes from the protocol layer — forwards to UI.
+    /// </summary>
+    private void OnSpeedChanged(object? sender, int wpm)
+    {
+        SpeedChanged?.Invoke(this, wpm);
+    }
+
+    /// <summary>
+    /// Handles timing diagnostic events from the timing engine — forwards to UI.
+    /// </summary>
+    private void OnTimingDiagnostic(object? sender, TimingDiagnosticEventArgs e)
+    {
+        TimingDiagnostic?.Invoke(this, e);
+    }
+
     /// <inheritdoc/>
     public void Dispose()
     {
@@ -169,5 +197,7 @@ public class KeyerCore : IDisposable
         _flushTimer.Dispose();
         _protocol.TextReceived -= OnTextReceived;
         _protocol.BufferCleared -= OnBufferCleared;
+        _protocol.SpeedChanged -= OnSpeedChanged;
+        _timingEngine.TimingDiagnostic -= OnTimingDiagnostic;
     }
 }

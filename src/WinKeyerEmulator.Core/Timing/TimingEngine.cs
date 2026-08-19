@@ -1,8 +1,20 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime;
 using WinKeyerEmulator.Core.IO;
 
 namespace WinKeyerEmulator.Core.Timing;
+
+/// <summary>
+/// Diagnostic event arguments for timing measurements.
+/// </summary>
+public class TimingDiagnosticEventArgs : EventArgs
+{
+    public int ElementIndex { get; init; }
+    public double ExpectedMs { get; init; }
+    public double ActualMs { get; init; }
+    public bool IsDit { get; init; }
+}
 
 /// <summary>
 /// Manages a dedicated high-priority keying thread that dequeues precomputed
@@ -19,6 +31,7 @@ public class TimingEngine : IDisposable
     private bool _disposed;
     private long _lastEdgeTimestamp; // When the last schedule finished keying
     private volatile int _lastWpm;   // WPM of last message (for gap calculation) - volatile for cross-thread access
+    private volatile int _weight = 50; // CW weight (25-75, default 50)
 
     /// <summary>
     /// Optional callback invoked when the keying thread starts.
@@ -31,6 +44,21 @@ public class TimingEngine : IDisposable
     /// Use this for platform-specific cleanup like timeEndPeriod(1).
     /// </summary>
     public Action? OnThreadStop { get; set; }
+
+    /// <summary>
+    /// Event raised for each element with timing diagnostic information.
+    /// </summary>
+    public event EventHandler<TimingDiagnosticEventArgs>? TimingDiagnostic;
+
+    /// <summary>
+    /// Gets or sets the CW weight (25-75, default 50).
+    /// 50 = standard timing, higher = heavier (longer elements), lower = lighter (shorter elements).
+    /// </summary>
+    public int Weight
+    {
+        get => _weight;
+        set => _weight = Math.Clamp(value, 25, 75);
+    }
 
     /// <summary>
     /// Creates a new TimingEngine with the specified keying output and clock.
@@ -54,7 +82,7 @@ public class TimingEngine : IDisposable
         if (_scheduleQueue.IsAddingCompleted)
             return;
 
-        long[] schedule = EdgeScheduleBuilder.Build(text, wpm, _clock.Frequency);
+        long[] schedule = EdgeScheduleBuilder.Build(text, wpm, _clock.Frequency, _weight);
         if (schedule.Length > 0)
         {
             _lastWpm = wpm;
@@ -208,6 +236,8 @@ public class TimingEngine : IDisposable
             }
         }
 
+        long keyDownTimestamp = 0;
+        
         for (int i = 0; i < schedule.Length; i++)
         {
             if (_abortCurrent)
@@ -227,11 +257,34 @@ public class TimingEngine : IDisposable
 
             if (i % 2 == 0)
             {
+                // Key down - record when we actually toggled
                 _keyingOutput.KeyDown();
+                keyDownTimestamp = _clock.GetTimestamp();
             }
             else
             {
+                // Key up - measure actual duration
                 _keyingOutput.KeyUp();
+                long keyUpTimestamp = _clock.GetTimestamp();
+                
+                // Calculate timing info
+                long actualDuration = keyUpTimestamp - keyDownTimestamp;
+                double actualMs = actualDuration * 1000.0 / _clock.Frequency;
+                long expectedDuration = schedule[i] - schedule[i - 1];
+                double expectedMs = expectedDuration * 1000.0 / _clock.Frequency;
+                
+                // Determine if this was a dit (dit duration = 1200/wpm ms)
+                double ditMs = 1200.0 / _lastWpm;
+                bool isDit = expectedMs < ditMs * 2; // Dit is ~48ms at 25wpm, dah is ~144ms
+                
+                // Fire diagnostic event
+                TimingDiagnostic?.Invoke(this, new TimingDiagnosticEventArgs
+                {
+                    ElementIndex = i / 2,
+                    ExpectedMs = expectedMs,
+                    ActualMs = actualMs,
+                    IsDit = isDit
+                });
             }
         }
 

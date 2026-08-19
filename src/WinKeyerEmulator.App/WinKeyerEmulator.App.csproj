@@ -23,6 +23,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="System.IO.Ports" Version="9.*" />
     <PackageReference Include="System.Management" Version="9.*" />
   </ItemGroup>

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>RWK.Shared</RootNamespace>
+    <AssemblyName>RWK.Shared</AssemblyName>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+
+    <!-- Required by the [LibraryImport] source generator used in Interop/NativeMethods.cs;
+         no unsafe code is hand-written in this assembly. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Windows DPAPI for profile secrets (12.2, 12.3). Pinned: the on-disk format depends
+         on it. Called only behind an OperatingSystem.IsWindows() check, see SecretProtector. -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.4" />
+  </ItemGroup>
+
+</Project>

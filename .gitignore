@@ -3,6 +3,9 @@ bin/
 obj/
 publish/
 
+## Go sidecar build output
+src/RWK.TailscaleSidecar/rwk-tailscale-sidecar.exe
+
 ## IDE
 .vs/
 *.user
@@ -12,8 +15,10 @@ publish/
 .kiro/
 
 ## Build artifacts
+artifacts/
 *.log
 crash.log
+test-out.txt
 
 ## OS
 Thumbs.db

@@ -1,4 +1,5 @@
 using System.Net;
+using WinKeyerEmulator.App.Audio;
 using WinKeyerEmulator.App.IO;
 using WinKeyerEmulator.App.Services;
 using WinKeyerEmulator.Core;
@@ -16,6 +17,7 @@ public class AppController
     private readonly ILogger _logger;
 
     private SerialKeyingOutput? _keyingOutput;
+    private SidetoneKeyingOutput? _sidetoneKeyingOutput;
     private SerialCommandSource? _serialCommandSource;
     private UdpCommandSource? _udpCommandSource;
     private CloudRelayTransport? _relayTransport;
@@ -43,6 +45,16 @@ public class AppController
     public event EventHandler<RelayStatusEventArgs>? RelayStatusChanged;
 
     /// <summary>
+    /// Raised when the keying speed changes.
+    /// </summary>
+    public event EventHandler<int>? SpeedChanged;
+
+    /// <summary>
+    /// Raised for timing diagnostic information during keying.
+    /// </summary>
+    public event EventHandler<TimingDiagnosticEventArgs>? TimingDiagnostic;
+
+    /// <summary>
     /// Creates a new AppController with the specified logger.
     /// </summary>
     public AppController(ILogger logger)
@@ -67,7 +79,24 @@ public class AppController
             _keyingOutput.Open(config.KeyingPortName, config.KeyingLine);
             _logger.Log($"Keying port {config.KeyingPortName} opened ({config.KeyingLine})", LogSeverity.Info, "AppController");
 
-            // 2. Open command port (if configured)
+            // 2. Wrap with sidetone if enabled
+            _sidetoneKeyingOutput = new SidetoneKeyingOutput(_keyingOutput);
+            if (config.SidetoneEnabled)
+            {
+                try
+                {
+                    _sidetoneKeyingOutput.ConfigureSidetone(config.SidetoneDeviceId, config.SidetoneFrequency);
+                    _sidetoneKeyingOutput.SidetoneEnabled = true;
+                    _logger.Log($"Sidetone enabled at {config.SidetoneFrequency} Hz", LogSeverity.Info, "AppController");
+                }
+                catch (Exception ex)
+                {
+                    _logger.Log($"Failed to initialize sidetone: {ex.Message}", LogSeverity.Warning, "AppController");
+                    _sidetoneKeyingOutput.SidetoneEnabled = false;
+                }
+            }
+
+            // 3. Open command port (if configured)
             if (!string.IsNullOrEmpty(config.CommandPortName))
             {
                 _serialCommandSource = new SerialCommandSource();
@@ -76,7 +105,7 @@ public class AppController
                 _logger.Log($"Command port {config.CommandPortName} opened", LogSeverity.Info, "AppController");
             }
 
-            // 3. Start remote transport (UDP or Cloud Relay)
+            // 4. Start remote transport (UDP or Cloud Relay)
             if (config.Transport == TransportMode.CloudRelay)
             {
                 if (string.IsNullOrEmpty(config.PairingToken) || !TokenGenerator.IsValid(config.PairingToken))
@@ -103,19 +132,27 @@ public class AppController
                 _logger.Log($"UDP listener started on {config.UdpAddress}:{config.UdpPort}", LogSeverity.Info, "AppController");
             }
 
-            // 4. Create TimingEngine with keying output and StopwatchClock
+            // 5. Create TimingEngine with sidetone-wrapped keying output and StopwatchClock
             var clock = new StopwatchClock();
-            _timingEngine = new TimingEngine(_keyingOutput, clock);
+            _timingEngine = new TimingEngine(_sidetoneKeyingOutput, clock);
+            _timingEngine.Weight = config.Weight;
 
-            // 5. Hook up timeBeginPeriod/timeEndPeriod
+            // 6. Hook up timeBeginPeriod/timeEndPeriod
             _timingEngine.OnThreadStart = () => NativeMethods.TimeBeginPeriod(1);
             _timingEngine.OnThreadStop = () => NativeMethods.TimeEndPeriod(1);
 
-            // 6. Create KeyerCore
-            _keyerCore = new KeyerCore(_keyingOutput, _timingEngine, _logger);
-            _keyerCore.ResponseAvailable += OnAsyncResponse;
+            if (config.Weight != 50)
+            {
+                _logger.Log($"CW weight set to {config.Weight}%", LogSeverity.Info, "AppController");
+            }
 
-            // 7. Wire DataReceived events
+            // 7. Create KeyerCore
+            _keyerCore = new KeyerCore(_sidetoneKeyingOutput, _timingEngine, _logger);
+            _keyerCore.ResponseAvailable += OnAsyncResponse;
+            _keyerCore.SpeedChanged += OnSpeedChanged;
+            _keyerCore.TimingDiagnostic += OnTimingDiagnostic;
+
+            // 8. Wire DataReceived events
             if (_serialCommandSource is not null)
             {
                 _serialCommandSource.DataReceived += OnCommandReceived_Serial;
@@ -125,10 +162,10 @@ public class AppController
                 _udpCommandSource.DataReceived += OnCommandReceived_Udp;
             }
 
-            // 8. Start TimingEngine
+            // 9. Start TimingEngine
             _timingEngine.Start();
 
-            // 9. Try to disable USB selective suspend (best effort)
+            // 10. Try to disable USB selective suspend (best effort)
             UsbPowerManager.TryDisableSelectiveSuspend(config.KeyingPortName, _logger);
 
             IsRunning = true;
@@ -190,6 +227,8 @@ public class AppController
             if (_keyerCore is not null)
             {
                 _keyerCore.ResponseAvailable -= OnAsyncResponse;
+                _keyerCore.SpeedChanged -= OnSpeedChanged;
+                _keyerCore.TimingDiagnostic -= OnTimingDiagnostic;
                 _keyerCore.Dispose();
                 _keyerCore = null;
             }
@@ -242,7 +281,18 @@ public class AppController
         }
         catch { }
 
-        // 7. Close keying output
+        // 7. Close sidetone wrapper (also disposes sidetone audio)
+        try
+        {
+            if (_sidetoneKeyingOutput is not null)
+            {
+                _sidetoneKeyingOutput.Dispose();
+                _sidetoneKeyingOutput = null;
+            }
+        }
+        catch { }
+
+        // 8. Close keying output
         try
         {
             if (_keyingOutput is not null)
@@ -311,6 +361,16 @@ public class AppController
     private void OnRelayError(object? sender, string message)
     {
         _logger.Log($"Relay error: {message}", LogSeverity.Warning, "CloudRelay");
+    }
+
+    private void OnSpeedChanged(object? sender, int wpm)
+    {
+        SpeedChanged?.Invoke(this, wpm);
+    }
+
+    private void OnTimingDiagnostic(object? sender, TimingDiagnosticEventArgs e)
+    {
+        TimingDiagnostic?.Invoke(this, e);
     }
 
     private static string FormatHex(byte[] data)

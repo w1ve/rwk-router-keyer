@@ -1,3 +1,4 @@
+using WinKeyerEmulator.App.Audio;
 using WinKeyerEmulator.App.Controllers;
 using WinKeyerEmulator.App.Logging;
 using WinKeyerEmulator.App.Services;
@@ -5,6 +6,7 @@ using WinKeyerEmulator.App.Settings;
 using WinKeyerEmulator.Core;
 using WinKeyerEmulator.Core.CloudRelay;
 using WinKeyerEmulator.Core.IO;
+using WinKeyerEmulator.Core.Timing;
 
 namespace WinKeyerEmulator.App;
 
@@ -25,6 +27,8 @@ public partial class MainForm : Form
         _appController = new AppController(_logger);
         _appController.Stopped += OnAppControllerStopped;
         _appController.RelayStatusChanged += OnRelayStatusChanged;
+        _appController.SpeedChanged += OnSpeedChanged;
+        _appController.TimingDiagnostic += OnTimingDiagnostic;
 
         // Set up port monitor
         _portMonitor = new PortMonitor();
@@ -33,12 +37,36 @@ public partial class MainForm : Form
         // Populate initial port lists
         RefreshPortLists();
 
+        // Populate audio devices
+        RefreshAudioDevices();
+
         // Load and apply saved settings
         var settings = AppSettings.Load();
         ApplySettings(settings);
 
         // Start monitoring for port changes
         _portMonitor.Start();
+    }
+
+    private void RefreshAudioDevices()
+    {
+        cboAudioDevice.Items.Clear();
+        var devices = SidetoneOutput.GetOutputDevices();
+        foreach (var device in devices)
+        {
+            cboAudioDevice.Items.Add(device);
+        }
+        if (cboAudioDevice.Items.Count > 0)
+        {
+            cboAudioDevice.SelectedIndex = 0;
+        }
+    }
+
+    private void ChkSidetone_CheckedChanged(object? sender, EventArgs e)
+    {
+        bool enabled = chkSidetone.Checked;
+        cboAudioDevice.Enabled = enabled;
+        nudSidetoneFreq.Enabled = enabled;
     }
 
     private void BtnStart_Click(object? sender, EventArgs e)
@@ -73,6 +101,10 @@ public partial class MainForm : Form
             UdpAddress = txtUdpAddress.Text.Trim(),
             UdpPort = (int)nudUdpPort.Value,
             PairingToken = txtPairingToken.Text.Trim(),
+            SidetoneEnabled = chkSidetone.Checked,
+            SidetoneDeviceId = (cboAudioDevice.SelectedItem as AudioDeviceInfo)?.Id,
+            SidetoneFrequency = (int)nudSidetoneFreq.Value,
+            Weight = (int)nudWeight.Value,
         };
 
         try
@@ -96,6 +128,7 @@ public partial class MainForm : Form
             _logger?.Log("Stop completed", LogSeverity.Info, "UI");
             SetRunningState(false);
             lblRelayStatus.Text = "";
+            lblCurrentSpeed.Text = "Speed: -- WPM";
         }
         catch (Exception ex)
         {
@@ -176,6 +209,38 @@ public partial class MainForm : Form
                 RelayStatus.Error => System.Drawing.Color.Red,
                 _ => System.Drawing.Color.Gray,
             };
+        }
+        catch { }
+    }
+
+    private void OnSpeedChanged(object? sender, int wpm)
+    {
+        try
+        {
+            if (IsDisposed || Disposing) return;
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(() => OnSpeedChanged(sender, wpm));
+                return;
+            }
+
+            lblCurrentSpeed.Text = $"Speed: {wpm} WPM";
+        }
+        catch { }
+    }
+
+    private void OnTimingDiagnostic(object? sender, TimingDiagnosticEventArgs e)
+    {
+        try
+        {
+            if (IsDisposed || Disposing) return;
+
+            string element = e.IsDit ? "DIT" : "DAH";
+            double delta = e.ActualMs - e.ExpectedMs;
+            string sign = delta >= 0 ? "+" : "";
+            _logger?.Log($"[Timing] {element}: expected={e.ExpectedMs:F1}ms, actual={e.ActualMs:F1}ms ({sign}{delta:F1}ms)", 
+                         LogSeverity.Info, "Timing");
         }
         catch { }
     }
@@ -290,6 +355,12 @@ public partial class MainForm : Form
         txtPairingToken.Enabled = !running;
         btnGenerateToken.Enabled = !running;
         btnCopyToken.Enabled = !running && !string.IsNullOrWhiteSpace(txtPairingToken.Text);
+        
+        // Sidetone controls
+        chkSidetone.Enabled = !running;
+        cboAudioDevice.Enabled = !running && chkSidetone.Checked;
+        nudSidetoneFreq.Enabled = !running && chkSidetone.Checked;
+        nudWeight.Enabled = !running;
     }
 
     private string? GetSelectedCommandPort()
@@ -318,6 +389,30 @@ public partial class MainForm : Form
         txtPairingToken.Text = settings.PairingToken ?? "";
         chkLogRawData.Checked = settings.LogRawData;
 
+        // Sidetone settings
+        chkSidetone.Checked = settings.SidetoneEnabled;
+        nudSidetoneFreq.Value = Math.Clamp(settings.SidetoneFrequency, 300, 1500);
+        
+        // Select saved audio device
+        if (!string.IsNullOrEmpty(settings.SidetoneDeviceId))
+        {
+            for (int i = 0; i < cboAudioDevice.Items.Count; i++)
+            {
+                if (cboAudioDevice.Items[i] is AudioDeviceInfo info && info.Id == settings.SidetoneDeviceId)
+                {
+                    cboAudioDevice.SelectedIndex = i;
+                    break;
+                }
+            }
+        }
+        
+        // Update sidetone control enabled state
+        cboAudioDevice.Enabled = chkSidetone.Checked;
+        nudSidetoneFreq.Enabled = chkSidetone.Checked;
+        
+        // Weight
+        nudWeight.Value = Math.Clamp(settings.Weight, 25, 75);
+
         UpdateTransportUI();
     }
 
@@ -332,7 +427,11 @@ public partial class MainForm : Form
             UdpAddress = txtUdpAddress.Text.Trim(),
             UdpPort = (int)nudUdpPort.Value,
             PairingToken = txtPairingToken.Text.Trim(),
-            LogRawData = chkLogRawData.Checked
+            LogRawData = chkLogRawData.Checked,
+            SidetoneEnabled = chkSidetone.Checked,
+            SidetoneDeviceId = (cboAudioDevice.SelectedItem as AudioDeviceInfo)?.Id,
+            SidetoneFrequency = (int)nudSidetoneFreq.Value,
+            Weight = (int)nudWeight.Value,
         };
     }
 
@@ -347,6 +446,8 @@ public partial class MainForm : Form
 
         _appController.Stopped -= OnAppControllerStopped;
         _appController.RelayStatusChanged -= OnRelayStatusChanged;
+        _appController.SpeedChanged -= OnSpeedChanged;
+        _appController.TimingDiagnostic -= OnTimingDiagnostic;
         _portMonitor.PortsChanged -= OnPortsChanged;
         _portMonitor.Dispose();
 

@@ -62,4 +62,29 @@ public class AppConfig
     /// The 64-character hex pairing token for the cloud relay.
     /// </summary>
     public string? PairingToken { get; init; }
+
+    // --- Sidetone settings ---
+
+    /// <summary>
+    /// Whether sidetone audio is enabled.
+    /// </summary>
+    public bool SidetoneEnabled { get; init; }
+
+    /// <summary>
+    /// The audio device ID for sidetone output. Null or empty for default device.
+    /// </summary>
+    public string? SidetoneDeviceId { get; init; }
+
+    /// <summary>
+    /// The sidetone frequency in Hz (300-1500).
+    /// </summary>
+    public int SidetoneFrequency { get; init; } = 700;
+
+    // --- CW Timing settings ---
+
+    /// <summary>
+    /// CW weight percentage (25-75, default 50).
+    /// 50 = standard timing, higher = heavier (longer elements), lower = lighter.
+    /// </summary>
+    public int Weight { get; init; } = 50;
 }

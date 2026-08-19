@@ -65,6 +65,12 @@ public class WinKeyerProtocol
     public event EventHandler<bool>? KeyImmediate;
 
     /// <summary>
+    /// Raised when the keying speed changes.
+    /// The int is the new WPM value.
+    /// </summary>
+    public event EventHandler<int>? SpeedChanged;
+
+    /// <summary>
     /// Gets the current protocol state for inspection.
     /// </summary>
     public ProtocolState State => _state;
@@ -490,6 +496,7 @@ public class WinKeyerProtocol
 
         _state.CurrentWpm = wpm;
         _logger.Log($"Speed set to {wpm} WPM", LogSeverity.Info, "Protocol");
+        SpeedChanged?.Invoke(this, wpm);
         return null;
     }
 

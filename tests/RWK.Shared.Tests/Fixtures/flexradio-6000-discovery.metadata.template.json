@@ -1,0 +1,82 @@
+// Template for flexradio-6000-discovery.metadata.json (requirement 15.20, task 27.1).
+//
+// Copy this file to "flexradio-6000-discovery.metadata.json" alongside the captured
+// "flexradio-6000-discovery.bin" and replace EVERY null. A null means "not yet filled in";
+// the presence test treats any remaining null as a missing capture.
+//
+// See README.md in this directory for how to take the capture and where each value is read
+// from. Comments and trailing commas are tolerated by the reader, so keep the notes.
+{
+  "schemaVersion": 1,
+
+  // Name of the binary fixture this metadata describes. Fixed; do not change.
+  "fixtureFile": "flexradio-6000-discovery.bin",
+
+  // --- Observed on the wire -------------------------------------------------------------
+  // UDP destination port of the captured broadcast. This is the port the Station listener
+  // binds and the port SmartSDR listens on. [VERIFY] in DiscoveryListenerConfig.ListenPort
+  // and DiscoveryEmitterConfig.BroadcastPort until this is recorded.
+  "observedBroadcastPort": null,
+
+  // Length of the datagram BODY in bytes. Must equal the byte length of the .bin file.
+  // Equals the Wireshark UDP "Length" field minus the 8-byte UDP header.
+  "datagramLengthBytes": null,
+
+  // The radio's address on the Station LAN, as seen in the IP source field. This same value
+  // appears somewhere inside the payload; that correspondence locates the address field.
+  "sourceAddress": null,
+
+  // The radio's UDP source port.
+  "sourcePort": null,
+
+  // The broadcast destination address observed, e.g. "255.255.255.255" or the
+  // subnet-directed broadcast such as "192.168.1.255".
+  "destinationAddress": null,
+
+  // --- Provenance ------------------------------------------------------------------------
+  // Radio model as printed on the radio / shown by SmartSDR, e.g. "FLEX-6400".
+  "radioModel": null,
+
+  // Radio serial number.
+  "radioSerial": null,
+
+  // SmartSDR / radio firmware version the capture came from, e.g. "3.4.19". A later
+  // revision may add payload fields; the codec must preserve bytes it does not interpret.
+  "firmwareVersion": null,
+
+  // Capture date/time, ISO-8601 UTC, e.g. "2025-03-14T18:22:05Z".
+  "capturedUtc": null,
+
+  // Tool used, e.g. "Wireshark 4.2.2 (Export Packet Bytes on the UDP Data node)".
+  "captureTool": null,
+
+  // Who took the capture — callsign or name, so a follow-up question has an addressee.
+  "capturedBy": null,
+
+  // --- Expected parse results ------------------------------------------------------------
+  // What IDiscoveryPayloadCodec.TryParse must return for this payload. Task 27.3 asserts
+  // against these. Read them off the radio and SmartSDR independently; filling them in from
+  // the codec's own output would make the test tautological.
+  "expectedParse": {
+    // DiscoveredRadio.Serial — the stable identity key (15.16). Normally equals radioSerial.
+    "serial": null,
+
+    // DiscoveredRadio.Model — as advertised inside the payload. May be formatted differently
+    // from radioModel above; record what the payload actually carries.
+    "model": null,
+
+    // DiscoveredRadio.StationAddress — the address advertised INSIDE the payload. Normally
+    // equals sourceAddress; if it differs, say so in "notes", because that difference
+    // matters to the rewrite.
+    "stationAddress": null,
+
+    // DiscoveredRadio.StationCommandPort — the command port advertised inside the payload.
+    // NOT the same as observedBroadcastPort, which is the transport destination port of the
+    // broadcast itself. These are different numbers.
+    "stationCommandPort": null
+  },
+
+  // Anything a future reader needs: several radios present, unusual subnet, fields that
+  // varied between repeats, a checksum that could not be identified, and so on.
+  "notes": ""
+}

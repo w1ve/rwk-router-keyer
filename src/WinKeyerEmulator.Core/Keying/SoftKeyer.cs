@@ -234,6 +234,7 @@ public sealed class SoftKeyer : IDisposable
             }
 
             // Clear the memory for the element we're about to send
+            // (memory is for capturing taps during element generation, not for auto-repeat)
             if (element == '.')
                 _ditMemory = false;
             else
@@ -263,52 +264,68 @@ public sealed class SoftKeyer : IDisposable
     /// </summary>
     private char DetermineNextElement()
     {
-        bool dit = _ditPressed || _ditMemory;
-        bool dah = _dahPressed || _dahMemory;
+        // Check both current paddle state AND memory
+        // Memory captures "paddle was tapped during previous element"
+        // Current state captures "paddle is still held down"
+        bool ditWanted = _ditPressed || _ditMemory;
+        bool dahWanted = _dahPressed || _dahMemory;
 
-        if (!dit && !dah)
+        if (!ditWanted && !dahWanted)
             return '\0';
 
         switch (_mode)
         {
             case SoftKeyerMode.IambicB:
-            case SoftKeyerMode.IambicA:
-                // Iambic: alternate when both pressed, otherwise send what's pressed
-                if (dit && dah)
+                // Iambic B: alternate when both pressed/wanted, otherwise send what's wanted
+                // Memory persists through the inter-element gap for squeeze
+                if (ditWanted && dahWanted)
                 {
                     // Alternate: if last was dit, send dah, and vice versa
                     return _lastElement == '.' ? '-' : '.';
                 }
-                return dit ? '.' : '-';
+                return ditWanted ? '.' : '-';
+
+            case SoftKeyerMode.IambicA:
+                // Iambic A: only alternate if BOTH are CURRENTLY pressed (not just memory)
+                // If one is released, stop alternating after current element
+                if (_ditPressed && _dahPressed)
+                {
+                    return _lastElement == '.' ? '-' : '.';
+                }
+                // If only one paddle is held/wanted, send that
+                if (ditWanted && !dahWanted) return '.';
+                if (dahWanted && !ditWanted) return '-';
+                // Both wanted but only one pressed - use the one that's pressed
+                if (_ditPressed) return '.';
+                if (_dahPressed) return '-';
+                return '\0';
 
             case SoftKeyerMode.Ultimatic:
-                // Ultimatic: most recently pressed paddle wins
-                if (dit && dah)
+                // Ultimatic: most recently pressed paddle wins and repeats
+                if (ditWanted && dahWanted)
                 {
-                    // In ultimatic, we track which was pressed last via memory
-                    // If both held from start, dit wins
+                    // Most recent press wins - check memory (set on press transition)
                     if (_ditMemory && !_dahMemory) return '.';
                     if (_dahMemory && !_ditMemory) return '-';
-                    return _lastElement == '.' ? '.' : '-'; // Continue last
+                    // Both memory or neither - continue last element
+                    return _lastElement != '\0' ? _lastElement : '.';
                 }
-                return dit ? '.' : '-';
+                return ditWanted ? '.' : '-';
 
             case SoftKeyerMode.Bug:
-                // Bug: dit paddle auto-repeats, dah is manual (one dah per press)
-                if (dit)
+                // Bug: dit paddle auto-repeats while held, dah is single-shot per press
+                if (_ditPressed)
                     return '.';
-                if (dah)
+                if (_dahMemory)
                 {
-                    // Only send dah if memory set (was just pressed)
-                    if (_dahMemory)
-                        return '-';
-                    // If held but no memory, they already got their dah
-                    return '\0';
+                    // Single dah per press - clear memory immediately
+                    _dahMemory = false;
+                    return '-';
                 }
                 return '\0';
 
             default:
-                return dit ? '.' : '-';
+                return ditWanted ? '.' : '-';
         }
     }
 

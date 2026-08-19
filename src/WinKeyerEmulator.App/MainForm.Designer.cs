@@ -29,10 +29,20 @@ partial class MainForm
     private Button btnCopyToken;
     private Label lblRelayStatus;
 
+    // Sidetone controls
+    private CheckBox chkSidetone;
+    private Label lblAudioDevice;
+    private ComboBox cboAudioDevice;
+    private Label lblSidetoneFreq;
+    private NumericUpDown nudSidetoneFreq;
+    private Label lblWeight;
+    private NumericUpDown nudWeight;
+
     // Middle controls
     private Button btnStart;
     private Button btnStop;
     private CheckBox chkLogRawData;
+    private Label lblCurrentSpeed;
 
     // Bottom log
     private TextBox txtLog;
@@ -65,13 +75,23 @@ partial class MainForm
         this.btnGenerateToken = new Button();
         this.btnCopyToken = new Button();
         this.lblRelayStatus = new Label();
+        this.chkSidetone = new CheckBox();
+        this.lblAudioDevice = new Label();
+        this.cboAudioDevice = new ComboBox();
+        this.lblSidetoneFreq = new Label();
+        this.nudSidetoneFreq = new NumericUpDown();
+        this.lblWeight = new Label();
+        this.nudWeight = new NumericUpDown();
         this.btnStart = new Button();
         this.btnStop = new Button();
         this.chkLogRawData = new CheckBox();
+        this.lblCurrentSpeed = new Label();
         this.txtLog = new TextBox();
 
         this.SuspendLayout();
         ((System.ComponentModel.ISupportInitialize)this.nudUdpPort).BeginInit();
+        ((System.ComponentModel.ISupportInitialize)this.nudSidetoneFreq).BeginInit();
+        ((System.ComponentModel.ISupportInitialize)this.nudWeight).BeginInit();
 
         // lblKeyingPort
         this.lblKeyingPort.AutoSize = true;
@@ -172,14 +192,58 @@ partial class MainForm
         this.lblRelayStatus.Text = "";
         this.lblRelayStatus.ForeColor = System.Drawing.Color.Gray;
 
+        // chkSidetone
+        this.chkSidetone.AutoSize = true;
+        this.chkSidetone.Location = new Point(12, 160);
+        this.chkSidetone.Text = "Sidetone";
+        this.chkSidetone.CheckedChanged += new EventHandler(this.ChkSidetone_CheckedChanged);
+
+        // lblAudioDevice
+        this.lblAudioDevice.AutoSize = true;
+        this.lblAudioDevice.Location = new Point(90, 161);
+        this.lblAudioDevice.Text = "Audio:";
+
+        // cboAudioDevice
+        this.cboAudioDevice.DropDownStyle = ComboBoxStyle.DropDownList;
+        this.cboAudioDevice.Location = new Point(130, 157);
+        this.cboAudioDevice.Size = new Size(200, 23);
+        this.cboAudioDevice.Enabled = false;
+
+        // lblSidetoneFreq
+        this.lblSidetoneFreq.AutoSize = true;
+        this.lblSidetoneFreq.Location = new Point(340, 161);
+        this.lblSidetoneFreq.Text = "Freq:";
+
+        // nudSidetoneFreq
+        this.nudSidetoneFreq.Location = new Point(375, 157);
+        this.nudSidetoneFreq.Size = new Size(60, 23);
+        this.nudSidetoneFreq.Minimum = 300;
+        this.nudSidetoneFreq.Maximum = 1500;
+        this.nudSidetoneFreq.Value = 700;
+        this.nudSidetoneFreq.Increment = 50;
+        this.nudSidetoneFreq.Enabled = false;
+
+        // lblWeight
+        this.lblWeight.AutoSize = true;
+        this.lblWeight.Location = new Point(445, 161);
+        this.lblWeight.Text = "Weight:";
+
+        // nudWeight
+        this.nudWeight.Location = new Point(495, 157);
+        this.nudWeight.Size = new Size(50, 23);
+        this.nudWeight.Minimum = 25;
+        this.nudWeight.Maximum = 75;
+        this.nudWeight.Value = 50;
+        this.nudWeight.Increment = 5;
+
         // btnStart
-        this.btnStart.Location = new Point(12, 160);
+        this.btnStart.Location = new Point(12, 195);
         this.btnStart.Size = new Size(100, 30);
         this.btnStart.Text = "Start";
         this.btnStart.Click += new EventHandler(this.BtnStart_Click);
 
         // btnStop
-        this.btnStop.Location = new Point(12, 160);
+        this.btnStop.Location = new Point(12, 195);
         this.btnStop.Size = new Size(100, 30);
         this.btnStop.Text = "Stop";
         this.btnStop.Visible = false;
@@ -187,17 +251,24 @@ partial class MainForm
 
         // chkLogRawData
         this.chkLogRawData.AutoSize = true;
-        this.chkLogRawData.Location = new Point(130, 167);
+        this.chkLogRawData.Location = new Point(130, 202);
         this.chkLogRawData.Text = "Log raw data";
         this.chkLogRawData.CheckedChanged += new EventHandler(this.ChkLogRawData_CheckedChanged);
 
+        // lblCurrentSpeed
+        this.lblCurrentSpeed.AutoSize = true;
+        this.lblCurrentSpeed.Location = new Point(260, 202);
+        this.lblCurrentSpeed.Text = "Speed: -- WPM";
+        this.lblCurrentSpeed.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        this.lblCurrentSpeed.ForeColor = System.Drawing.Color.DarkBlue;
+
         // txtLog
-        this.txtLog.Location = new Point(12, 200);
+        this.txtLog.Location = new Point(12, 235);
         this.txtLog.Multiline = true;
         this.txtLog.ReadOnly = true;
         this.txtLog.ScrollBars = ScrollBars.Vertical;
         this.txtLog.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        this.txtLog.Size = new Size(560, 230);
+        this.txtLog.Size = new Size(560, 195);
         this.txtLog.Font = new Font("Consolas", 9F);
 
         // MainForm
@@ -221,9 +292,17 @@ partial class MainForm
         this.Controls.Add(this.btnGenerateToken);
         this.Controls.Add(this.btnCopyToken);
         this.Controls.Add(this.lblRelayStatus);
+        this.Controls.Add(this.chkSidetone);
+        this.Controls.Add(this.lblAudioDevice);
+        this.Controls.Add(this.cboAudioDevice);
+        this.Controls.Add(this.lblSidetoneFreq);
+        this.Controls.Add(this.nudSidetoneFreq);
+        this.Controls.Add(this.lblWeight);
+        this.Controls.Add(this.nudWeight);
         this.Controls.Add(this.btnStart);
         this.Controls.Add(this.btnStop);
         this.Controls.Add(this.chkLogRawData);
+        this.Controls.Add(this.lblCurrentSpeed);
         this.Controls.Add(this.txtLog);
         this.MinimumSize = new Size(500, 400);
         this.Name = "MainForm";
@@ -231,6 +310,8 @@ partial class MainForm
         this.StartPosition = FormStartPosition.CenterScreen;
 
         ((System.ComponentModel.ISupportInitialize)this.nudUdpPort).EndInit();
+        ((System.ComponentModel.ISupportInitialize)this.nudSidetoneFreq).EndInit();
+        ((System.ComponentModel.ISupportInitialize)this.nudWeight).EndInit();
         this.ResumeLayout(false);
         this.PerformLayout();
     }

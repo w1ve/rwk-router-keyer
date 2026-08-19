@@ -13,6 +13,14 @@ public class AppSettings
     public string RelayUrl { get; set; } = "wss://wrs.w1ve.com/ws";
     public string? PairingToken { get; set; }
     public bool LogRawData { get; set; }
+    
+    // Sidetone settings
+    public bool SidetoneEnabled { get; set; }
+    public string? SidetoneDeviceId { get; set; }
+    public int SidetoneFrequency { get; set; } = 700;
+    
+    // CW Timing settings
+    public int Weight { get; set; } = 50;
 
     private static string SettingsPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),

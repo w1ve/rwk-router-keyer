@@ -306,10 +306,10 @@ git clone https://github.com/w1ve/rwk.git
 cd rwk
 
 # Build
-dotnet build WinKeyerEmulator.sln -c Release
+dotnet build RWK.sln -c Release
 
 # Run tests
-dotnet test WinKeyerEmulator.sln
+dotnet test RWK.sln
 
 # Publish single-file EXEs
 dotnet publish src/WinKeyerEmulator.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
@@ -343,7 +343,7 @@ rwk/
 │   ├── WinKeyerEmulator.Core.Tests/        # Unit + property-based tests
 │   └── WinKeyerEmulator.Integration.Tests/ # UDP protocol tests
 ├── binaries/                      # Pre-built executables
-└── WinKeyerEmulator.sln
+└── RWK.sln
 ```
 
 ---

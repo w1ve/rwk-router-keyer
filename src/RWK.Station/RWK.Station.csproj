@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>RWK.Station</RootNamespace>
+    <AssemblyName>RWKStation</AssemblyName>
+
+    <!-- Single-file self-contained publish (13.9 deployment story: one .exe, no runtime install).
+         Mirrors the v1 WKRServer publish shape. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+
+    <Version>2.0.0</Version>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <FileVersion>2.0.0.0</FileVersion>
+    <Copyright>Copyright © 2026 by Gerry Hull, W1VE</Copyright>
+    <Company>W1VE</Company>
+    <Product>RWK Station</Product>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Allow test projects to access internal members for deterministic unit testing. -->
+    <InternalsVisibleTo Include="RWK.Station.Tests" />
+    <InternalsVisibleTo Include="RWK.Integration.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Serial port access for the keying output (8.1-8.7).
+         No NAudio: the Station has no sidetone, audio is Client-only. -->
+    <PackageReference Include="System.IO.Ports" Version="9.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RWK.Shared\RWK.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

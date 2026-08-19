@@ -1,0 +1,9 @@
+# Built sidecar binary. Produced by `go build -o rwk-tailscale-sidecar.exe .`
+# and copied next to the .NET host executables at publish time.
+rwk-tailscale-sidecar
+rwk-tailscale-sidecar.exe
+
+# Go build and test artifacts
+*.test
+*.test.exe
+*.out
