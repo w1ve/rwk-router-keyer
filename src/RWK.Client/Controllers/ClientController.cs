@@ -557,13 +557,15 @@ public sealed class ClientController : IDisposable
         _portForwardManager.SetRuleEnabled(ruleId, enabled);
 
         // Persist
-        _config = _config with
+        var existing = _config.ForwardRules.FirstOrDefault(r => r.Id == ruleId);
+        if (existing is not null)
         {
-            ForwardRules = _config.ForwardRules.Replace(
-                _config.ForwardRules.First(r => r.Id == ruleId),
-                _config.ForwardRules.First(r => r.Id == ruleId) with { Enabled = enabled })
-        };
-        _configStore.TrySave(_config);
+            _config = _config with
+            {
+                ForwardRules = _config.ForwardRules.Replace(existing, existing with { Enabled = enabled })
+            };
+            _configStore.TrySave(_config);
+        }
 
         // Push to Station if connected
         if (_sessionActive)

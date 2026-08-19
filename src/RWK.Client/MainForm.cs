@@ -42,6 +42,7 @@ public partial class MainForm : Form
 
     private ClientController? _controller;
     private readonly LogService _logService = new();
+    private bool _suppressGridEvents;
 
     // Device monitoring
     private System.Windows.Forms.Timer? _portPollTimer;
@@ -166,9 +167,11 @@ public partial class MainForm : Form
             _logService.Info($"Add forward rule failed: {ex.Message}");
         }
 
-        // Add to UI grid (unchecked = OFF)
+        // Add to UI grid (unchecked = OFF) — suppress events during add
+        _suppressGridEvents = true;
         _forwardGrid.Rows.Add(false, rule.Name, "TCP", rule.ClientPort, rule.StationPort, rule.BindAddress, rule.StationTargetAddress, "Idle");
         _forwardGrid.Rows[_forwardGrid.Rows.Count - 1].Tag = rule.Id;
+        _suppressGridEvents = false;
         EvaluateBindWarning();
     }
 
@@ -195,7 +198,7 @@ public partial class MainForm : Form
 
     private void OnForwardGridCellValueChanged(object? sender, DataGridViewCellEventArgs e)
     {
-        if (e.RowIndex < 0 || _controller is null) return;
+        if (e.RowIndex < 0 || _controller is null || _suppressGridEvents) return;
 
         var row = _forwardGrid.Rows[e.RowIndex];
         var ruleId = row.Tag as Guid?;
@@ -266,19 +269,27 @@ public partial class MainForm : Form
     {
         if (_controller is null) return;
 
-        _forwardGrid.Rows.Clear();
-        foreach (var rule in _controller.Config.ForwardRules)
+        _suppressGridEvents = true;
+        try
         {
-            _forwardGrid.Rows.Add(
-                rule.Enabled,
-                rule.Name,
-                rule.Protocol.ToString().ToUpperInvariant(),
-                rule.ClientPort,
-                rule.StationPort,
-                rule.BindAddress,
-                rule.StationTargetAddress,
-                "Idle");
-            _forwardGrid.Rows[_forwardGrid.Rows.Count - 1].Tag = rule.Id;
+            _forwardGrid.Rows.Clear();
+            foreach (var rule in _controller.Config.ForwardRules)
+            {
+                _forwardGrid.Rows.Add(
+                    rule.Enabled,
+                    rule.Name,
+                    rule.Protocol.ToString().ToUpperInvariant(),
+                    rule.ClientPort,
+                    rule.StationPort,
+                    rule.BindAddress,
+                    rule.StationTargetAddress,
+                    "Idle");
+                _forwardGrid.Rows[_forwardGrid.Rows.Count - 1].Tag = rule.Id;
+            }
+        }
+        finally
+        {
+            _suppressGridEvents = false;
         }
     }
 
