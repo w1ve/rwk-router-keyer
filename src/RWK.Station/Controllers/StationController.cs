@@ -12,12 +12,14 @@ using System.Text;
 using System.Text.Json;
 using RWK.Shared;
 using RWK.Shared.Config;
+using RWK.Shared.Discovery;
 using RWK.Shared.IO;
 using RWK.Shared.Net;
 using RWK.Shared.Protocol.Edge;
 using RWK.Shared.Timing;
 using RWK.Station.IO;
 using RWK.Station.Net;
+using RWK.Station.Discovery;
 using RWK.Station.Replay;
 
 namespace RWK.Station.Controllers;
@@ -89,6 +91,7 @@ public sealed class StationController : IDisposable
     private SessionManager? _sessionManager;
     private PortForwardManager? _portForwardManager;
     private SidecarFailureHandler? _sidecarFailureHandler;
+    private StationDiscoveryListener? _discoveryListener;
 
     // ──────────────────────────────────────────────────────────────────────────────
     //  Events (for UI binding)
@@ -469,6 +472,65 @@ public sealed class StationController : IDisposable
     public void DisconnectSession()
     {
         _sessionManager?.DisconnectSession();
+    }
+
+    /// <summary>
+    /// Starts the FlexRadio discovery listener on the Station's LAN.
+    /// </summary>
+    public void StartDiscoveryCapture()
+    {
+        if (_discoveryListener is not null) return;
+
+        _discoveryListener = new StationDiscoveryListener(
+            new FlexVitaDiscoveryCodec(),
+            _diagnostics);
+        _discoveryListener.DiscoveryCaptured += OnDiscoveryCaptured;
+        _discoveryListener.Start();
+        _diagnostics?.Invoke("FlexRadio discovery capture started.");
+    }
+
+    /// <summary>
+    /// Stops the FlexRadio discovery listener.
+    /// </summary>
+    public void StopDiscoveryCapture()
+    {
+        _discoveryListener?.Stop();
+        _discoveryListener?.Dispose();
+        _discoveryListener = null;
+        _diagnostics?.Invoke("FlexRadio discovery capture stopped.");
+    }
+
+    private void OnDiscoveryCaptured(object? sender, DiscoveryCapturedEventArgs e)
+    {
+        // Forward the raw payload to the Client over the control channel
+        _ = SendDiscoveryAnnounceAsync(e.RawPayload.ToArray());
+    }
+
+    private async Task SendDiscoveryAnnounceAsync(byte[] payload)
+    {
+        var stream = _sessionManager?.CurrentControlStream;
+        if (stream is null) return;
+
+        try
+        {
+            // Format: 4-byte big-endian length + JSON wrapper with base64 payload
+            string json = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "discovery_announce",
+                payload = Convert.ToBase64String(payload)
+            });
+
+            byte[] body = Encoding.UTF8.GetBytes(json);
+            byte[] lengthPrefix = BitConverter.GetBytes(System.Net.IPAddress.HostToNetworkOrder(body.Length));
+
+            await stream.WriteAsync(lengthPrefix).ConfigureAwait(false);
+            await stream.WriteAsync(body).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // Session may have closed — ignore
+        }
     }
 
     /// <summary>

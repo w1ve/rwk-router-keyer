@@ -11,9 +11,11 @@ using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using RWK.Client.Audio;
+using RWK.Client.Discovery;
 using RWK.Client.IO;
 using RWK.Shared;
 using RWK.Shared.Config;
+using RWK.Shared.Discovery;
 using RWK.Shared.IO;
 using RWK.Shared.Keying;
 using RWK.Shared.Net;
@@ -96,6 +98,7 @@ public sealed class ClientController : IDisposable
     private volatile bool _loopbackTestActive;
     private volatile bool _stationArmed = true;
     private TailscaleState _lastLoggedTailscaleState;
+    private ClientDiscoveryEmitter? _discoveryEmitter;
 
     /// <summary>
     /// Creates a ClientController with all its owned components.
@@ -1273,21 +1276,39 @@ public sealed class ClientController : IDisposable
     {
         try
         {
-            byte[] buf = new byte[1];
             while (_sessionActive && _controlStream is not null)
             {
-                int read = await _controlStream.ReadAsync(buf).ConfigureAwait(false);
-                if (read == 0)
+                // Read length prefix (4 bytes big-endian)
+                byte[] lengthBuf = new byte[4];
+                int read = 0;
+                while (read < 4)
                 {
-                    // EOF — Station closed the connection (unpaired us).
-                    break;
+                    int n = await _controlStream.ReadAsync(lengthBuf.AsMemory(read, 4 - read)).ConfigureAwait(false);
+                    if (n == 0) goto eof; // EOF — Station closed the connection
+                    read += n;
                 }
-                // Any unexpected data is ignored — the control channel is write-only from Client side.
+
+                int bodyLength = System.Net.IPAddress.NetworkToHostOrder(BitConverter.ToInt32(lengthBuf, 0));
+                if (bodyLength <= 0 || bodyLength > 256 * 1024)
+                    goto eof; // Invalid — treat as disconnect
+
+                byte[] body = new byte[bodyLength];
+                read = 0;
+                while (read < bodyLength)
+                {
+                    int n = await _controlStream.ReadAsync(body.AsMemory(read, bodyLength - read)).ConfigureAwait(false);
+                    if (n == 0) goto eof;
+                    read += n;
+                }
+
+                // Process the message from Station
+                ProcessStationMessage(System.Text.Encoding.UTF8.GetString(body));
             }
         }
         catch (IOException) { }
         catch (ObjectDisposedException) { }
 
+        eof:
         // Only handle if we were still in an active session.
         if (!_sessionActive) return;
 
@@ -1342,6 +1363,68 @@ public sealed class ClientController : IDisposable
         catch (Exception ex)
         {
             LogDebug($"Failed to push forward rules: {ex.Message}");
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    //  FlexRadio Discovery
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Enables or disables the FlexRadio discovery re-emission on the Client.
+    /// When enabled, discovery announcements from the Station are rewritten and broadcast
+    /// on the Client's local network.
+    /// </summary>
+    public void SetDiscoveryEmitEnabled(bool enabled)
+    {
+        if (enabled && _discoveryEmitter is null)
+        {
+            _discoveryEmitter = new ClientDiscoveryEmitter(
+                new FlexVitaDiscoveryCodec(),
+                log: msg => _log?.Info(msg));
+        }
+
+        if (_discoveryEmitter is not null)
+            _discoveryEmitter.Enabled = enabled;
+
+        _config = _config with { DiscoveryEmitEnabled = enabled };
+        _configStore.TrySave(_config);
+        _log?.Info($"FlexRadio discovery re-emission {(enabled ? "enabled" : "disabled")}.");
+    }
+
+    /// <summary>
+    /// Sets the local endpoint that discovery payloads are rewritten to point at.
+    /// Typically the bind address + port of the Client's FlexRadio command forward rule.
+    /// </summary>
+    public void SetDiscoveryLocalEndpoint(IPEndPoint endpoint)
+    {
+        if (_discoveryEmitter is not null)
+            _discoveryEmitter.LocalEndpoint = endpoint;
+    }
+
+    private void ProcessStationMessage(string json)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (!root.TryGetProperty("type", out var typeProp)) return;
+            string? msgType = typeProp.GetString();
+
+            if (msgType == "discovery_announce" && root.TryGetProperty("payload", out var payloadProp))
+            {
+                string? base64 = payloadProp.GetString();
+                if (!string.IsNullOrEmpty(base64))
+                {
+                    byte[] payload = Convert.FromBase64String(base64);
+                    _discoveryEmitter?.OnDiscoveryAnnounce(payload);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogDebug($"ProcessStationMessage error: {ex.Message}");
         }
     }
 }

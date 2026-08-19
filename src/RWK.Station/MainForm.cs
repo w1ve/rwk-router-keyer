@@ -67,9 +67,14 @@ public partial class MainForm : Form
         _pttLineNone.CheckedChanged += OnKeyingConfigChanged;
         _pttInvertCheck.CheckedChanged += OnKeyingConfigChanged;
 
-        // FlexRadio discovery tooltip (greyed-out placeholder, 13.16).
-        _toolTip.SetToolTip(_flexDiscoveryGroup, "Requires FlexRadio discovery configuration — coming soon");
-        _toolTip.SetToolTip(_flexDiscoveryEnable, "Requires FlexRadio discovery configuration — coming soon");
+        // FlexRadio discovery capture control.
+        _flexDiscoveryEnable.CheckedChanged += (_, _) =>
+        {
+            if (_flexDiscoveryEnable.Checked)
+                _controller?.StartDiscoveryCapture();
+            else
+                _controller?.StopDiscoveryCapture();
+        };
 
         // Populate COM port dropdown with available ports.
         PopulateComPorts();

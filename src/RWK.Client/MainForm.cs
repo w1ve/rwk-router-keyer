@@ -117,6 +117,12 @@ public partial class MainForm : Form
 
         // WinKeyer loopback test
         _wkLoopbackTestBtn.Click += OnWinKeyerLoopbackTestClick;
+
+        // FlexRadio discovery re-emission
+        _flexEnableCheck.CheckedChanged += (_, _) =>
+        {
+            _controller?.SetDiscoveryEmitEnabled(_flexEnableCheck.Checked);
+        };
     }
 
     // --- Event handlers (UI only, no backend) ---

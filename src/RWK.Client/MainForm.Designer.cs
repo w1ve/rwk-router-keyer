@@ -686,7 +686,7 @@ partial class MainForm
         _flexGroup.Dock = DockStyle.Fill;
         _flexGroup.Name = "_flexGroup";
         _flexGroup.Padding = new Padding(8);
-        _flexGroup.Enabled = false; // Entirely greyed out — system colors handle the visual
+        _flexGroup.Enabled = true; // FlexRadio VITA-49 discovery relay implemented
 
         _flexEnableCheck.Text = "Enable discovery re-emission";
         _flexEnableCheck.AutoSize = true;
@@ -699,7 +699,7 @@ partial class MainForm
         _flexRadioList.Size = new Size(240, 60);
         _flexRadioList.Name = "_flexRadioList";
 
-        _flexPlaceholderLabel.Text = "Requires FlexRadio discovery configuration — coming soon";
+        _flexPlaceholderLabel.Text = "Discovered radios appear here when enabled and paired.";
         _flexPlaceholderLabel.Font = new Font("Segoe UI", 8F, FontStyle.Italic);
         _flexPlaceholderLabel.AutoSize = true;
         _flexPlaceholderLabel.Location = new Point(12, 114);
@@ -711,7 +711,7 @@ partial class MainForm
 
         // Set tooltip on the FlexRadio group
         var toolTip = new ToolTip(components);
-        toolTip.SetToolTip(_flexGroup, "Requires FlexRadio discovery configuration — coming soon");
+        toolTip.SetToolTip(_flexGroup, "FlexRadio VITA-49 discovery relay — enable on both Station and Client to discover remote radios.");
 
         // ============================================================
         // TOP-LEVEL GROUPBOX: "Remote WinKeyer"

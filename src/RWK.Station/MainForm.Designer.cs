@@ -323,7 +323,7 @@ partial class MainForm
             Text = "FlexRadio Discovery Capture",
             Location = new Point(324, 218),
             Size = new Size(300, 48),
-            Enabled = false,
+            Enabled = true,
             Name = "_flexDiscoveryGroup"
         };
 
@@ -333,7 +333,7 @@ partial class MainForm
             Location = new Point(10, 22),
             AutoSize = true,
             Checked = false,
-            Enabled = false,
+            Enabled = true,
             Name = "_flexDiscoveryEnable"
         };
 
