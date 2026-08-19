@@ -180,16 +180,16 @@ partial class MainForm
         _paddleGroup.Name = "_paddleGroup";
         _paddleGroup.Padding = new Padding(8);
 
-        ConfigureIndicator(_ditIndicator, "●", SystemColors.GrayText, 12, 24, "_ditIndicator");
-        ConfigureIndicator(_dahIndicator, "●", SystemColors.GrayText, 50, 24, "_dahIndicator");
-        ConfigureIndicator(_skIndicator, "●", SystemColors.GrayText, 88, 24, "_skIndicator");
+        ConfigureIndicator(_ditIndicator, "●", SystemColors.GrayText, 12, 22, "_ditIndicator");
+        ConfigureIndicator(_dahIndicator, "●", SystemColors.GrayText, 50, 22, "_dahIndicator");
+        ConfigureIndicator(_skIndicator, "●", SystemColors.GrayText, 88, 22, "_skIndicator");
 
         _ditLabel.Text = "Dit"; _ditLabel.AutoSize = true;
-        _ditLabel.Location = new Point(10, 44); _ditLabel.Name = "_ditLabel";
+        _ditLabel.Location = new Point(10, 50); _ditLabel.Name = "_ditLabel";
         _dahLabel.Text = "Dah"; _dahLabel.AutoSize = true;
-        _dahLabel.Location = new Point(46, 44); _dahLabel.Name = "_dahLabel";
+        _dahLabel.Location = new Point(46, 50); _dahLabel.Name = "_dahLabel";
         _skLabel.Text = "SK"; _skLabel.AutoSize = true;
-        _skLabel.Location = new Point(88, 44); _skLabel.Name = "_skLabel";
+        _skLabel.Location = new Point(88, 50); _skLabel.Name = "_skLabel";
 
         _paddleGroup.Controls.AddRange(new Control[] {
             _ditIndicator, _dahIndicator, _skIndicator,
@@ -239,49 +239,50 @@ partial class MainForm
 
         _weightCaptionLabel.Text = "Weight:";
         _weightCaptionLabel.AutoSize = true;
-        _weightCaptionLabel.Location = new Point(12, 86);
+        _weightCaptionLabel.Location = new Point(12, 82);
         _weightCaptionLabel.Name = "_weightCaptionLabel";
 
         _weightSlider.Minimum = 25;
         _weightSlider.Maximum = 75;
         _weightSlider.Value = 50;
         _weightSlider.TickFrequency = 5;
-        _weightSlider.Location = new Point(70, 80);
-        _weightSlider.Size = new Size(150, 45);
+        _weightSlider.Location = new Point(70, 76);
+        _weightSlider.Size = new Size(150, 30);
+        _weightSlider.AutoSize = false;
         _weightSlider.Name = "_weightSlider";
         _weightSlider.Scroll += OnWeightSliderScroll;
 
         _weightValueLabel.Text = "50%";
         _weightValueLabel.AutoSize = true;
-        _weightValueLabel.Location = new Point(224, 86);
+        _weightValueLabel.Location = new Point(224, 82);
         _weightValueLabel.Name = "_weightValueLabel";
 
         _modeCaptionLabel.Text = "Mode:";
         _modeCaptionLabel.AutoSize = true;
-        _modeCaptionLabel.Location = new Point(12, 120);
+        _modeCaptionLabel.Location = new Point(12, 112);
         _modeCaptionLabel.Name = "_modeCaptionLabel";
 
         _modeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _modeCombo.Location = new Point(70, 117);
+        _modeCombo.Location = new Point(70, 109);
         _modeCombo.Size = new Size(120, 23);
         _modeCombo.Name = "_modeCombo";
 
         _paddleReverseCheck.Text = "Paddle Reverse";
         _paddleReverseCheck.AutoSize = true;
-        _paddleReverseCheck.Location = new Point(12, 148);
+        _paddleReverseCheck.Location = new Point(12, 140);
         _paddleReverseCheck.Name = "_paddleReverseCheck";
 
         _testButton = new Button();
         _testButton.Text = "Test";
         _testButton.Size = new Size(60, 24);
-        _testButton.Location = new Point(200, 117);
+        _testButton.Location = new Point(200, 109);
         _testButton.UseVisualStyleBackColor = true;
         _testButton.Name = "_testButton";
 
         _testTxButton = new Button();
         _testTxButton.Text = "TestTX";
         _testTxButton.Size = new Size(60, 24);
-        _testTxButton.Location = new Point(200, 145);
+        _testTxButton.Location = new Point(200, 137);
         _testTxButton.UseVisualStyleBackColor = true;
         _testTxButton.Name = "_testTxButton";
 
@@ -342,8 +343,8 @@ partial class MainForm
         freqPanel.Dock = DockStyle.Fill;
         freqPanel.Name = "freqPanel";
 
-        _toneFreqSlider.Minimum = 300;
-        _toneFreqSlider.Maximum = 1500;
+        _toneFreqSlider.Minimum = 400;
+        _toneFreqSlider.Maximum = 1000;
         _toneFreqSlider.Value = 600;
         _toneFreqSlider.TickFrequency = 100;
         _toneFreqSlider.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
@@ -891,7 +892,7 @@ partial class MainForm
     private static void ConfigureIndicator(Label label, string text, System.Drawing.Color color, int x, int y, string name)
     {
         label.Text = text;
-        label.Font = new Font("Segoe UI", 14F);
+        label.Font = new Font("Segoe UI", 18F);
         label.ForeColor = color;
         label.AutoSize = true;
         label.Location = new Point(x, y);

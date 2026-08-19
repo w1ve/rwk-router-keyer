@@ -425,6 +425,12 @@ public partial class MainForm : Form
             if (!string.IsNullOrEmpty(_controller.Config.PaddlePortName) && _paddlePortCombo.Items.Contains(_controller.Config.PaddlePortName))
                 _paddlePortCombo.SelectedItem = _controller.Config.PaddlePortName;
 
+            // Sync keyer settings from loaded config to UI
+            _speedSlider.Value = Math.Clamp(_controller.Config.SpeedWpm, _speedSlider.Minimum, _speedSlider.Maximum);
+            _speedLabel.Text = _speedSlider.Value.ToString();
+            _weightSlider.Value = Math.Clamp(_controller.Config.Weight, _weightSlider.Minimum, _weightSlider.Maximum);
+            _weightValueLabel.Text = $"{_weightSlider.Value}%";
+
             UpdateStatusForState(TailscaleState.Connecting);
 
             // If the sidecar failed to start, show the failure prominently.

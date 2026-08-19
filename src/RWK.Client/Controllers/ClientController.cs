@@ -248,6 +248,7 @@ public sealed class ClientController : IDisposable
         _keyer.SpeedWpm = wpm;
         _sidetone.SpeedWpm = wpm;
         _config = _config with { SpeedWpm = wpm };
+        _configStore.TrySave(_config);
         _log?.Info($"Speed set to {wpm} WPM.");
     }
 
