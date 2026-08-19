@@ -95,6 +95,7 @@ public sealed class ClientController : IDisposable
     private volatile bool _suppressEdgeSend;
     private volatile bool _loopbackTestActive;
     private volatile bool _stationArmed = true;
+    private TailscaleState _lastLoggedTailscaleState;
 
     /// <summary>
     /// Creates a ClientController with all its owned components.
@@ -784,9 +785,13 @@ public sealed class ClientController : IDisposable
 
     private void OnTailscaleStateChanged(object? sender, TailscaleStateChangedEventArgs e)
     {
-        _log?.Info($"Tailnet: {e.State}" +
-            (e.Path != PathType.None ? $" ({e.Path})" : "") +
-            (e.RoundTripTime > TimeSpan.Zero ? $" RTT={e.RoundTripTime.TotalMilliseconds:F0}ms" : ""));
+        // Only log state transitions, not every poll update (avoids flooding the log).
+        if (e.State != _lastLoggedTailscaleState)
+        {
+            _lastLoggedTailscaleState = e.State;
+            _log?.Info($"Tailnet: {e.State}" +
+                (e.Path != PathType.None ? $" ({e.Path})" : ""));
+        }
 
         if (e.State == TailscaleState.Connected)
         {

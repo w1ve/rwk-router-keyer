@@ -146,7 +146,29 @@ public partial class MainForm : Form
 
     private void OnAddForwardRuleClick(object? sender, EventArgs e)
     {
-        _forwardGrid.Rows.Add(true, "New Rule", "TCP", 4532, 4532, "127.0.0.1", "127.0.0.1", "Idle");
+        // Add a new rule defaulting to OFF (unchecked). Persist and push immediately.
+        var rule = new ForwardRule(
+            Guid.NewGuid(),
+            "New Rule",
+            ForwardProtocol.Tcp,
+            ClientPort: 4532,
+            StationPort: 4532,
+            Enabled: false,
+            BindAddress: "127.0.0.1",
+            StationTargetAddress: "127.0.0.1");
+
+        try
+        {
+            _controller?.AddForwardRule(rule);
+        }
+        catch (Exception ex)
+        {
+            _logService.Info($"Add forward rule failed: {ex.Message}");
+        }
+
+        // Add to UI grid (unchecked = OFF)
+        _forwardGrid.Rows.Add(false, rule.Name, "TCP", rule.ClientPort, rule.StationPort, rule.BindAddress, rule.StationTargetAddress, "Idle");
+        _forwardGrid.Rows[_forwardGrid.Rows.Count - 1].Tag = rule.Id;
         EvaluateBindWarning();
     }
 
@@ -154,6 +176,18 @@ public partial class MainForm : Form
     {
         if (_forwardGrid.CurrentRow != null && !_forwardGrid.CurrentRow.IsNewRow)
         {
+            var ruleId = _forwardGrid.CurrentRow.Tag as Guid?;
+            if (ruleId.HasValue)
+            {
+                try
+                {
+                    _controller?.RemoveForwardRule(ruleId.Value);
+                }
+                catch (Exception ex)
+                {
+                    _logService.Info($"Remove forward rule failed: {ex.Message}");
+                }
+            }
             _forwardGrid.Rows.Remove(_forwardGrid.CurrentRow);
             EvaluateBindWarning();
         }
@@ -161,6 +195,29 @@ public partial class MainForm : Form
 
     private void OnForwardGridCellValueChanged(object? sender, DataGridViewCellEventArgs e)
     {
+        if (e.RowIndex < 0) return;
+
+        // Handle the "Enabled" (On) checkbox toggle
+        if (e.ColumnIndex == _forwardGrid.Columns["Enabled"]?.Index)
+        {
+            var row = _forwardGrid.Rows[e.RowIndex];
+            var ruleId = row.Tag as Guid?;
+            if (ruleId.HasValue && _controller is not null)
+            {
+                bool enabled = row.Cells["Enabled"].Value is true;
+                try
+                {
+                    _controller.SetForwardRuleEnabled(ruleId.Value, enabled);
+                    row.Cells["Status"].Value = enabled ? "Starting..." : "Idle";
+                }
+                catch (Exception ex)
+                {
+                    row.Cells["Status"].Value = "Error";
+                    _logService.Info($"Forward rule error: {ex.Message}");
+                }
+            }
+        }
+
         EvaluateBindWarning();
     }
 
@@ -538,6 +595,7 @@ public partial class MainForm : Form
         controller.SidecarFailureChanged += OnControllerSidecarFailure;
         controller.AuthUrlAvailable += OnControllerAuthUrlAvailable;
         controller.SessionStatusChanged += OnSessionStatusChanged;
+        controller.ForwardRuleStatusChanged += OnForwardRuleStatusChanged;
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -625,6 +683,30 @@ public partial class MainForm : Form
         {
             _connectButton.Text = "Pair";
             _connectButton.Enabled = true;
+        }
+    }
+
+    private void OnForwardRuleStatusChanged(object? sender, ForwardRuleStatusChangedEventArgs e)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => OnForwardRuleStatusChanged(sender, e));
+            return;
+        }
+
+        // Find the grid row with this rule ID and update its Status column.
+        foreach (DataGridViewRow row in _forwardGrid.Rows)
+        {
+            if (row.IsNewRow) continue;
+            if (row.Tag is Guid id && id == e.RuleId)
+            {
+                row.Cells["Status"].Value = e.Status.ToString();
+                if (e.Status == ForwardRuleStatus.Error && !string.IsNullOrEmpty(e.Message))
+                {
+                    _logService.Info($"Forward rule '{row.Cells["RuleName"]?.Value}' error: {e.Message}");
+                }
+                break;
+            }
         }
     }
 
