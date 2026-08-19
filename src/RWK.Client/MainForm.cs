@@ -618,6 +618,15 @@ public partial class MainForm : Form
         }
 
         _pathLabel.Text = status;
+
+        // If session ended (unpaired), re-enable the Pair button.
+        if (status.Contains("unpaired", StringComparison.OrdinalIgnoreCase) ||
+            status.Contains("ended", StringComparison.OrdinalIgnoreCase) ||
+            status.Contains("failed", StringComparison.OrdinalIgnoreCase))
+        {
+            _connectButton.Text = "Pair";
+            _connectButton.Enabled = true;
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────────────

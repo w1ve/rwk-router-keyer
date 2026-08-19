@@ -1022,6 +1022,9 @@ public sealed class ClientController : IDisposable
                 return await host.CreateOutboundUdpForwardAsync(peer, port, ct)
                     .ConfigureAwait(false);
             };
+
+            // Watch the control stream for EOF — means Station unpaired us.
+            _ = WatchControlStreamAsync();
         }
         else if (response.StartsWith("BUSY"))
         {
@@ -1251,6 +1254,41 @@ public sealed class ClientController : IDisposable
         await Task.Delay(3000).ConfigureAwait(false);
         // Only resume edge sending if the station is armed.
         _suppressEdgeSend = !_stationArmed;
+    }
+
+    /// <summary>
+    /// Watches the control stream for EOF (Station closed/unpaired). When detected,
+    /// transitions the Client to unpaired state and notifies the UI.
+    /// </summary>
+    private async Task WatchControlStreamAsync()
+    {
+        try
+        {
+            byte[] buf = new byte[1];
+            while (_sessionActive && _controlStream is not null)
+            {
+                int read = await _controlStream.ReadAsync(buf).ConfigureAwait(false);
+                if (read == 0)
+                {
+                    // EOF — Station closed the connection (unpaired us).
+                    break;
+                }
+                // Any unexpected data is ignored — the control channel is write-only from Client side.
+            }
+        }
+        catch (IOException) { }
+        catch (ObjectDisposedException) { }
+
+        // Only handle if we were still in an active session.
+        if (!_sessionActive) return;
+
+        _sessionActive = false;
+        StopHeartbeat();
+        _controlStream?.Dispose();
+        _controlStream = null;
+
+        _log?.Info("Station unpaired the session.");
+        SessionStatusChanged?.Invoke(this, "Station unpaired — session ended.");
     }
 
     /// <summary>
