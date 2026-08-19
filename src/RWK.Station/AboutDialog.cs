@@ -58,7 +58,7 @@ internal sealed class AboutDialog : Form
                    "Copyright (c) 2026 by Gerry Hull, W1VE\n\n" +
                    "Released under the MIT License.\n\n" +
                    "Free and open-source software.\n\n" +
-                   "Source at https://github.com/w1ve/rwk"
+                   "Source at https://github.com/w1ve/rwk-router-keyer"
         };
 
         textPanel.Controls.Add(label);
