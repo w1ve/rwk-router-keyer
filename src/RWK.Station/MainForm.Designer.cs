@@ -310,8 +310,8 @@ partial class MainForm
         _forwardRulesGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Proto", Name = "ColProtocol", FillWeight = 12, ReadOnly = true });
         _forwardRulesGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Client Port", Name = "ColClientPort", FillWeight = 16, ReadOnly = true });
         _forwardRulesGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Station Port", Name = "ColStationPort", FillWeight = 16, ReadOnly = true });
-        _forwardRulesGrid.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "Allow", Name = "ColAllow", FillWeight = 12, ReadOnly = false });
-        _forwardRulesGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Target Host Override", Name = "ColTargetOverride", FillWeight = 22, ReadOnly = false });
+        _forwardRulesGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Enabled", Name = "ColEnabled", FillWeight = 12, ReadOnly = true });
+        _forwardRulesGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Target Host", Name = "ColTargetOverride", FillWeight = 22, ReadOnly = true });
 
         _forwardRulesGroup.Controls.Add(_forwardRulesGrid);
 

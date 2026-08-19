@@ -814,13 +814,18 @@ public partial class MainForm : Form
         _forwardRulesGrid.Rows.Clear();
         foreach (var rule in rules)
         {
-            _forwardRulesGrid.Rows.Add(
+            int idx = _forwardRulesGrid.Rows.Add(
                 rule.Name,
                 rule.Protocol.ToUpperInvariant(),
                 rule.ClientPort,
                 rule.Port,
-                rule.Enabled,
+                rule.Enabled ? "✓" : "✗",
                 rule.TargetAddress);
+
+            // Color the enabled cell
+            var cell = _forwardRulesGrid.Rows[idx].Cells["ColEnabled"];
+            cell.Style.ForeColor = rule.Enabled ? Color.Green : Color.Red;
+            cell.Style.Font = new Font("Segoe UI", 12F, FontStyle.Bold);
         }
     }
 

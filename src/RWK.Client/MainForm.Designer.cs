@@ -70,7 +70,7 @@ partial class MainForm
     // === Port Forwarding (13.12, 13.14, 13.15) ===
     private GroupBox _forwardGroup = null!;
     private DataGridView _forwardGrid = null!;
-    private DataGridViewCheckBoxColumn _enabledColumn = null!;
+    private DataGridViewTextBoxColumn _enabledColumn = null!;
     private DataGridViewTextBoxColumn _ruleNameColumn = null!;
     private DataGridViewComboBoxColumn _protocolColumn = null!;
     private DataGridViewTextBoxColumn _clientPortColumn = null!;
@@ -80,6 +80,10 @@ partial class MainForm
     private DataGridViewTextBoxColumn _statusColumn = null!;
     private Button _addRuleBtn = null!;
     private Button _removeRuleBtn = null!;
+    private Button _enableSelectedBtn = null!;
+    private Button _disableSelectedBtn = null!;
+    private Button _enableAllBtn = null!;
+    private Button _disableAllBtn = null!;
     private Label _bindWarningLabel = null!;
     private Label _remoteRigWarningLabel = null!;
 
@@ -505,7 +509,7 @@ partial class MainForm
         // ============================================================
         _forwardGroup = new GroupBox();
         _forwardGrid = new DataGridView();
-        _enabledColumn = new DataGridViewCheckBoxColumn();
+        _enabledColumn = new DataGridViewTextBoxColumn();
         _ruleNameColumn = new DataGridViewTextBoxColumn();
         _protocolColumn = new DataGridViewComboBoxColumn();
         _clientPortColumn = new DataGridViewTextBoxColumn();
@@ -542,17 +546,13 @@ partial class MainForm
         _forwardGrid.Dock = DockStyle.Fill;
         _forwardGrid.Name = "_forwardGrid";
         _forwardGrid.CellValueChanged += OnForwardGridCellValueChanged;
-        _forwardGrid.CurrentCellDirtyStateChanged += (s, _) =>
-        {
-            // Commit checkbox edits immediately so CellValueChanged fires on click.
-            if (_forwardGrid.IsCurrentCellDirty)
-                _forwardGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
-        };
+        _forwardGrid.SelectionChanged += OnForwardGridSelectionChanged;
 
-        _enabledColumn.HeaderText = "On";
+        _enabledColumn.HeaderText = "State";
         _enabledColumn.Name = "Enabled";
-        _enabledColumn.Width = 30;
-        _enabledColumn.FillWeight = 15;
+        _enabledColumn.Width = 50;
+        _enabledColumn.FillWeight = 12;
+        _enabledColumn.ReadOnly = true;
 
         _ruleNameColumn.HeaderText = "Name";
         _ruleNameColumn.Name = "RuleName";
@@ -609,6 +609,40 @@ partial class MainForm
         _removeRuleBtn.Name = "_removeRuleBtn";
         _removeRuleBtn.Click += OnRemoveForwardRuleClick;
 
+        _enableSelectedBtn = new Button();
+        _enableSelectedBtn.Text = "Enable Sel";
+        _enableSelectedBtn.UseVisualStyleBackColor = true;
+        _enableSelectedBtn.Size = new Size(80, 26);
+        _enableSelectedBtn.Location = new Point(170, 4);
+        _enableSelectedBtn.Name = "_enableSelectedBtn";
+        _enableSelectedBtn.Enabled = false;
+        _enableSelectedBtn.Click += OnEnableSelectedClick;
+
+        _disableSelectedBtn = new Button();
+        _disableSelectedBtn.Text = "Disable Sel";
+        _disableSelectedBtn.UseVisualStyleBackColor = true;
+        _disableSelectedBtn.Size = new Size(80, 26);
+        _disableSelectedBtn.Location = new Point(254, 4);
+        _disableSelectedBtn.Name = "_disableSelectedBtn";
+        _disableSelectedBtn.Enabled = false;
+        _disableSelectedBtn.Click += OnDisableSelectedClick;
+
+        _enableAllBtn = new Button();
+        _enableAllBtn.Text = "Enable All";
+        _enableAllBtn.UseVisualStyleBackColor = true;
+        _enableAllBtn.Size = new Size(74, 26);
+        _enableAllBtn.Location = new Point(348, 4);
+        _enableAllBtn.Name = "_enableAllBtn";
+        _enableAllBtn.Click += OnEnableAllClick;
+
+        _disableAllBtn = new Button();
+        _disableAllBtn.Text = "Disable All";
+        _disableAllBtn.UseVisualStyleBackColor = true;
+        _disableAllBtn.Size = new Size(74, 26);
+        _disableAllBtn.Location = new Point(426, 4);
+        _disableAllBtn.Name = "_disableAllBtn";
+        _disableAllBtn.Click += OnDisableAllClick;
+
         // Exposure warning (10.14, 13.15)
         _bindWarningLabel.Text = "⚠ Non-loopback bind detected: this exposes an unauthenticated tunnel path into the Station's network to every host on your local network.";
         _bindWarningLabel.ForeColor = warningRed;
@@ -632,7 +666,7 @@ partial class MainForm
         _remoteRigWarningLabel.Name = "_remoteRigWarningLabel";
 
         forwardButtonPanel.Controls.AddRange(new Control[] {
-            _addRuleBtn, _removeRuleBtn, _bindWarningLabel, _remoteRigWarningLabel
+            _addRuleBtn, _removeRuleBtn, _enableSelectedBtn, _disableSelectedBtn, _enableAllBtn, _disableAllBtn, _bindWarningLabel, _remoteRigWarningLabel
         });
 
         forwardInnerLayout.Controls.Add(_forwardGrid, 0, 0);

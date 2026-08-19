@@ -169,7 +169,7 @@ public partial class MainForm : Form
 
         // Add to UI grid (unchecked = OFF) — suppress events during add
         _suppressGridEvents = true;
-        _forwardGrid.Rows.Add(false, rule.Name, "TCP", rule.ClientPort, rule.StationPort, rule.BindAddress, rule.StationTargetAddress, "Idle");
+        _forwardGrid.Rows.Add("OFF", rule.Name, "TCP", rule.ClientPort, rule.StationPort, rule.BindAddress, rule.StationTargetAddress, "Idle");
         _forwardGrid.Rows[_forwardGrid.Rows.Count - 1].Tag = rule.Id;
         _suppressGridEvents = false;
         EvaluateBindWarning();
@@ -203,27 +203,10 @@ public partial class MainForm : Form
         var row = _forwardGrid.Rows[e.RowIndex];
         var ruleId = row.Tag as Guid?;
 
-        // Handle the "Enabled" (On) checkbox toggle
-        if (e.ColumnIndex == _forwardGrid.Columns["Enabled"]?.Index)
+        // Any cell edit: delete old rule and re-add with new values, OFF state.
+        if (ruleId.HasValue && e.ColumnIndex != _forwardGrid.Columns["Enabled"]?.Index
+            && e.ColumnIndex != _forwardGrid.Columns["Status"]?.Index)
         {
-            if (ruleId.HasValue)
-            {
-                bool enabled = row.Cells["Enabled"].Value is true;
-                try
-                {
-                    _controller.SetForwardRuleEnabled(ruleId.Value, enabled);
-                    _logService.Info($"Forward rule '{row.Cells["RuleName"]?.Value}' {(enabled ? "enabled" : "disabled")}.");
-                }
-                catch (Exception ex)
-                {
-                    row.Cells["Status"].Value = "Error";
-                    _logService.Info($"Forward rule error: {ex.Message}");
-                }
-            }
-        }
-        else if (ruleId.HasValue)
-        {
-            // Any other cell edited: delete old rule and re-add with new values, OFF state.
             try { _controller.RemoveForwardRule(ruleId.Value); } catch { }
 
             var newRule = BuildRuleFromRow(row);
@@ -231,7 +214,7 @@ public partial class MainForm : Form
             {
                 _controller.AddForwardRule(newRule);
                 row.Tag = newRule.Id;
-                row.Cells["Enabled"].Value = false;
+                row.Cells["Enabled"].Value = "OFF";
                 row.Cells["Status"].Value = "Idle";
                 _logService.Info($"Forward rule '{newRule.Name}' updated (disabled until re-enabled).");
             }
@@ -243,6 +226,87 @@ public partial class MainForm : Form
         }
 
         EvaluateBindWarning();
+    }
+
+    private void OnForwardGridSelectionChanged(object? sender, EventArgs e)
+    {
+        bool hasSelection = _forwardGrid.CurrentRow != null && !_forwardGrid.CurrentRow.IsNewRow;
+        _enableSelectedBtn.Enabled = hasSelection;
+        _disableSelectedBtn.Enabled = hasSelection;
+    }
+
+    private void OnEnableSelectedClick(object? sender, EventArgs e)
+    {
+        if (_forwardGrid.CurrentRow == null || _controller is null) return;
+        var ruleId = _forwardGrid.CurrentRow.Tag as Guid?;
+        if (!ruleId.HasValue) return;
+
+        try
+        {
+            _controller.SetForwardRuleEnabled(ruleId.Value, true);
+            _forwardGrid.CurrentRow.Cells["Enabled"].Value = "ON";
+            _logService.Info($"Forward rule '{_forwardGrid.CurrentRow.Cells["RuleName"]?.Value}' enabled.");
+        }
+        catch (Exception ex)
+        {
+            _logService.Info($"Enable forward rule failed: {ex.Message}");
+        }
+    }
+
+    private void OnDisableSelectedClick(object? sender, EventArgs e)
+    {
+        if (_forwardGrid.CurrentRow == null || _controller is null) return;
+        var ruleId = _forwardGrid.CurrentRow.Tag as Guid?;
+        if (!ruleId.HasValue) return;
+
+        try
+        {
+            _controller.SetForwardRuleEnabled(ruleId.Value, false);
+            _forwardGrid.CurrentRow.Cells["Enabled"].Value = "OFF";
+            _forwardGrid.CurrentRow.Cells["Status"].Value = "Idle";
+            _logService.Info($"Forward rule '{_forwardGrid.CurrentRow.Cells["RuleName"]?.Value}' disabled.");
+        }
+        catch (Exception ex)
+        {
+            _logService.Info($"Disable forward rule failed: {ex.Message}");
+        }
+    }
+
+    private void OnEnableAllClick(object? sender, EventArgs e)
+    {
+        if (_controller is null) return;
+        foreach (DataGridViewRow row in _forwardGrid.Rows)
+        {
+            if (row.IsNewRow) continue;
+            var ruleId = row.Tag as Guid?;
+            if (!ruleId.HasValue) continue;
+            try
+            {
+                _controller.SetForwardRuleEnabled(ruleId.Value, true);
+                row.Cells["Enabled"].Value = "ON";
+            }
+            catch { }
+        }
+        _logService.Info("All forward rules enabled.");
+    }
+
+    private void OnDisableAllClick(object? sender, EventArgs e)
+    {
+        if (_controller is null) return;
+        foreach (DataGridViewRow row in _forwardGrid.Rows)
+        {
+            if (row.IsNewRow) continue;
+            var ruleId = row.Tag as Guid?;
+            if (!ruleId.HasValue) continue;
+            try
+            {
+                _controller.SetForwardRuleEnabled(ruleId.Value, false);
+                row.Cells["Enabled"].Value = "OFF";
+                row.Cells["Status"].Value = "Idle";
+            }
+            catch { }
+        }
+        _logService.Info("All forward rules disabled.");
     }
 
     private ForwardRule BuildRuleFromRow(DataGridViewRow row)
@@ -276,14 +340,14 @@ public partial class MainForm : Form
             foreach (var rule in _controller.Config.ForwardRules)
             {
                 _forwardGrid.Rows.Add(
-                    rule.Enabled,
+                    rule.Enabled ? "ON" : "OFF",
                     rule.Name,
                     rule.Protocol.ToString().ToUpperInvariant(),
                     rule.ClientPort,
                     rule.StationPort,
                     rule.BindAddress,
                     rule.StationTargetAddress,
-                    "Idle");
+                    rule.Enabled ? "Listening" : "Idle");
                 _forwardGrid.Rows[_forwardGrid.Rows.Count - 1].Tag = rule.Id;
             }
         }
@@ -776,10 +840,25 @@ public partial class MainForm : Form
             if (row.Tag is Guid id && id == e.RuleId)
             {
                 row.Cells["Status"].Value = e.Status.ToString();
-                if (e.Status == ForwardRuleStatus.Error && !string.IsNullOrEmpty(e.Message))
-                {
-                    _logService.Info($"Forward rule '{row.Cells["RuleName"]?.Value}' error: {e.Message}");
-                }
+                string ruleName = row.Cells["RuleName"]?.Value?.ToString() ?? "?";
+
+                // Log the status transition
+                _logService.Info($"Forward '{ruleName}': {e.Status}" +
+                    (!string.IsNullOrEmpty(e.Message) ? $" — {e.Message}" : ""));
+
+                // Make row read-only when actively listening/active, editable when idle/error
+                bool active = e.Status is ForwardRuleStatus.Listening or ForwardRuleStatus.Active;
+                row.Cells["RuleName"].ReadOnly = active;
+                row.Cells["Protocol"].ReadOnly = active;
+                row.Cells["ClientPort"].ReadOnly = active;
+                row.Cells["StationPort"].ReadOnly = active;
+                row.Cells["BindAddress"].ReadOnly = active;
+                row.Cells["StationTarget"].ReadOnly = active;
+
+                // Update the State column
+                if (active)
+                    row.Cells["Enabled"].Value = "ON";
+
                 break;
             }
         }
