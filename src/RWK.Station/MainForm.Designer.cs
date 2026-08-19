@@ -129,10 +129,10 @@ partial class MainForm
         _keyIndicator = new Label
         {
             Text = "●",
-            Font = new Font("Segoe UI", 14F),
+            Font = new Font("Segoe UI", 22F),
             ForeColor = SystemColors.GrayText,
             AutoSize = true,
-            Location = new Point(130, 70),
+            Location = new Point(125, 64),
             Name = "_keyIndicator"
         };
 
@@ -140,18 +140,18 @@ partial class MainForm
         {
             Text = "KEY",
             AutoSize = true,
-            Location = new Point(127, 94),
-            Font = new Font("Segoe UI", 7F),
+            Location = new Point(129, 100),
+            Font = new Font("Segoe UI", 8F),
             Name = "_keyIndicatorCaption"
         };
 
         _pttIndicator = new Label
         {
             Text = "●",
-            Font = new Font("Segoe UI", 14F),
+            Font = new Font("Segoe UI", 22F),
             ForeColor = SystemColors.GrayText,
             AutoSize = true,
-            Location = new Point(164, 70),
+            Location = new Point(168, 64),
             Name = "_pttIndicator"
         };
 
@@ -159,8 +159,8 @@ partial class MainForm
         {
             Text = "PTT",
             AutoSize = true,
-            Location = new Point(161, 94),
-            Font = new Font("Segoe UI", 7F),
+            Location = new Point(172, 100),
+            Font = new Font("Segoe UI", 8F),
             Name = "_pttIndicatorCaption"
         };
 

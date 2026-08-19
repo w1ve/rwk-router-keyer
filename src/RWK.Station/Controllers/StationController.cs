@@ -640,11 +640,16 @@ public sealed class StationController : IDisposable
 
     private void OnEdgeReceived(object? sender, ReadOnlyMemory<byte> data)
     {
-        // Parse the frame and extract the newest edge.
-        if (_keyingOutput is null) return;
-
+        // Parse the frame.
         if (!RwkPaddleFrame.TryRead(data.Span, out RwkPaddleFrame frame, out _))
             return;
+
+        // Always process as heartbeat to keep fail-safe timers happy,
+        // even if no keying output is configured.
+        _edgeReplayer?.ProcessHeartbeat();
+
+        // If no keying output, don't process edge transitions (nothing to key).
+        if (_keyingOutput is null) return;
 
         if (frame.EdgeCount == 0) return;
 
