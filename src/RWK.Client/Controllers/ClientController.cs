@@ -1287,6 +1287,10 @@ public sealed class ClientController : IDisposable
         _controlStream?.Dispose();
         _controlStream = null;
 
+        // Play "AS Unpaired" via sidetone only (suppress network sending).
+        _suppressEdgeSend = true;
+        _keyer.EnqueueText("AS UNPAIRED");
+
         _log?.Info("Station unpaired the session.");
         SessionStatusChanged?.Invoke(this, "Station unpaired — session ended.");
     }

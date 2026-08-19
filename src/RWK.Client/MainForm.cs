@@ -104,7 +104,6 @@ public partial class MainForm : Form
         _stationArmToggle.CheckedChanged += OnStationArmToggleChanged;
 
         // Test CW button wiring
-        _testButton.Click += OnTestClick;
         _testTxButton.Click += OnTestTxClick;
 
         // Port selection wiring — connect WinKeyer/Paddle when user selects a port
@@ -967,12 +966,6 @@ public partial class MainForm : Form
             _connectButton.Text = "Pair";
             _connectButton.Enabled = true;
         }
-    }
-
-    private void OnTestClick(object? sender, EventArgs e)
-    {
-        // Sidetone only — not sent over network.
-        _controller?.SendTestMessage("TEST 12345");
     }
 
     private void OnTestTxClick(object? sender, EventArgs e)

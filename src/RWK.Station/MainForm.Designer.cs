@@ -170,7 +170,7 @@ partial class MainForm
         _keyingOutputGroup = new GroupBox
         {
             Text = "Keying Output",
-            Location = new Point(12, 112),
+            Location = new Point(12, 140),
             Size = new Size(300, 170),
             Name = "_keyingOutputGroup"
         };
@@ -229,8 +229,8 @@ partial class MainForm
         _sessionGroup = new GroupBox
         {
             Text = "Session",
-            Location = new Point(324, 112),
-            Size = new Size(300, 150),
+            Location = new Point(324, 140),
+            Size = new Size(300, 170),
             Name = "_sessionGroup"
         };
 

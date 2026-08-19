@@ -41,7 +41,6 @@ partial class MainForm
     private Label _modeCaptionLabel = null!;
     private ComboBox _modeCombo = null!;
     private CheckBox _paddleReverseCheck = null!;
-    private Button _testButton = null!;
     private Button _testTxButton = null!;
 
     // === Sidetone Panel ===
@@ -272,17 +271,10 @@ partial class MainForm
         _paddleReverseCheck.Location = new Point(12, 140);
         _paddleReverseCheck.Name = "_paddleReverseCheck";
 
-        _testButton = new Button();
-        _testButton.Text = "Test";
-        _testButton.Size = new Size(60, 24);
-        _testButton.Location = new Point(200, 109);
-        _testButton.UseVisualStyleBackColor = true;
-        _testButton.Name = "_testButton";
-
         _testTxButton = new Button();
         _testTxButton.Text = "TestTX";
-        _testTxButton.Size = new Size(60, 24);
-        _testTxButton.Location = new Point(200, 137);
+        _testTxButton.Size = new Size(70, 24);
+        _testTxButton.Location = new Point(200, 109);
         _testTxButton.UseVisualStyleBackColor = true;
         _testTxButton.Name = "_testTxButton";
 
@@ -290,7 +282,7 @@ partial class MainForm
             _speedLabel, _speedCaptionLabel, _speedSlider,
             _weightCaptionLabel, _weightSlider, _weightValueLabel,
             _modeCaptionLabel, _modeCombo, _paddleReverseCheck,
-            _testButton, _testTxButton
+            _testTxButton
         });
 
         // ============================================================
