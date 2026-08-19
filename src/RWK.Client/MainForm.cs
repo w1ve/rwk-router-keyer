@@ -195,19 +195,21 @@ public partial class MainForm : Form
 
     private void OnForwardGridCellValueChanged(object? sender, DataGridViewCellEventArgs e)
     {
-        if (e.RowIndex < 0) return;
+        if (e.RowIndex < 0 || _controller is null) return;
+
+        var row = _forwardGrid.Rows[e.RowIndex];
+        var ruleId = row.Tag as Guid?;
 
         // Handle the "Enabled" (On) checkbox toggle
         if (e.ColumnIndex == _forwardGrid.Columns["Enabled"]?.Index)
         {
-            var row = _forwardGrid.Rows[e.RowIndex];
-            var ruleId = row.Tag as Guid?;
-            if (ruleId.HasValue && _controller is not null)
+            if (ruleId.HasValue)
             {
                 bool enabled = row.Cells["Enabled"].Value is true;
                 try
                 {
                     _controller.SetForwardRuleEnabled(ruleId.Value, enabled);
+                    _logService.Info($"Forward rule '{row.Cells["RuleName"]?.Value}' {(enabled ? "enabled" : "disabled")}.");
                 }
                 catch (Exception ex)
                 {
@@ -216,8 +218,68 @@ public partial class MainForm : Form
                 }
             }
         }
+        else if (ruleId.HasValue)
+        {
+            // Any other cell edited: delete old rule and re-add with new values, OFF state.
+            try { _controller.RemoveForwardRule(ruleId.Value); } catch { }
+
+            var newRule = BuildRuleFromRow(row);
+            try
+            {
+                _controller.AddForwardRule(newRule);
+                row.Tag = newRule.Id;
+                row.Cells["Enabled"].Value = false;
+                row.Cells["Status"].Value = "Idle";
+                _logService.Info($"Forward rule '{newRule.Name}' updated (disabled until re-enabled).");
+            }
+            catch (Exception ex)
+            {
+                row.Cells["Status"].Value = "Error";
+                _logService.Info($"Forward rule update error: {ex.Message}");
+            }
+        }
 
         EvaluateBindWarning();
+    }
+
+    private ForwardRule BuildRuleFromRow(DataGridViewRow row)
+    {
+        string name = row.Cells["RuleName"]?.Value?.ToString() ?? "Rule";
+        string proto = row.Cells["Protocol"]?.Value?.ToString() ?? "TCP";
+        int.TryParse(row.Cells["ClientPort"]?.Value?.ToString(), out int clientPort);
+        int.TryParse(row.Cells["StationPort"]?.Value?.ToString(), out int stationPort);
+        string bind = row.Cells["BindAddress"]?.Value?.ToString() ?? "127.0.0.1";
+        string target = row.Cells["StationTarget"]?.Value?.ToString() ?? "127.0.0.1";
+
+        return new ForwardRule(
+            Guid.NewGuid(),
+            name,
+            proto.Equals("UDP", StringComparison.OrdinalIgnoreCase) ? ForwardProtocol.Udp : ForwardProtocol.Tcp,
+            clientPort > 0 ? clientPort : 4532,
+            stationPort > 0 ? stationPort : 4532,
+            Enabled: false,
+            BindAddress: bind,
+            StationTargetAddress: target);
+    }
+
+    private void LoadForwardRulesIntoGrid()
+    {
+        if (_controller is null) return;
+
+        _forwardGrid.Rows.Clear();
+        foreach (var rule in _controller.Config.ForwardRules)
+        {
+            _forwardGrid.Rows.Add(
+                rule.Enabled,
+                rule.Name,
+                rule.Protocol.ToString().ToUpperInvariant(),
+                rule.ClientPort,
+                rule.StationPort,
+                rule.BindAddress,
+                rule.StationTargetAddress,
+                "Idle");
+            _forwardGrid.Rows[_forwardGrid.Rows.Count - 1].Tag = rule.Id;
+        }
     }
 
     private void EvaluateBindWarning()
@@ -490,6 +552,9 @@ public partial class MainForm : Form
             int volPct = (int)(_controller.Config.Sidetone.Volume * 100);
             _toneLevelSlider.Value = Math.Clamp(volPct, _toneLevelSlider.Minimum, _toneLevelSlider.Maximum);
             _toneLevelValueLabel.Text = $"{_toneLevelSlider.Value}%";
+
+            // Load persisted forward rules into the grid
+            LoadForwardRulesIntoGrid();
 
             UpdateStatusForState(TailscaleState.Connecting);
 

@@ -523,6 +523,7 @@ public sealed class ClientController : IDisposable
         // Persist to config
         _config = _config with { ForwardRules = _config.ForwardRules.Add(rule) };
         _configStore.TrySave(_config);
+        _log?.Info($"Forward rule added: {rule.Name} ({rule.Protocol} {rule.ClientPort}→{rule.StationPort} @ {rule.StationTargetAddress})");
 
         // Push to Station if connected
         if (_sessionActive)
@@ -535,6 +536,7 @@ public sealed class ClientController : IDisposable
     public void RemoveForwardRule(Guid ruleId)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        _log?.Info($"Forward rule removed: {ruleId}");
         _portForwardManager.RemoveRule(ruleId);
 
         // Persist
