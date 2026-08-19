@@ -106,6 +106,7 @@ partial class MainForm
     private TextBox _stationAddressTextBox = null!;
     private Button _connectButton = null!;
     private CheckBox _stationArmToggle = null!;
+    private Button _setStationKeyBtn = null!;
 
     protected override void Dispose(bool disposing)
     {
@@ -750,8 +751,18 @@ partial class MainForm
             Name = "_stationArmToggle"
         };
 
+        _setStationKeyBtn = new Button
+        {
+            Text = "Set Key",
+            Size = new Size(60, 25),
+            Location = new Point(530, 3),
+            UseVisualStyleBackColor = true,
+            Name = "_setStationKeyBtn"
+        };
+        _setStationKeyBtn.Click += OnSetStationKeyClick;
+
         connectionPanel.Controls.AddRange(new Control[] {
-            _stationAddressCaptionLabel, _stationAddressTextBox, _connectButton, _stationArmToggle
+            _stationAddressCaptionLabel, _stationAddressTextBox, _connectButton, _stationArmToggle, _setStationKeyBtn
         });
 
         var bottomLayout = new TableLayoutPanel();

@@ -969,6 +969,53 @@ public partial class MainForm : Form
         _controller.SetStationArmed(_stationArmToggle.Checked);
     }
 
+    private void OnSetStationKeyClick(object? sender, EventArgs e)
+    {
+        string currentKey = _controller?.Config.Tailscale.PairingSecret ?? "";
+
+        string? input = ShowInputDialog(
+            "Enter the Station Pairing Key",
+            "Set Station Key",
+            currentKey);
+
+        if (input is null) return; // User cancelled
+
+        input = input.Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(input))
+        {
+            MessageBox.Show("Key cannot be empty.", "Invalid Key", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        _controller?.SetPairingSecret(input);
+        _logService.Info($"Station pairing key set: {input}");
+    }
+
+    private static string? ShowInputDialog(string prompt, string title, string defaultValue)
+    {
+        var form = new Form
+        {
+            Text = title,
+            Size = new Size(350, 150),
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MaximizeBox = false,
+            MinimizeBox = false
+        };
+
+        var label = new Label { Text = prompt, Left = 10, Top = 15, AutoSize = true };
+        var textBox = new TextBox { Left = 10, Top = 40, Width = 310, Text = defaultValue,
+            CharacterCasing = CharacterCasing.Upper, Font = new Font("Consolas", 11F) };
+        var okBtn = new Button { Text = "OK", Left = 160, Top = 75, Width = 75, DialogResult = DialogResult.OK };
+        var cancelBtn = new Button { Text = "Cancel", Left = 245, Top = 75, Width = 75, DialogResult = DialogResult.Cancel };
+
+        form.Controls.AddRange(new Control[] { label, textBox, okBtn, cancelBtn });
+        form.AcceptButton = okBtn;
+        form.CancelButton = cancelBtn;
+
+        return form.ShowDialog() == DialogResult.OK ? textBox.Text : null;
+    }
+
     private void OnDeleteTailscaleAuthClick(object? sender, EventArgs e)
     {
         var result = MessageBox.Show(

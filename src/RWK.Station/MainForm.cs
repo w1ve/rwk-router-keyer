@@ -803,4 +803,60 @@ public partial class MainForm : Form
             _controller = null;
         }
     }
+
+    // ────────────────────────────────────────────────────────────────
+    // Menu handlers
+    // ────────────────────────────────────────────────────────────────
+
+    private void OnShowPairingKeyClick(object? sender, EventArgs e)
+    {
+        string key = _controller?.PairingKey ?? "(not available)";
+
+        var result = MessageBox.Show(
+            $"Station Pairing Key:\n\n{key}\n\nCopy to clipboard?",
+            "Pairing Key",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Information);
+
+        if (result == DialogResult.Yes)
+        {
+            Clipboard.SetText(key);
+            _toolTip.Show("Copied!", this, Width / 2, Height / 2, 1500);
+        }
+    }
+
+    private void OnDeleteTailscaleAuthClick(object? sender, EventArgs e)
+    {
+        var result = MessageBox.Show(
+            "Do you really want to delete the Tailscale authorization?\n\n" +
+            "You will need to re-authenticate on the next connection.",
+            "Delete Tailscale Authorization",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+
+        if (result != DialogResult.Yes) return;
+
+        try
+        {
+            string stateDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "RWK", "tailscale", "rwk-station");
+
+            if (Directory.Exists(stateDir))
+                Directory.Delete(stateDir, recursive: true);
+
+            _controller?.ClearTailscaleAuth();
+
+            MessageBox.Show(
+                "Tailscale authorization has been deleted.\n\n" +
+                "Restart the application to re-authenticate.",
+                "Authorization Deleted",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
 }

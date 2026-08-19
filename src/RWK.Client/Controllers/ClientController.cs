@@ -895,6 +895,17 @@ public sealed class ClientController : IDisposable
     }
 
     /// <summary>
+    /// Sets the pairing secret used for HMAC authentication with the Station.
+    /// Persists to config so it survives restarts.
+    /// </summary>
+    public void SetPairingSecret(string secret)
+    {
+        _config = _config with { Tailscale = _config.Tailscale with { PairingSecret = secret } };
+        _configStore.TrySave(_config);
+        _log?.Info("Station pairing key updated.");
+    }
+
+    /// <summary>
     /// Initiates a control-channel connection to the Station at the given Tailscale address.
     /// Performs the HMAC challenge/response handshake (11.2-11.4).
     /// Persists the address in config for reconnection on next launch.

@@ -158,6 +158,20 @@ public sealed class StationController : IDisposable
     /// <summary>The current StationConfig (loaded on Start).</summary>
     public StationConfig Config => _config;
 
+    /// <summary>
+    /// Gets the Station's pairing key for Client authentication.
+    /// Generated on first run and persisted in config.
+    /// </summary>
+    public string PairingKey => _config.Tailscale.PairingSecret ?? "not-set";
+
+    /// <summary>Clears the persisted Tailscale auth key.</summary>
+    public void ClearTailscaleAuth()
+    {
+        _config = _config with { Tailscale = _config.Tailscale with { AuthKey = null } };
+        _configStore.TrySave(_config);
+        _diagnostics?.Invoke("Tailscale authorization cleared.");
+    }
+
     /// <summary>Whether the SAFE latch is currently set.</summary>
     public bool IsSafeLatched => _edgeReplayer?.IsSafeLatched ?? false;
 
@@ -196,6 +210,15 @@ public sealed class StationController : IDisposable
             // Step 1: Load config.
             _config = _configStore.Load();
             _diagnostics?.Invoke("Configuration loaded.");
+
+            // Generate a pairing key on first run if one doesn't exist.
+            if (string.IsNullOrEmpty(_config.Tailscale.PairingSecret))
+            {
+                string newKey = GeneratePairingKey();
+                _config = _config with { Tailscale = _config.Tailscale with { PairingSecret = newKey } };
+                _configStore.TrySave(_config);
+                _diagnostics?.Invoke($"Generated new pairing key: {newKey}");
+            }
 
             // Step 2: Open the keying output (optional — port may not be configured yet).
             KeyingOutputConfig? keyConfig = _config.ToKeyingOutputConfig();
@@ -944,6 +967,21 @@ public sealed class StationController : IDisposable
 
         SetState(StationControllerState.Faulted);
         StartupFailed?.Invoke(this, new StationStartupFailedEventArgs(message));
+    }
+
+    /// <summary>
+    /// Generates an 8-character alphanumeric pairing key.
+    /// </summary>
+    private static string GeneratePairingKey()
+    {
+        const string chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // No ambiguous chars (0/O, 1/I)
+        Span<byte> random = stackalloc byte[8];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(random);
+        return string.Create(8, random.ToArray(), (span, bytes) =>
+        {
+            for (int i = 0; i < span.Length; i++)
+                span[i] = chars[bytes[i] % chars.Length];
+        });
     }
 }
 
