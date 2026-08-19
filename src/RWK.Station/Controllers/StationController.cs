@@ -891,24 +891,32 @@ public sealed class StationController : IDisposable
                     string targetAddress = ruleEl.TryGetProperty("targetAddress", out var taProp)
                         ? taProp.GetString() ?? "127.0.0.1"
                         : "127.0.0.1";
+                    bool enabled = ruleEl.TryGetProperty("enabled", out var enProp) && enProp.GetBoolean();
+                    string name = ruleEl.TryGetProperty("name", out var nmProp)
+                        ? nmProp.GetString() ?? $"{protocol}:{port}"
+                        : $"{protocol}:{port}";
 
-                    receivedRules.Add(new ForwardRuleInfo(port, protocol, targetAddress));
+                    receivedRules.Add(new ForwardRuleInfo(port, protocol, targetAddress, name, enabled));
 
-                    try
+                    // Only register inbound forward for enabled rules.
+                    if (enabled)
                     {
-                        if (protocol == "udp")
+                        try
                         {
-                            await _sidecarHost!.CreateInboundUdpForwardAsync(port, port, targetAddress).ConfigureAwait(false);
+                            if (protocol == "udp")
+                            {
+                                await _sidecarHost!.CreateInboundUdpForwardAsync(port, port, targetAddress).ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                await _sidecarHost!.CreateInboundForwardAsync(port, port, targetAddress).ConfigureAwait(false);
+                            }
+                            _diagnostics?.Invoke($"✓ Inbound forward registered: tailnet:{port} → {targetAddress}:{port} ({protocol})");
                         }
-                        else
+                        catch (Exception ex)
                         {
-                            await _sidecarHost!.CreateInboundForwardAsync(port, port, targetAddress).ConfigureAwait(false);
+                            _diagnostics?.Invoke($"✗ Inbound forward failed for port {port}: {ex.Message}");
                         }
-                        _diagnostics?.Invoke($"✓ Inbound forward registered: tailnet:{port} → {targetAddress}:{port} ({protocol})");
-                    }
-                    catch (Exception ex)
-                    {
-                        _diagnostics?.Invoke($"✗ Inbound forward failed for port {port}: {ex.Message}");
                     }
                 }
 
@@ -1008,7 +1016,7 @@ public sealed class StationController : IDisposable
 /// <summary>
 /// Info about a forward rule received from the Client, for UI display on the Station.
 /// </summary>
-public record ForwardRuleInfo(int Port, string Protocol, string TargetAddress);
+public record ForwardRuleInfo(int Port, string Protocol, string TargetAddress, string Name = "", bool Enabled = false);
 
 /// <summary>
 /// Controller lifecycle states.

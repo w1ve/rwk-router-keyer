@@ -815,11 +815,11 @@ public partial class MainForm : Form
         foreach (var rule in rules)
         {
             _forwardRulesGrid.Rows.Add(
-                $"{rule.Protocol.ToUpperInvariant()} :{rule.Port}",
+                rule.Name,
                 rule.Protocol.ToUpperInvariant(),
                 rule.Port,
                 rule.Port,
-                true, // Allow by default
+                rule.Enabled,
                 rule.TargetAddress);
         }
     }
