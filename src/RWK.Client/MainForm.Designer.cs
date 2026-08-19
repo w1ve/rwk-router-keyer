@@ -333,10 +333,10 @@ partial class MainForm
         _audioDeviceCombo.Name = "_audioDeviceCombo";
 
         // Freq row: label + panel containing slider + value label
-        _toneFreqCaptionLabel.Text = "Sidetone Freq:";
+        _toneFreqCaptionLabel.Text = "Frequency:";
         _toneFreqCaptionLabel.AutoSize = true;
         _toneFreqCaptionLabel.Dock = DockStyle.Fill;
-        _toneFreqCaptionLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _toneFreqCaptionLabel.TextAlign = ContentAlignment.TopLeft;
         _toneFreqCaptionLabel.Name = "_toneFreqCaptionLabel";
 
         var freqPanel = new Panel();
@@ -354,20 +354,21 @@ partial class MainForm
         _toneFreqSlider.Scroll += OnToneFreqSliderScroll;
 
         _toneFreqValueLabel.Text = "600 Hz";
-        _toneFreqValueLabel.AutoSize = true;
+        _toneFreqValueLabel.AutoSize = false;
         _toneFreqValueLabel.Dock = DockStyle.Top;
-        _toneFreqValueLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _toneFreqValueLabel.Height = 18;
+        _toneFreqValueLabel.TextAlign = ContentAlignment.TopCenter;
         _toneFreqValueLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
         _toneFreqValueLabel.Name = "_toneFreqValueLabel";
 
-        freqPanel.Controls.Add(_toneFreqValueLabel); // Added first so Dock=Top renders below slider
+        freqPanel.Controls.Add(_toneFreqValueLabel);
         freqPanel.Controls.Add(_toneFreqSlider);
 
         // Volume row: label + panel containing slider + value label
         _toneLevelCaptionLabel.Text = "Volume:";
         _toneLevelCaptionLabel.AutoSize = true;
         _toneLevelCaptionLabel.Dock = DockStyle.Fill;
-        _toneLevelCaptionLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _toneLevelCaptionLabel.TextAlign = ContentAlignment.TopLeft;
         _toneLevelCaptionLabel.Name = "_toneLevelCaptionLabel";
 
         var levelPanel = new Panel();
@@ -385,9 +386,10 @@ partial class MainForm
         _toneLevelSlider.Scroll += OnToneLevelSliderScroll;
 
         _toneLevelValueLabel.Text = "70%";
-        _toneLevelValueLabel.AutoSize = true;
+        _toneLevelValueLabel.AutoSize = false;
         _toneLevelValueLabel.Dock = DockStyle.Top;
-        _toneLevelValueLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _toneLevelValueLabel.Height = 18;
+        _toneLevelValueLabel.TextAlign = ContentAlignment.TopCenter;
         _toneLevelValueLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
         _toneLevelValueLabel.Name = "_toneLevelValueLabel";
 
