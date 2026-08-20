@@ -29,9 +29,9 @@ Commercial solutions exist (most notably in high-end radios like the FlexRadio 6
 
 ---
 
-## Two Independent Features
+## Three Independent Features
 
-RWK provides **two features that work independently** over the same Tailscale network:
+RWK provides **three features that work independently** over the same Tailscale network:
 
 ### 1. Remote WinKeyer (CW Remoting)
 Sends hand-generated Morse code from a paddle or logger at your operating position to a radio at a remote station. **Requires pairing** (Station Key authentication) to establish the keying session. This is the timing-critical path with fail-safe protection.
@@ -39,10 +39,14 @@ Sends hand-generated Morse code from a paddle or logger at your operating positi
 ### 2. Port Forwarding (TCP/UDP Tunneling)
 Tunnels arbitrary TCP and UDP traffic between your operating position and the remote station's LAN. Used for CAT control, audio streaming, RemoteRig connections, etc. **Does not require pairing** — port forwards are configured on the Client and pushed to the Station when paired, but the actual TCP/UDP relay uses the Tailscale mesh directly.
 
-You can use either feature alone:
+### 3. FlexRadio Discovery Relay (No SmartLink Required)
+Automatically discovers FlexRadio 6000/8000 series radios on the Station's LAN and makes them appear as if they're on your local network — **without SmartLink, without a public IP, and without Flex's cloud infrastructure.** SmartSDR on your Client PC sees the radio in its discovery list and connects directly through the RWK tunnel.
+
+You can use any feature alone or in combination:
 - **CW only:** Pair the Client and Station for remote keying, no port forwards needed.
 - **Port forwards only:** Configure forwards on the Client for CAT/audio/RRC access without ever pairing for CW.
-- **Both together:** Pair for CW and add port forwards for full remote operation.
+- **FlexRadio only:** Enable discovery relay + port forwards for SmartSDR access without CW.
+- **All together:** Full remote operation with CW, CAT, audio, and FlexRadio discovery.
 
 ---
 
@@ -50,6 +54,7 @@ You can use either feature alone:
 
 RWK's port forwarding tunnels any TCP or UDP traffic between your operating position and your remote station:
 
+- **FlexRadio 6000/8000 series** — SmartSDR command/data/audio streams (with discovery relay — no SmartLink needed!)
 - **RemoteHams** audio/control connections
 - **Icom** IP-based radios (IC-705, IC-7610 remote head, IC-R8600)
 - **Kenwood** KENWOOD-ARCP connections
@@ -156,6 +161,48 @@ The Station implements 10 independent fail-safe conditions (F1-F10) that guarant
 - **F9:** Tailscale path lost → force key up
 
 A latched SAFE condition requires deliberate operator action (Re-Arm button or remote ARM) to resume keying.
+
+---
+
+## FlexRadio Discovery Relay — No SmartLink Required
+
+### The Problem with SmartLink
+
+FlexRadio's SmartLink service requires a public IP address, port forwarding on your router, or reliance on Flex's cloud infrastructure. For many operators — especially those with CGNAT, satellite, or cellular internet — SmartLink simply doesn't work. Others don't want their radio traffic routed through a third-party cloud service.
+
+### RWK's Solution: VITA-49 Discovery Relay
+
+RWK intercepts the FlexRadio discovery broadcasts at the Station and replays them on the Client's local network with the endpoint rewritten to point through the RWK tunnel. SmartSDR on the Client sees the radio in its discovery list and connects as if it were local.
+
+**How it works:**
+
+```
+Station LAN:
+  FlexRadio 6xxx → broadcasts VITA-49 discovery on UDP 4992
+                 → Station's Discovery Listener captures it
+                 → Forwards raw payload over control channel to Client
+
+Client LAN:
+  Client receives discovery_announce
+  → Rewrites ip= and port= fields to Client's local forward rule endpoint
+  → Broadcasts rewritten VITA-49 packet on Client LAN (UDP 4992)
+  → SmartSDR discovers the radio and connects via the forwarded ports
+```
+
+**Technical details:**
+- Discovery packets use VITA-49 encapsulation (FlexRadio's format since SmartSDR v1.1.3)
+- 28-byte VITA-49 preamble: header, stream ID 0x800, Flex OUI class ID (0x001C2D53:4CFFFF00), timestamps
+- ASCII payload: space-separated key=value pairs (model, serial, ip, port, status, etc.)
+- The codec verifies stream ID and class ID before parsing — non-Flex traffic on port 4992 is ignored
+- Rewrite preserves all fields except `ip=` and `port=`, including unknown/future fields
+- Packet length word is recomputed after rewrite so the result remains valid VITA-49
+- The Station binds with SO_REUSEADDR so SmartSDR at the Station continues to work
+
+**What you need:**
+1. A TCP port forward for the FlexRadio command port (default 4992)
+2. UDP port forwards for the streaming data ports (as needed)
+3. Discovery capture enabled on the Station
+4. Discovery re-emission enabled on the Client
 
 ---
 
@@ -345,6 +392,26 @@ To tunnel other traffic (CAT control, audio, RRC):
 6. Status column shows "Listening" when ready, "Active" when traffic flows
 
 Port forwards are persisted and automatically re-created on restart. Use **Disable Sel** or **Disable All** to stop forwarding without removing the rule.
+
+### Step 8: FlexRadio Setup (Optional — for Flex 6000/8000 series)
+
+To remote a FlexRadio without SmartLink:
+
+1. **Create port forwards** on the Client for the FlexRadio ports:
+   - TCP port 4992 → Station Target = radio's IP on Station LAN (e.g., 192.168.1.50), Station Port 4992
+   - Additional UDP ports for VITA-49 streaming data (typically 4993+, as needed by your setup)
+
+2. **Enable discovery capture on Station:**
+   - Check "Enable discovery capture" in the FlexRadio Discovery section
+
+3. **Enable discovery re-emission on Client:**
+   - Check "Enable discovery re-emission" in the FlexRadio Discovery section
+
+4. **Enable the port forward rules** using the Enable buttons
+
+5. **Open SmartSDR** on the Client PC — the radio should appear in the discovery list as if it were on your local network. Connect normally.
+
+> **Note:** The discovery relay rewrites the radio's IP and command port to point at your local forward rule. SmartSDR connects through the tunnel transparently. No SmartLink account, no public IP, no Flex cloud infrastructure required.
 
 ---
 
