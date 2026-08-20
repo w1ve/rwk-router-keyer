@@ -2,12 +2,12 @@
   <PropertyGroup>
     <!-- Version: 1.0.0.BUILD where BUILD is a short auto-incrementing number.
          We use the day-of-year * 100 + hour to get a value under 65535. -->
-    <VersionPrefix>1.0.0</VersionPrefix>
+    <VersionPrefix>1.0.1</VersionPrefix>
     <BuildNumber>$([System.DateTime]::UtcNow.DayOfYear)$([System.DateTime]::UtcNow.ToString("HH"))</BuildNumber>
     <Version>$(VersionPrefix).$(BuildNumber)</Version>
-    <AssemblyVersion>1.0.0.$(BuildNumber)</AssemblyVersion>
-    <FileVersion>1.0.0.$(BuildNumber)</FileVersion>
-    <InformationalVersion>1.0.0.$(BuildNumber)</InformationalVersion>
+    <AssemblyVersion>1.0.1.$(BuildNumber)</AssemblyVersion>
+    <FileVersion>1.0.1.$(BuildNumber)</FileVersion>
+    <InformationalVersion>1.0.1.$(BuildNumber)</InformationalVersion>
     <Copyright>Copyright (c) 2026 Gerry Hull, W1VE</Copyright>
     <Company>W1VE</Company>
   </PropertyGroup>

@@ -43,6 +43,7 @@ public partial class MainForm : Form
     private ClientController? _controller;
     private readonly LogService _logService = new();
     private bool _suppressGridEvents;
+    private bool _suppressPortEvents;
 
     // Device monitoring
     private System.Windows.Forms.Timer? _portPollTimer;
@@ -315,6 +316,130 @@ public partial class MainForm : Form
         _logService.Info("All forward rules disabled.");
     }
 
+    private void OnWizardClick(object? sender, EventArgs e)
+    {
+        if (_controller is null) return;
+
+        var catalog = Wizard.CatalogLoader.Load();
+        if (catalog.Entries.Count == 0)
+        {
+            MessageBox.Show("No radio catalog found. Ensure radios.json is alongside the executable.",
+                "Catalog Not Found", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var existingRules = _controller.Config.ForwardRules.ToList();
+        using var wizard = new Wizard.WizardForm(catalog, existingRules);
+
+        if (wizard.ShowDialog(this) == DialogResult.OK && wizard.GeneratedRules.Count > 0)
+        {
+            MergeWizardRules(wizard.GeneratedRules);
+        }
+    }
+
+    private void OnImportProfileClick(object? sender, EventArgs e)
+    {
+        if (_controller is null) return;
+
+        using var ofd = new OpenFileDialog
+        {
+            Title = "Import RWK Profile",
+            Filter = "RWK Profiles (*.rwkprofile.json)|*.rwkprofile.json|All Files (*.*)|*.*",
+            InitialDirectory = Wizard.ProfileManager.GetProfilesDirectory()
+        };
+
+        if (ofd.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        var profile = Wizard.ProfileManager.LoadProfile(ofd.FileName, out string? error);
+        if (profile is null)
+        {
+            MessageBox.Show($"Failed to load profile:\n\n{error}",
+                "Import Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        // Run conflict detection.
+        var existingRules = _controller.Config.ForwardRules.ToList();
+        var conflicts = Wizard.ConflictDetector.Detect(profile.Forwards, existingRules, trialBind: true);
+
+        if (Wizard.ConflictDetector.HasErrors(conflicts))
+        {
+            string msg = "Cannot import — there are conflicts:\n\n" +
+                string.Join("\n", conflicts.Where(c => c.Severity == Wizard.ConflictSeverity.Error).Select(c => c.Message));
+            MessageBox.Show(msg, "Import Conflicts", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        if (conflicts.Count > 0)
+        {
+            string msg = "Warnings:\n\n" +
+                string.Join("\n", conflicts.Select(c => c.Message)) +
+                "\n\nProceed with import?";
+            if (MessageBox.Show(msg, "Import Warnings", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                return;
+        }
+
+        MergeWizardRules(profile.Forwards);
+        _logService.Info($"Imported profile: {profile.Profile.Name} ({profile.Forwards.Count} rules).");
+    }
+
+    private void MergeWizardRules(IReadOnlyList<Wizard.ProfileForwardRule> rules)
+    {
+        if (_controller is null) return;
+
+        foreach (var pfr in rules)
+        {
+            var protocol = pfr.Protocol.Equals("UDP", StringComparison.OrdinalIgnoreCase)
+                ? ForwardProtocol.Udp : ForwardProtocol.Tcp;
+
+            // Check if a rule with this name already exists (merge by name).
+            var existingRule = _controller.Config.ForwardRules
+                .FirstOrDefault(r => string.Equals(r.Name, pfr.Name, StringComparison.OrdinalIgnoreCase));
+
+            if (existingRule is not null)
+            {
+                // Update existing rule (preserve hand-edited StationTargetAddress if profile has placeholder).
+                string target = pfr.StationTarget;
+                if (target == "127.0.0.1" && existingRule.StationTargetAddress != "127.0.0.1")
+                    target = existingRule.StationTargetAddress;
+
+                var updated = existingRule with
+                {
+                    Protocol = protocol,
+                    ClientPort = pfr.ClientPort,
+                    StationPort = pfr.StationPort,
+                    BindAddress = pfr.BindAddress,
+                    StationTargetAddress = target,
+                    Enabled = pfr.Enabled
+                };
+
+                try { _controller.RemoveForwardRule(existingRule.Id); } catch { }
+                try { _controller.AddForwardRule(updated); } catch { }
+            }
+            else
+            {
+                // Add new rule.
+                var newRule = new ForwardRule(
+                    Guid.NewGuid(),
+                    pfr.Name,
+                    protocol,
+                    pfr.ClientPort,
+                    pfr.StationPort,
+                    pfr.Enabled,
+                    pfr.BindAddress,
+                    ForwardRuleType.Generic,
+                    pfr.StationTarget);
+
+                try { _controller.AddForwardRule(newRule); } catch { }
+            }
+        }
+
+        // Reload grid from controller state.
+        LoadForwardRulesIntoGrid();
+        _logService.Info($"Wizard/Import: {rules.Count} rules merged into forwarding table.");
+    }
+
     private ForwardRule BuildRuleFromRow(DataGridViewRow row)
     {
         string name = row.Cells["RuleName"]?.Value?.ToString() ?? "Rule";
@@ -490,8 +615,9 @@ public partial class MainForm : Form
         var ports = GetSortedComPorts();
         _lastKnownPorts = ports;
 
-        UpdateComboPreservingSelection(_paddlePortCombo, ports);
-        UpdateComboPreservingSelection(_winKeyerPortCombo, ports);
+        var portsWithNone = new[] { "(None)" }.Concat(ports).ToArray();
+        UpdateComboPreservingSelection(_paddlePortCombo, portsWithNone);
+        UpdateComboPreservingSelection(_winKeyerPortCombo, portsWithNone);
     }
 
     private void RefreshAudioDeviceDropdown()
@@ -618,10 +744,42 @@ public partial class MainForm : Form
                 _stationAddressTextBox.Text = _controller.Config.Tailscale.StationAddress;
 
             // Load persisted port selections
+            // Suppress event handlers during load so we don't double-connect.
+            _suppressPortEvents = true;
+
+            // Restore WinKeyer mode BEFORE port selection so reconnect uses the right mode.
+            if (_controller.Config.WinKeyerMode == RWK.Shared.IO.WinKeyerMode.HardwareWinKey)
+            {
+                _wkModeHardwareRadio.Checked = true;
+                _controller.SetWinKeyerMode(RWK.Shared.IO.WinKeyerMode.HardwareWinKey);
+                _sidetoneMuteLabel.Visible = true;
+            }
+            else
+            {
+                _wkModeLoggerRadio.Checked = true;
+                _sidetoneMuteLabel.Visible = false;
+            }
+
             if (!string.IsNullOrEmpty(_controller.Config.WinKeyerPortName) && _winKeyerPortCombo.Items.Contains(_controller.Config.WinKeyerPortName))
                 _winKeyerPortCombo.SelectedItem = _controller.Config.WinKeyerPortName;
+            else
+                _winKeyerPortCombo.SelectedItem = "(None)";
+
             if (!string.IsNullOrEmpty(_controller.Config.PaddlePortName) && _paddlePortCombo.Items.Contains(_controller.Config.PaddlePortName))
                 _paddlePortCombo.SelectedItem = _controller.Config.PaddlePortName;
+            else
+                _paddlePortCombo.SelectedItem = "(None)";
+
+            _suppressPortEvents = false;
+
+            // Now manually connect the persisted ports (mode is already set correctly).
+            string? paddlePort = _paddlePortCombo.SelectedItem as string;
+            if (!string.IsNullOrEmpty(paddlePort) && paddlePort != "(None)")
+                _controller.ConnectPaddlePort(paddlePort);
+
+            string? wkPort = _winKeyerPortCombo.SelectedItem as string;
+            if (!string.IsNullOrEmpty(wkPort) && wkPort != "(None)")
+                _controller.ConnectWinKeyerPort(wkPort);
 
             // Sync keyer settings from loaded config to UI
             _speedSlider.Value = Math.Clamp(_controller.Config.SpeedWpm, _speedSlider.Minimum, _speedSlider.Maximum);
@@ -741,6 +899,7 @@ public partial class MainForm : Form
         controller.AuthUrlAvailable += OnControllerAuthUrlAvailable;
         controller.SessionStatusChanged += OnSessionStatusChanged;
         controller.ForwardRuleStatusChanged += OnForwardRuleStatusChanged;
+        controller.HardwareWinKeyerConnected += OnHardwareWinKeyerConnected;
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -905,10 +1064,10 @@ public partial class MainForm : Form
             return;
         }
 
-        // Don't show the panel if it was already dismissed (auth succeeded)
-        // or if we have a stored auth key (sidecar will auto-connect from persisted state).
+        // Don't show the panel if it was already dismissed (auth succeeded).
+        // Note: we do NOT check HasPersistedTailscaleState() here because the sidecar
+        // is actively reporting NeedsAuth — the persisted state is stale or invalid.
         if (_loginDismissed) return;
-        if (HasPersistedTailscaleState()) return;
 
         _pendingAuthUrl = authUrl;
         if (_loginPanel is not null)
@@ -933,7 +1092,7 @@ public partial class MainForm : Form
 
         _loginPanel = new Panel
         {
-            Size = new Size(420, 180),
+            Size = new Size(460, 200),
             BackColor = SystemColors.Info,
             BorderStyle = BorderStyle.FixedSingle,
             Anchor = AnchorStyles.None
@@ -948,15 +1107,15 @@ public partial class MainForm : Form
             ForeColor = SystemColors.InfoText,
             Font = new Font(Font.FontFamily, 9.5f),
             AutoSize = false,
-            Size = new Size(380, 40),
-            Location = new Point(20, 15),
+            Size = new Size(420, 44),
+            Location = new Point(20, 12),
             TextAlign = ContentAlignment.MiddleLeft
         };
 
         _openBrowserButton = new Button
         {
             Text = "Open Browser",
-            Size = new Size(120, 32),
+            Size = new Size(130, 34),
             Location = new Point(20, 62),
             UseVisualStyleBackColor = true
         };
@@ -964,17 +1123,17 @@ public partial class MainForm : Form
 
         _pasteKeyButton = new Button
         {
-            Text = "Paste Auth Key Instead",
-            Size = new Size(160, 32),
-            Location = new Point(155, 62),
+            Text = "Paste Auth Key",
+            Size = new Size(140, 34),
+            Location = new Point(165, 62),
             UseVisualStyleBackColor = true
         };
         _pasteKeyButton.Click += OnPasteKeyInsteadClick;
 
         _authKeyTextBox = new TextBox
         {
-            Size = new Size(260, 24),
-            Location = new Point(20, 105),
+            Size = new Size(290, 26),
+            Location = new Point(20, 108),
             Visible = false,
             PlaceholderText = "tskey-auth-..."
         };
@@ -982,8 +1141,8 @@ public partial class MainForm : Form
         _submitKeyButton = new Button
         {
             Text = "Submit",
-            Size = new Size(80, 24),
-            Location = new Point(290, 105),
+            Size = new Size(80, 26),
+            Location = new Point(320, 108),
             UseVisualStyleBackColor = true,
             Visible = false
         };
@@ -995,7 +1154,7 @@ public partial class MainForm : Form
             ForeColor = SystemColors.InfoText,
             Font = new Font(Font.FontFamily, 8.5f),
             AutoSize = true,
-            Location = new Point(20, 145)
+            Location = new Point(20, 150)
         };
 
         _loginPanel.Controls.AddRange(new Control[]
@@ -1102,7 +1261,8 @@ public partial class MainForm : Form
                 _linkIndicator.ForeColor = SystemColors.Highlight;
                 _linkIndicator.Text = "●";
                 _pathLabel.Text = "Connecting...";
-                DismissLoginPanel();
+                // Don't dismiss login panel on Connecting — only dismiss on Connected.
+                // A transient Connecting state shouldn't permanently block the auth panel.
                 break;
             case TailscaleState.NeedsAuth:
                 _linkIndicator.ForeColor = SystemColors.Highlight;
@@ -1270,7 +1430,7 @@ public partial class MainForm : Form
         return form.ShowDialog() == DialogResult.OK ? textBox.Text : null;
     }
 
-    private void OnDeleteTailscaleAuthClick(object? sender, EventArgs e)
+    private async void OnDeleteTailscaleAuthClick(object? sender, EventArgs e)
     {
         var result = MessageBox.Show(
             "Do you really want to delete the Tailscale authorization?\n\n" +
@@ -1283,6 +1443,15 @@ public partial class MainForm : Form
 
         try
         {
+            // Stop the sidecar first so it releases file locks on the state directory.
+            if (_controller is not null)
+            {
+                await _controller.StopSidecarAsync().ConfigureAwait(true);
+            }
+
+            // Small delay to let the process fully exit and release handles.
+            await Task.Delay(500).ConfigureAwait(true);
+
             // Delete the persisted Tailscale state directory
             string stateDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -1318,32 +1487,97 @@ public partial class MainForm : Form
 
     private void OnWinKeyerPortChanged(object? sender, EventArgs e)
     {
+        if (_suppressPortEvents) return;
         string? port = _winKeyerPortCombo.SelectedItem as string;
         try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "winkeyer.log"), $"[{DateTime.Now:HH:mm:ss.fff}] UI: WinKeyer port selected: '{port}'\n"); } catch { }
-        if (string.IsNullOrEmpty(port) || _controller is null) return;
+        if (string.IsNullOrEmpty(port) || port == "(None)" || _controller is null)
+        {
+            // (None) selected — stop existing WinKeyer connection.
+            if (_controller is not null)
+            {
+                try { _controller.DisconnectWinKeyerPort(); } catch { }
+            }
+            return;
+        }
+
+        // Uniqueness check: can't use same port as paddle.
+        string? paddlePort = _paddlePortCombo.SelectedItem as string;
+        if (!string.IsNullOrEmpty(paddlePort) && paddlePort != "(None)" &&
+            string.Equals(port, paddlePort, StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show("WinKeyer port cannot be the same as the Paddle port.",
+                "Port Conflict", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _winKeyerPortCombo.SelectedItem = "(None)";
+            return;
+        }
 
         _controller.ConnectWinKeyerPort(port);
     }
 
     private void OnPaddlePortChanged(object? sender, EventArgs e)
     {
+        if (_suppressPortEvents) return;
         string? port = _paddlePortCombo.SelectedItem as string;
-        if (string.IsNullOrEmpty(port) || _controller is null) return;
+        if (string.IsNullOrEmpty(port) || port == "(None)" || _controller is null)
+        {
+            // (None) selected — stop existing paddle connection.
+            if (_controller is not null)
+            {
+                try { _controller.DisconnectPaddlePort(); } catch { }
+            }
+            return;
+        }
+
+        // Uniqueness check: can't use same port as WinKeyer.
+        string? wkPort = _winKeyerPortCombo.SelectedItem as string;
+        if (!string.IsNullOrEmpty(wkPort) && wkPort != "(None)" &&
+            string.Equals(port, wkPort, StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show("Paddle port cannot be the same as the WinKeyer port.",
+                "Port Conflict", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _paddlePortCombo.SelectedItem = "(None)";
+            return;
+        }
 
         _controller.ConnectPaddlePort(port);
     }
 
     private void OnWinKeyerModeChanged(object? sender, EventArgs e)
     {
+        if (_suppressPortEvents) return;
         if (_controller is null) return;
 
         // Only act on the radio button that became checked (avoid double-fire)
         if (sender is RadioButton rb && !rb.Checked) return;
 
+        // Hide hardware status indicator when mode changes.
+        _wkHardwareStatus.Visible = false;
+        _wkHardwareStatus.Text = "";
+
+        // Show/hide sidetone mute indicator.
         bool isHardwareMode = _wkModeHardwareRadio.Checked;
-        _controller.SetWinKeyerMode(isHardwareMode
-            ? WinKeyerMode.HardwareWinKey
-            : WinKeyerMode.LoggerApp);
+        _sidetoneMuteLabel.Visible = isHardwareMode;
+
+        var mode = isHardwareMode ? RWK.Shared.IO.WinKeyerMode.HardwareWinKey : RWK.Shared.IO.WinKeyerMode.LoggerApp;
+        _controller.SetWinKeyerMode(mode);
+
+        // Persist the mode selection.
+        _controller.PersistWinKeyerMode(mode);
+
+        // Reconnect the current WinKeyer port with the new mode.
+        string? port = _winKeyerPortCombo.SelectedItem as string;
+        if (!string.IsNullOrEmpty(port) && port != "(None)")
+        {
+            _controller.ConnectWinKeyerPort(port);
+        }
+    }
+
+    private void OnHardwareWinKeyerConnected(object? sender, int chipVersion)
+    {
+        if (InvokeRequired) { BeginInvoke(() => OnHardwareWinKeyerConnected(sender, chipVersion)); return; }
+
+        _wkHardwareStatus.Text = $"\u2714 WK{chipVersion}";
+        _wkHardwareStatus.Visible = true;
     }
 
     private async void OnWinKeyerLoopbackTestClick(object? sender, EventArgs e)

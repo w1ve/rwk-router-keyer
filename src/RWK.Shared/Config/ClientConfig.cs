@@ -8,6 +8,7 @@
  * SPDX-License-Identifier: MIT
  */
 using System.Collections.Immutable;
+using RWK.Shared.IO;
 
 namespace RWK.Shared.Config;
 
@@ -29,6 +30,12 @@ public record ClientConfig
 
     /// <summary>Serial port the logging software opens as a WinKeyer, or <see langword="null"/> (2.1).</summary>
     public string? WinKeyerPortName { get; init; }
+
+    /// <summary>
+    /// WinKeyer operating mode: LoggerApp (RWK emulates WK2 for logging software) or
+    /// HardwareWinKey (RWK drives a physical K1EL WinKeyer chip). Default LoggerApp.
+    /// </summary>
+    public WinKeyerMode WinKeyerMode { get; init; } = WinKeyerMode.LoggerApp;
 
     /// <summary>Keyer speed in words per minute. Default 25; supported range 5-60 (3.10).</summary>
     public int SpeedWpm { get; init; } = 25;

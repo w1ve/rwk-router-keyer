@@ -67,6 +67,21 @@ public record StationConfig
     /// </summary>
     public bool DiscoveryCaptureEnabled { get; init; }
 
+    // ---- Logger WinKeyer Input ----
+
+    /// <summary>
+    /// Enables a secondary WK2 protocol host on <see cref="LoggerPortName"/> that accepts
+    /// CW macros from logging software running on the Station PC (e.g. N1MM+ via RDP).
+    /// When active, logger CW takes priority over remote paddle edges.
+    /// </summary>
+    public bool LoggerInputEnabled { get; init; }
+
+    /// <summary>
+    /// Serial port (real or virtual) on which the logger WK2 host listens.
+    /// Must differ from <see cref="KeyingPortName"/>.
+    /// </summary>
+    public string? LoggerPortName { get; init; }
+
     /// <summary>
     /// UDP port the discovery listener binds to on the Station's local network.
     /// <para>

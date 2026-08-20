@@ -1,0 +1,519 @@
+{
+  "catalogVersion": 3,
+  "updated": "2026-08-20",
+  "entries": [
+    {
+      "id": "icom.rsba1.radio-lan",
+      "vendor": "Icom",
+      "displayName": "RS-BA1 v2 — direct to radio LAN port",
+      "models": ["IC-7300MK2", "IC-7610", "IC-9700", "IC-7851", "IC-905", "IC-R8600", "IC-705"],
+      "software": "RS-BA1 Remote Utility",
+      "endpointLocation": "lan",
+      "confidence": "verified",
+      "source": "https://www.icom.co.jp/world/support/download/firm/RS-BA1/",
+      "forwards": [
+        { "proto": "UDP", "port": 50001, "role": "control", "portIdentity": "required", "fixed": false, "name": "RSBA1-Control", "notes": "Icom control / login channel" },
+        { "proto": "UDP", "port": 50002, "role": "cat", "portIdentity": "required", "fixed": false, "name": "RSBA1-Serial", "notes": "CI-V serial data" },
+        { "proto": "UDP", "port": 50003, "role": "audio", "portIdentity": "required", "fixed": false, "name": "RSBA1-Audio", "notes": "Bidirectional audio" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Radio's IP address on the Station's LAN",
+          "why": "This is where the Station sends traffic after it comes out of the tunnel. The Station is already on the same LAN as your radio, so this is the radio's ordinary local address -- not a Tailscale address, and not your public IP.",
+          "howToFind": "On the radio: MENU -> SET -> Network -> IP Address. Set a fixed address rather than DHCP; if the radio's lease changes, these rules point at nothing.",
+          "ifWrong": "The rules will bind normally and the Status column will read 'Listening'. Nothing will report an error. Remote Utility will simply fail to connect, or hang at the login step."
+        }
+      },
+      "clientNotes": [
+        "Remote Utility -> Server List: address 127.0.0.1, control port 50001",
+        "Leave 'Server Setting' completely blank on the client side",
+        "The Radio List fills itself in on the first successful connect"
+      ],
+      "stationNotes": [
+        "No station-side software required -- radio serves RS-BA1 directly"
+      ],
+      "radioNotes": [
+        "Set a fixed LAN IP on the radio (do not rely on DHCP)",
+        "Register a Network User with a password in the radio's Network menu"
+      ]
+    },
+    {
+      "id": "icom.rsba1.server-pc",
+      "vendor": "Icom",
+      "displayName": "RS-BA1 v2 — via base-station PC",
+      "models": ["IC-7300", "IC-7100", "IC-9100", "IC-7600", "IC-7700"],
+      "software": "RS-BA1 Remote Utility + Server",
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": "https://www.icom.co.jp/world/support/download/firm/RS-BA1/",
+      "forwards": [
+        { "proto": "UDP", "port": 50001, "role": "control", "portIdentity": "required", "fixed": false, "name": "RSBA1-Control", "notes": "Icom control / login channel" },
+        { "proto": "UDP", "port": 50002, "role": "cat", "portIdentity": "required", "fixed": false, "name": "RSBA1-Serial", "notes": "CI-V serial data" },
+        { "proto": "UDP", "port": 50003, "role": "audio", "portIdentity": "required", "fixed": false, "name": "RSBA1-Audio", "notes": "Bidirectional audio" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "RS-BA1 Server PC address",
+          "why": "The Remote Utility server runs on this PC. If it's the same machine as RWK Station, use 127.0.0.1. If it's a different PC on the Station's LAN, use that PC's LAN address.",
+          "howToFind": "If the server is on the Station PC itself: 127.0.0.1. Otherwise: run ipconfig on the server PC and use its IPv4 address.",
+          "ifWrong": "Remote Utility will fail to connect with no useful diagnostic. The rules will show 'Listening' normally."
+        }
+      },
+      "clientNotes": [
+        "Remote Utility -> Server List: address 127.0.0.1, control port 50001",
+        "Leave 'Server Setting' completely blank on the client side",
+        "The Remote Utility server must be RUNNING on the station PC (it is a foreground program)"
+      ],
+      "stationNotes": [
+        "RS-BA1 Remote Utility Server must be running on the station PC",
+        "The server is a foreground program, not a Windows service"
+      ],
+      "radioNotes": [
+        "Radio must be connected to the server PC via USB or CI-V cable"
+      ]
+    },
+    {
+      "id": "icom.native.wfview",
+      "vendor": "Icom",
+      "displayName": "wfview / Win4Icom — native LAN protocol",
+      "models": ["IC-7300MK2", "IC-7610", "IC-9700", "IC-7851", "IC-905", "IC-R8600", "IC-705"],
+      "software": "wfview or Win4Icom",
+      "endpointLocation": "lan",
+      "confidence": "community",
+      "source": null,
+      "forwards": [
+        { "proto": "UDP", "port": 50001, "role": "control", "portIdentity": "required", "fixed": false, "name": "Icom-Control", "notes": "Control / login" },
+        { "proto": "UDP", "port": 50002, "role": "cat", "portIdentity": "required", "fixed": false, "name": "Icom-Serial", "notes": "CI-V data" },
+        { "proto": "UDP", "port": 50003, "role": "audio", "portIdentity": "required", "fixed": false, "name": "Icom-Audio", "notes": "Bidirectional audio" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Radio's IP address on the Station's LAN",
+          "why": "wfview connects directly to the radio's LAN port using Icom's native protocol (same ports as RS-BA1).",
+          "howToFind": "On the radio: MENU -> SET -> Network -> IP Address.",
+          "ifWrong": "wfview will show 'Connecting...' and eventually time out."
+        }
+      },
+      "clientNotes": [
+        "wfview -> Radio Access = Network, hostname 127.0.0.1",
+        "Ports 50001/50002/50003, radio username and password as set in radio's Network menu"
+      ],
+      "stationNotes": [],
+      "radioNotes": [
+        "Set a fixed LAN IP on the radio",
+        "Register a Network User with a password"
+      ]
+    },
+    {
+      "id": "kenwood.kns.direct",
+      "vendor": "Kenwood",
+      "displayName": "KNS direct to radio (ARCP-890)",
+      "models": ["TS-890S"],
+      "software": "ARCP-890",
+      "endpointLocation": "lan",
+      "confidence": "verified",
+      "source": "https://www.kenwood.com/i/products/info/amateur/ts_890/pdf/ts890_kns_manual_e.pdf",
+      "forwards": [
+        { "proto": "TCP", "port": 60000, "role": "control", "portIdentity": "required", "fixed": true, "name": "KNS-Control", "notes": "KNS control data" },
+        { "proto": "UDP", "port": 60001, "role": "audio", "portIdentity": "required", "fixed": true, "name": "KNS-Audio", "notes": "Built-in VoIP audio" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "TS-890S IP address on the Station's LAN",
+          "why": "The Station sends control and audio here after traffic leaves the tunnel. This is the radio's ordinary LAN address -- not a Tailscale address.",
+          "howToFind": "On the radio: LAN menu -> IP Address. Set it manually; a DHCP lease change will silently break these rules.",
+          "ifWrong": "Both rules bind and show 'Listening'. ARCP-890 fails to connect with no useful diagnostic."
+        }
+      },
+      "clientNotes": [
+        "Connection type: KNS (Directly to TS-890S)",
+        "IP address: 127.0.0.1",
+        "Leave the MAC address field BLANK -- use the Internet-mode configuration, not the LAN-mode one",
+        "Tick 'Use TS-890S Built-in VoIP'"
+      ],
+      "stationNotes": [],
+      "radioNotes": [
+        "KNS menu 1: KNS Operation (LAN Connector) = On (Internet)",
+        "KNS menu 3: Built-in VoIP = On",
+        "Modulation Source: DATA SEND audio input = LAN"
+      ]
+    },
+    {
+      "id": "kenwood.arhp.conventional",
+      "vendor": "Kenwood",
+      "displayName": "ARHP host program (conventional remote)",
+      "models": ["TS-890S", "TS-590S", "TS-590SG", "TS-990S", "TS-480HX", "TS-480SAT"],
+      "software": "ARHP + ARCP + ARVP-10",
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": "https://www.kenwood.com/i/products/info/amateur/ts_890/pdf/ts890_kns_manual_e.pdf",
+      "forwards": [
+        { "proto": "TCP", "port": 50000, "role": "control", "portIdentity": "floating", "fixed": false, "name": "ARHP-Control", "notes": "ARHP host control data" },
+        { "proto": "UDP", "port": 33550, "role": "audio", "portIdentity": "unknown", "fixed": false, "name": "ARVP-Audio", "notes": "ARVP-10 VoIP audio" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "ARHP host PC address",
+          "why": "ARHP runs on a PC at the station connected to the radio via USB. If that PC is the RWK Station, use 127.0.0.1.",
+          "howToFind": "If ARHP runs on the Station PC itself: 127.0.0.1. Otherwise run ipconfig on the ARHP PC.",
+          "ifWrong": "ARCP will fail to connect to ARHP."
+        }
+      },
+      "clientNotes": [
+        "ARCP -> ARHP port number: 50000 (or whatever you set)",
+        "ARVP-10R -> connect to 127.0.0.1 port 33550"
+      ],
+      "stationNotes": [
+        "ARHP must be running on the station PC (foreground program)",
+        "Radio connected via USB or serial cable to the ARHP PC",
+        "Audio requires an analogue cable from radio's ACC 2 connector to the ARHP PC sound card"
+      ],
+      "radioNotes": []
+    },
+    {
+      "id": "yaesu.sculan10",
+      "vendor": "Yaesu",
+      "displayName": "SCU-LAN10 interface",
+      "models": ["FTDX101MP", "FTDX101D", "FTDX10", "FT-710"],
+      "software": "SCU-LAN10 Remote Software",
+      "endpointLocation": "lan",
+      "confidence": "verified",
+      "source": "https://www.yaesu.com/indexVS.cfm?cmd=DisplayProducts&ProdCatID=102&encProdID=SB757E9EAF1F69117",
+      "forwards": [
+        { "proto": "UDP", "port": 50000, "role": "control", "portIdentity": "required", "fixed": false, "name": "SCU-Control", "notes": "SCU-LAN10 control" },
+        { "proto": "UDP", "port": 50001, "role": "cat", "portIdentity": "required", "fixed": false, "name": "SCU-CAT", "notes": "CAT commands" },
+        { "proto": "UDP", "port": 50002, "role": "audio", "portIdentity": "required", "fixed": false, "name": "SCU-Audio-TX", "notes": "Audio TX" },
+        { "proto": "UDP", "port": 50003, "role": "audio", "portIdentity": "required", "fixed": false, "name": "SCU-Audio-RX", "notes": "Audio RX" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "SCU-LAN10 IP address on the Station's LAN",
+          "why": "The SCU-LAN10 interface has its own LAN address, separate from the radio. Traffic leaves the tunnel and goes to this address.",
+          "howToFind": "Use the SCU-LAN10 Setting Tool to view or set the IP address. Set it to static.",
+          "ifWrong": "All rules will show 'Listening' but the Remote Software will time out connecting."
+        }
+      },
+      "clientNotes": [
+        "SCU-LAN10 Remote Software -> IP Address: 127.0.0.1",
+        "Port settings must match (50000-50003 by default)",
+        "No public IP or dynamic DNS is needed -- RWK provides the tunnel"
+      ],
+      "stationNotes": [],
+      "radioNotes": [
+        "SCU-LAN10 must be connected to the radio and powered on",
+        "Set a static IP address via the SCU-LAN10 Setting Tool"
+      ]
+    },
+    {
+      "id": "flex.smartsdr",
+      "vendor": "FlexRadio",
+      "displayName": "SmartSDR (6000/8000 series)",
+      "models": ["FLEX-6300", "FLEX-6400", "FLEX-6400M", "FLEX-6600", "FLEX-6600M", "FLEX-6700", "FLEX-8400", "FLEX-8600"],
+      "software": "SmartSDR",
+      "endpointLocation": "lan",
+      "confidence": "verified",
+      "source": null,
+      "requiresDiscoveryRelay": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4992, "role": "control", "portIdentity": "floating", "fixed": false, "name": "Flex-Command", "notes": "SmartSDR command channel" },
+        { "proto": "UDP", "port": 4991, "role": "audio", "portIdentity": "floating", "fixed": false, "name": "Flex-VITA49", "notes": "VITA-49 IQ/audio streaming" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "FlexRadio IP address on the Station's LAN",
+          "why": "SmartSDR connects to the radio's command port. The discovery relay handles finding the radio, but the forward rule still needs the radio's address.",
+          "howToFind": "Check SmartSDR on the Station PC, or look at the radio's front panel under Network settings.",
+          "ifWrong": "SmartSDR will discover the radio (via the relay) but fail to connect to it."
+        }
+      },
+      "clientNotes": [
+        "IMPORTANT: Enable 'discovery re-emission' on the Client (FlexRadio Discovery panel)",
+        "SmartSDR will discover the radio automatically once the relay and forwards are active",
+        "No SmartLink account is needed"
+      ],
+      "stationNotes": [
+        "IMPORTANT: Enable 'discovery capture' on the Station",
+        "The Station captures VITA-49 discovery broadcasts and relays them to the Client"
+      ],
+      "radioNotes": [
+        "Set a static IP address on the radio"
+      ]
+    },
+    {
+      "id": "elecraft.k4.remote",
+      "vendor": "Elecraft",
+      "displayName": "K4 / K4D Remote (peer-to-peer)",
+      "models": ["K4", "K4D", "K4HD"],
+      "software": "QK4 / Virtual K4",
+      "endpointLocation": "lan",
+      "confidence": "verified",
+      "source": null,
+      "forwards": [
+        { "proto": "TCP", "port": 9205, "role": "control", "portIdentity": "unknown", "fixed": false, "name": "K4-Remote", "notes": "Multiplexed command + audio + panadapter" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "K4 IP address on the Station's LAN",
+          "why": "The K4 runs its own remote server. One TCP connection carries everything (commands, audio, panadapter).",
+          "howToFind": "On the K4: CONFIG -> NETWORK. Note the IP address shown.",
+          "ifWrong": "QK4 / Virtual K4 will fail to connect."
+        }
+      },
+      "clientNotes": [
+        "QK4 or Virtual K4 -> Server address: 127.0.0.1, port 9205",
+        "Only ONE rule is needed -- the K4 multiplexes everything on one TCP port"
+      ],
+      "stationNotes": [],
+      "radioNotes": [
+        "Enable Remote Server in the K4's CONFIG -> NETWORK menu",
+        "Set a static IP address"
+      ]
+    },
+    {
+      "id": "remoterig.rrc1258.mk2",
+      "vendor": "RemoteRig",
+      "displayName": "RRC-1258 MkII (current firmware)",
+      "models": [],
+      "software": "RRC-1258 MkII",
+      "endpointLocation": "lan",
+      "confidence": "verified",
+      "source": "https://www.remoterig.com",
+      "forwards": [
+        { "proto": "UDP", "port": 13000, "role": "control", "portIdentity": "required", "fixed": false, "name": "RRC-SIP", "notes": "SIP signaling" },
+        { "proto": "UDP", "port": 13001, "role": "audio", "portIdentity": "required", "fixed": false, "name": "RRC-RTP", "notes": "RTP audio" },
+        { "proto": "UDP", "port": 13002, "role": "cat", "portIdentity": "required", "fixed": false, "name": "RRC-CMD", "notes": "Data/control channel" }
+      ],
+      "bindAddress": "0.0.0.0",
+      "prompts": {
+        "stationTarget": {
+          "label": "Radio-RRC IP address on the Station's LAN",
+          "why": "The Radio-RRC box sits on the Station's LAN next to the radio. It has its own IP address.",
+          "howToFind": "Check the Radio-RRC's web interface (default http://192.168.1.3) or use the RemoteRig IP scanning tool.",
+          "ifWrong": "SIP registration will fail. The Control-RRC at your operating position will show 'No connection'."
+        }
+      },
+      "clientNotes": [
+        "IMPORTANT: These rules bind to 0.0.0.0, which means they are accessible from your LAN",
+        "Point your Control-RRC hardware at this PC's LAN IP address (not 127.0.0.1)",
+        "Ensure SIP ALG is disabled on your client-side router"
+      ],
+      "stationNotes": [],
+      "radioNotes": [
+        "Radio-RRC must have a static IP address on the Station's LAN"
+      ]
+    },
+    {
+      "id": "svc.rigctld",
+      "vendor": "Hamlib",
+      "displayName": "rigctld (Hamlib CAT server)",
+      "models": [],
+      "software": "rigctld",
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": "https://hamlib.github.io/",
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4532, "role": "cat", "portIdentity": "floating", "fixed": false, "name": "rigctld", "notes": "Hamlib rigctld TCP" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "rigctld host address",
+          "why": "rigctld listens on this address at the Station. Usually 127.0.0.1 if it runs on the Station PC.",
+          "howToFind": "If rigctld runs on the Station PC: 127.0.0.1. If on another device, use that device's LAN IP.",
+          "ifWrong": "CAT commands will time out."
+        }
+      },
+      "clientNotes": [
+        "Configure your logger/software to connect to 127.0.0.1:4532 for CAT"
+      ],
+      "stationNotes": [
+        "rigctld must be running on the Station PC"
+      ],
+      "radioNotes": []
+    },
+    {
+      "id": "svc.rotctld",
+      "vendor": "Hamlib",
+      "displayName": "rotctld (Hamlib rotator server)",
+      "models": [],
+      "software": "rotctld",
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": "https://hamlib.github.io/",
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4533, "role": "rotator", "portIdentity": "floating", "fixed": false, "name": "rotctld", "notes": "Hamlib rotctld TCP" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "rotctld host address",
+          "why": "rotctld listens on this address at the Station.",
+          "howToFind": "If rotctld runs on the Station PC: 127.0.0.1.",
+          "ifWrong": "Rotator commands will time out."
+        }
+      },
+      "clientNotes": [
+        "Configure your rotator control software to connect to 127.0.0.1:4533"
+      ],
+      "stationNotes": [
+        "rotctld must be running on the Station PC"
+      ],
+      "radioNotes": []
+    },
+    {
+      "id": "svc.rdp",
+      "vendor": "Microsoft",
+      "displayName": "Remote Desktop (RDP)",
+      "models": [],
+      "software": "Remote Desktop",
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": null,
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 3389, "role": "remote-desktop", "portIdentity": "floating", "fixed": false, "name": "RDP", "notes": "Windows Remote Desktop" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "RDP target address",
+          "why": "Remote Desktop runs on the Station PC. Usually 127.0.0.1.",
+          "howToFind": "127.0.0.1 if connecting to the Station PC itself.",
+          "ifWrong": "Remote Desktop will fail to connect."
+        }
+      },
+      "clientNotes": [
+        "Remote Desktop Connection -> Computer: 127.0.0.1"
+      ],
+      "stationNotes": [
+        "Remote Desktop must be enabled on the Station PC (Settings -> System -> Remote Desktop)"
+      ],
+      "radioNotes": []
+    },
+    {
+      "id": "svc.vnc",
+      "vendor": "VNC",
+      "displayName": "VNC remote desktop",
+      "models": [],
+      "software": "VNC (any)",
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": null,
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 5900, "role": "remote-desktop", "portIdentity": "floating", "fixed": false, "name": "VNC", "notes": "VNC server" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "VNC server address",
+          "why": "VNC server runs on the Station PC.",
+          "howToFind": "127.0.0.1 if VNC is on the Station PC.",
+          "ifWrong": "VNC viewer will fail to connect."
+        }
+      },
+      "clientNotes": [
+        "VNC Viewer -> Server: 127.0.0.1:5900"
+      ],
+      "stationNotes": [
+        "VNC server must be running on the Station PC"
+      ],
+      "radioNotes": []
+    },
+    {
+      "id": "svc.pstrotator",
+      "vendor": "PstRotator",
+      "displayName": "PstRotator TCP server",
+      "models": [],
+      "software": "PstRotator",
+      "endpointLocation": "station-pc",
+      "confidence": "unverified",
+      "source": null,
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 12000, "role": "rotator", "portIdentity": "floating", "fixed": false, "name": "PstRotator", "notes": "PstRotator TCP server" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "PstRotator host address",
+          "why": "PstRotator listens for TCP connections on this address.",
+          "howToFind": "127.0.0.1 if PstRotator runs on the Station PC.",
+          "ifWrong": "Rotator control will time out."
+        }
+      },
+      "clientNotes": [
+        "Configure your rotator control to connect to 127.0.0.1:12000"
+      ],
+      "stationNotes": [
+        "PstRotator must be running with TCP server enabled"
+      ],
+      "radioNotes": []
+    },
+    {
+      "id": "generic.serial-bridge",
+      "vendor": "Generic",
+      "displayName": "Generic RS-232 serial bridge (TCP tunnel)",
+      "models": [],
+      "software": "VSPE / com0com / ser2net",
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": null,
+      "isGenericSerial": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4000, "role": "cat", "portIdentity": "floating", "fixed": false, "name": "Serial-Bridge", "notes": "TCP serial bridge" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Serial bridge target address",
+          "why": "The TCP serial server (VSPE TcpServer, com2tcp, or ser2net) listens on this address at the Station.",
+          "howToFind": "127.0.0.1 if the serial server runs on the Station PC itself.",
+          "ifWrong": "The virtual COM port on the client will not connect."
+        },
+        "basePort": {
+          "label": "TCP port for the serial bridge",
+          "why": "Each serial device needs its own TCP port. Default starts at 4000 and increments.",
+          "howToFind": "Use any available port. 4000 is a good default for the first device.",
+          "ifWrong": "Port conflict -- another service may already be using that port."
+        }
+      },
+      "clientNotes": [
+        "Install VSPE or com0com on this PC",
+        "Create a TcpClient virtual COM port pointing at 127.0.0.1:<port>",
+        "Configure your logger to use the virtual COM port"
+      ],
+      "stationNotes": [
+        "Install VSPE or com2tcp on the Station PC",
+        "Create a TcpServer listening on 0.0.0.0:<port> connected to the real COM port",
+        "Match baud rate, data bits, parity, stop bits to the device"
+      ],
+      "radioNotes": []
+    },
+    {
+      "id": "generic.tcp-service",
+      "vendor": "Generic",
+      "displayName": "Generic TCP/UDP service",
+      "models": [],
+      "software": null,
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": null,
+      "isGenericService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 8080, "role": "generic", "portIdentity": "floating", "fixed": false, "name": "Custom-Service", "notes": "User-defined TCP/UDP forward" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Service target address",
+          "why": "Where does this service listen on the Station's network?",
+          "howToFind": "127.0.0.1 if it's on the Station PC. Otherwise, the device's LAN IP.",
+          "ifWrong": "Connection will time out or be refused."
+        }
+      },
+      "clientNotes": [
+        "Connect your client software to 127.0.0.1:<port>"
+      ],
+      "stationNotes": [
+        "Ensure the target service is running and accessible"
+      ],
+      "radioNotes": []
+    }
+  ]
+}

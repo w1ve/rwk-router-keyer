@@ -62,13 +62,13 @@ public class JitterBufferAdaptiveTests
     [Fact]
     public void AdaptiveDelayFormula_ClampedToDirectMaximum()
     {
-        // Push jitter high enough to exceed Direct band max (150ms).
+        // Push jitter high enough to exceed Direct band max (300ms).
         TimeSpan result = JitterBuffer.DelayFor(
             Adaptive,
             PathType.Direct,
             EdgeJitterProfile.PathAdaptive,
             hasSamples: true,
-            jitterEwmaMs: 500); // 60 + 2*500 = 1060 → clamp to 150
+            jitterEwmaMs: 500); // 60 + 2*500 = 1060 → clamp to 300
 
         Assert.Equal(JitterBuffer.DirectMaxDelay, result);
     }
@@ -419,8 +419,8 @@ public class JitterBufferAdaptiveTests
                 buffer.ReportLateEdge(stormStart + i);
         }
 
-        // Max Direct band is 150ms, base is 60ms, so max bump is 90ms
-        Assert.True(buffer.AutoBumpMs <= 90.0);
+        // Max Direct band is 300ms, base is 60ms, so max bump is 240ms
+        Assert.True(buffer.AutoBumpMs <= 240.0);
         // Delay should be clamped to Direct max
         Assert.True(buffer.CurrentDelay <= JitterBuffer.DirectMaxDelay);
     }

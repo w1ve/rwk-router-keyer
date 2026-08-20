@@ -40,4 +40,11 @@
     <ProjectReference Include="..\WinKeyerEmulator.Core\WinKeyerEmulator.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Wizard radio catalog — shipped alongside the executable, updatable independently. -->
+    <Content Include="Wizard\radios.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

@@ -107,6 +107,10 @@ RWK v2.0 is a Client/Station CW (Morse code) remoting and port forwarding system
 ### Integration Tests
 - 28 integration tests (loopback timing ±2ms, fail-safe battery, N1MM+ conformance, network loss)
 
+### Deployment
+- Successfully deployed Client + Station on Windows 11 via Starlink in Malawi (remote site)
+- Tailscale interactive auth (browser + paste-key fallback) verified working on both apps
+
 ## Key Technical Decisions
 
 - **.NET 9.0**, Windows x64, WinForms
@@ -122,6 +126,7 @@ RWK v2.0 is a Client/Station CW (Morse code) remoting and port forwarding system
 - **Pairing key** — 8-char alphanumeric, generated on Station first run, HMAC-SHA256 auth
 - **Control channel** — bidirectional TCP stream with length-prefixed JSON messages
 - **FlexRadio** — VITA-49 discovery intercept/rewrite, no SmartLink dependency
+- **Jitter buffer** — Direct band 30-300ms (default 60ms), DERP band 100-500ms (default 200ms), adaptive EWMA formula with late-edge auto-bump
 
 ## User Preferences & Corrections
 
@@ -157,10 +162,117 @@ RWK v2.0 is a Client/Station CW (Morse code) remoting and port forwarding system
 - `e:\AI\RWK\src\RWK.Station\Controllers\StationController.cs` — Station orchestration (pairing key, control messages, discovery listener)
 - `e:\AI\RWK\src\RWK.Station\Discovery\StationDiscoveryListener.cs` — UDP 4992 capture
 
+### Bug Fixes — Tailscale Interactive Auth (August 2026)
+
+Fixed critical bug where the Client app's Tailscale login panel never appeared on fresh installs (first reported on Windows 11 in Malawi with Starlink). Root causes:
+
+1. **State bouncing** — Go sidecar never cleared `authURL` after successful auth. The C# status polling saw `authUrl` disappear only on `Connected` state, but the sidecar kept reporting the stale URL. Fixed in `node.go`: `n.authURL = ""` when `BackendState == "Running"`.
+
+2. **NeedsAuth override only on first transition** — `TsnetSidecarHost.ApplyStatusUpdate()` only overrode state to `NeedsAuth` when `authUrl` transitioned from empty→non-empty. On subsequent polls the raw state mapped to `Disconnected`. Fixed: override applies on EVERY poll where `authUrl` is present.
+
+3. **Startup dismissal** — `UpdateStatusForState(Connecting)` called `DismissLoginPanel()` during form init, setting `_loginDismissed = true` before `AuthUrlAvailable` ever fired. Fixed: `Connecting` state no longer calls `DismissLoginPanel()` (only `Connected` does).
+
+4. **HasPersistedTailscaleState guard** — `OnControllerAuthUrlAvailable` checked if `tailscaled.state` existed on disk and skipped showing the panel. This was wrong when the state file is stale/invalid. Guard removed.
+
+5. **Delete Authorization file lock** — `Directory.Delete()` failed because the sidecar process held `tailscaled.log1.txt` open. Fixed: both Client and Station now stop the sidecar process before deleting the state directory.
+
+6. **Panel layout** — Increased login panel from 420×180 to 460×200 for proper rendering at Windows 11 DPI scaling.
+
+Files changed:
+- `src/RWK.Shared/Net/TsnetSidecarHost.cs` — authUrl state override logic
+- `src/RWK.Client/MainForm.cs` — login panel show/dismiss/layout
+- `src/RWK.Client/Controllers/ClientController.cs` — added `StopSidecarAsync()`
+- `src/RWK.Station/MainForm.cs` — same dismiss/delete fixes
+- `src/RWK.TailscaleSidecar/node.go` — clear authURL on Running
+
+### Bug Fixes — DPI Layout & Starlink Jitter (August 2026)
+
+Fixed UI layout issues on Windows 11 with DPI scaling, and choppy CW on high-latency Starlink path (290ms RTT Direct).
+
+1. **Sidetone Frequency/Volume labels not visible** — Value labels (e.g. "600 Hz", "70%") used `Dock = Top` inside panels where the slider also docked top. At higher DPI the labels got pushed below visible area. Fixed: changed to `Dock = Bottom`.
+
+2. **TestTX button cutoff** — Mode combo and TestTX button in the Keyer group extended past the group border at scaled DPI. Reduced combo width (120→100) and repositioned button (X=200→168) to fit within 30% column allocation.
+
+3. **Choppy code at 290ms RTT** — The Direct path jitter buffer maximum was 150ms. Starlink has high jitter (30-80ms), and the adaptive formula (`base + 2×jitter_ewma`) was clamped at 150ms, causing late edges and choppy keying. Raised `DirectMaxDelay` from 150ms to 300ms. The adaptive mode now has room to ramp the buffer for satellite links.
+
+Files changed:
+- `src/RWK.Client/MainForm.Designer.cs` — slider value label Dock, mode combo/button positions
+- `src/RWK.Station/Replay/JitterBuffer.cs` — DirectMaxDelay 150→300ms
+- `tests/RWK.Station.Tests/Replay/JitterBufferTests.cs` — updated clamp expectation
+- `tests/RWK.Station.Tests/Replay/JitterBufferAdaptiveTests.cs` — updated max band assertions
+
 ## Next Steps
 
 1. **Test FlexRadio relay** with a physical Flex 6000-series radio
 2. **Write remaining PBT tests** (optional but valuable for correctness confidence)
-3. **Live network tests** (33.x) when separate machines + auth key available
+3. ~~**Live network tests** (33.x) when separate machines + auth key available~~ ✓ Verified on Starlink from Malawi
 4. **Consider** adding the discovered radio list to the Client UI (currently just logs)
 5. **Consider** Station-side allow/deny override per pushed rule
+
+## Planned Work — Station Logger WinKeyer Input
+
+### Motivation
+Hams running their logging program over Remote Desktop on the Station PC want to send CW macros from the logger locally, while using RWK for remote paddle keying. The Station needs a secondary COM input that accepts WinKeyer protocol from the logger and drives the same keying output.
+
+### Design
+- **UI location:** New frame/group to the right of the KEY/PTT LED indicators in the Station MainForm, containing:
+  - Checkbox: "Enable Logger Input"
+  - ComboBox: COM port dropdown (auto-updated, same enumeration pattern as existing COM port combos)
+  - The COM port list MUST exclude whichever port is selected for the Keying Output (avoids conflict)
+- **Protocol:** WinKeyer2 emulation — same protocol host logic as the Client's `WinKeyerProtocolHost` (Logger App mode). Receives text from the logger, generates CW edges internally.
+- **CW generation:** Use `SoftWinKeyerCore` (same keyer engine as Client) to convert characters to key/unkey timing. Speed comes from the logger via WK2 speed command (not from the Client's speed setting).
+- **Output:** Keys the same `StationKeyingOutput` (serial port KEY/PTT) that the remote paddle edges use. When logger is sending, remote paddle edges are temporarily suppressed (logger has priority, or interlock).
+- **Priority/interlock:** Logger CW takes precedence over remote paddle. While logger is actively sending (buffer not empty), incoming edge frames from the Client are queued or discarded. When logger finishes, remote keying resumes.
+- **Lifecycle:** Enabled/disabled at runtime via the checkbox. Opening/closing the COM port dynamically. If the keying output port changes, refresh the excluded-port filter.
+
+### Files likely to change
+- `src/RWK.Station/MainForm.cs` + `MainForm.Designer.cs` — new UI group
+- `src/RWK.Station/Controllers/StationController.cs` — orchestrate logger WK host alongside edge replayer
+- New file: `src/RWK.Station/IO/StationWinKeyerHost.cs` — WK2 protocol listener on serial port (can reuse/adapt `WinKeyerProtocolHost` from Client)
+- New file: `src/RWK.Station/IO/StationSoftKeyer.cs` — local CW generation (or reuse `SoftWinKeyerCore` from Client)
+- `src/RWK.Shared/Config/StationConfig.cs` — add logger port config fields
+
+## Planned Work — Port Forward Wizard (Client)
+
+### Motivation
+Operators don't know which ports to forward for their radio/software combination. The Wizard asks 3-5 questions and produces live port forward rules, a saved JSON profile, and a plain-text setup guide.
+
+### Spec
+Full specification in `RWK-Wizard-SPEC.md` (root folder). Key design points:
+
+### Architecture
+- **In-process** inside RWK Client, not a separate tool. Can validate against live rule set and socket state.
+- **Entry point:** "Wizard" button to the right of "Enable All" in the Port Forwards panel. Also accessible from File menu.
+- **5-step flow:** Radio → Control Path → Endpoint Location → Extras → Review & Apply
+- **Catalog-driven:** `radios.json` shipped alongside the app, versioned independently, community-contributable.
+
+### Three Outputs
+1. **Live rules** — written directly into the Port Forwards grid (merge by name, idempotent re-runs)
+2. **JSON profile** — `[radioname].rwkprofile.json` in `%LOCALAPPDATA%\RWK Router Keyer\profiles\`
+3. **Plain-text setup guide** — `[radioname]-readme.txt`, opened immediately in Notepad. Hard-wrapped at 76 cols, CRLF, ASCII, no Markdown.
+
+### Key Concepts
+- **portIdentity** — `required` (client port must equal station port), `floating` (can remap), `unknown` (treat as required)
+- **Explanatory copy** — every prompt carries `why`, `howToFind`, `ifWrong` fields from the catalog
+- **confidence** — `verified` (vendor docs), `community` (field reports), `unverified` (best guess, shows banner)
+- **Conflict detection** — checks existing rules, trial socket bind, and optional Station reachability probe
+- **Undo** — snapshot rules before Apply, offer "Undo wizard changes" until next manual grid edit
+
+### Seed Catalog (radios.json)
+- Icom RS-BA1 v2 (UDP 50001-50003, radio-lan and server-pc variants)
+- Icom native LAN / wfview (same ports)
+- Kenwood KNS direct / TS-890S (TCP 60000 + UDP 60001)
+- Kenwood ARHP conventional (TCP 50000 + UDP 33550)
+- Yaesu SCU-LAN10 (UDP 50000-50003)
+- FlexRadio SmartSDR (TCP 4992 + UDP 4991, requires discovery relay)
+- Elecraft K4 remote (TCP 9205 only)
+- RemoteRig RRC-1258 MkII (UDP 13000-13002 + optional TCP 80, needs bindAddress 0.0.0.0)
+- Ancillary services: rigctld, rotctld, PstRotator, N1MM+ broadcasts, RDP, VNC, HTTP
+- Generic RS-232 serial bridge (TCP tunnel + VSPE/com0com helper files)
+
+### Files likely to create/change
+- New folder: `src/RWK.Client/Wizard/` — WizardForm, WizardSteps, CatalogLoader, ProfileManager, ConflictDetector, ReadmeGenerator
+- New file: `src/RWK.Client/Wizard/radios.json` — seed catalog
+- `src/RWK.Client/MainForm.cs` + `MainForm.Designer.cs` — Wizard button, File menu entry
+- `src/RWK.Shared/Config/ForwardRule.cs` — may need metadata fields (role, portIdentity, notes) for round-trip with profiles
+- `src/RWK.Shared/Config/ClientConfig.cs` — profile storage path

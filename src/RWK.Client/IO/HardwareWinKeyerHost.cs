@@ -109,6 +109,15 @@ public sealed class HardwareWinKeyerHost : IWinKeyerProtocolHost
             _state.HostMode = true;
             _running = true;
 
+            // Configure the WK chip for paddle echo: the chip will decode paddle CW
+            // and echo back the decoded ASCII characters, which we then feed to the
+            // soft keyer for remote transmission.
+            // Mode register (0x0E): bit 6 = paddle echo back enabled.
+            // This makes paddle keying produce character echoes we can use.
+            byte modeRegister = 0x40; // Paddle echo enabled
+            WriteBytes(new[] { CommandDefinitions.Wk2ModeCmd, modeRegister });
+            LogHw($"SET MODE: 0x{modeRegister:X2} (paddle echo enabled)");
+
             _readerThread = new Thread(ReaderLoop)
             {
                 Name = "HardwareWinKeyer-Reader",
@@ -250,25 +259,88 @@ public sealed class HardwareWinKeyerHost : IWinKeyerProtocolHost
     {
         if (_port is null || !_port.IsOpen) return false;
 
-        // Send Admin Open
+        // The K1EL chip needs time after DTR/RTS assertion (port open) to initialize.
+        Thread.Sleep(500);
+
+        // Check if the chip sent anything unsolicited during power-up.
+        int available = _port.BytesToRead;
+        if (available > 0)
+        {
+            byte[] unsolicited = new byte[available];
+            _port.Read(unsolicited, 0, available);
+            LogHw($"PROBE: {available} unsolicited bytes after open: [{string.Join(" ", unsolicited.Select(b => $"0x{b:X2}"))}]");
+        }
+        else
+        {
+            LogHw("PROBE: no unsolicited bytes after 500ms wait.");
+        }
+
+        // If the chip was left in host mode by a previous crash (no Admin Close),
+        // it won't respond to a new Admin Open. Send Admin Close first to reset it.
+        try
+        {
+            LogHw("PROBE: sending Admin Close (0x00 0x03) to reset any stale host mode...");
+            _port.Write(new byte[] { CommandDefinitions.AdminCmd, CommandDefinitions.AdminClose }, 0, 2);
+            Thread.Sleep(200);
+            int postClose = _port.BytesToRead;
+            if (postClose > 0)
+            {
+                byte[] buf = new byte[postClose];
+                _port.Read(buf, 0, postClose);
+                LogHw($"PROBE: {postClose} bytes after Admin Close: [{string.Join(" ", buf.Select(b => $"0x{b:X2}"))}]");
+            }
+            _port.DiscardInBuffer();
+        }
+        catch (Exception ex)
+        {
+            LogHw($"PROBE: Admin Close failed: {ex.Message}");
+        }
+
+        // Send Admin Open (0x00 0x02)
+        LogHw("ADMIN OPEN: sending 0x00 0x02...");
         _port.Write(new byte[] { CommandDefinitions.AdminCmd, CommandDefinitions.AdminOpen }, 0, 2);
 
-        // Read response: version byte + status byte
+        // Read response: WK2 sends 2 bytes (version + status), WK3 sends only 1 byte (version).
         try
         {
             int version = _port.ReadByte();
-            if (version < 0) return false;
+            if (version < 0)
+            {
+                LogHw("ADMIN OPEN: ReadByte returned -1 (stream ended).");
+                return false;
+            }
 
-            int status = _port.ReadByte();
-            if (status < 0) return false;
-
+            LogHw($"ADMIN OPEN: first byte = 0x{version:X2} (version={version})");
             _chipVersion = version;
-            LogHw($"ADMIN OPEN: version={version}, status=0x{status:X2}");
+
+            // WK3 (version >= 30) only sends the version byte, no status byte.
+            // WK2 (version < 30) sends version + status.
+            if (version < 30)
+            {
+                int status = _port.ReadByte();
+                if (status < 0)
+                {
+                    LogHw("ADMIN OPEN: second ReadByte returned -1 (WK2 status missing).");
+                    // Still treat as success — we got the version.
+                }
+                else
+                {
+                    LogHw($"ADMIN OPEN: second byte = 0x{status:X2} (WK2 status). SUCCESS.");
+                }
+            }
+            else
+            {
+                LogHw($"ADMIN OPEN: WK3 detected (version {version}). Single-byte response. SUCCESS.");
+            }
+
             return true;
         }
         catch (TimeoutException)
         {
-            LogHw("ADMIN OPEN: timeout waiting for response");
+            // Log what's on the port after timeout.
+            int leftover = 0;
+            try { leftover = _port.BytesToRead; } catch { }
+            LogHw($"ADMIN OPEN: timeout waiting for response (2000ms). BytesToRead={leftover}");
             return false;
         }
     }
@@ -353,18 +425,28 @@ public sealed class HardwareWinKeyerHost : IWinKeyerProtocolHost
 
     /// <summary>
     /// Processes a status byte received from the hardware WinKeyer.
-    /// Status format: 1 1 X X B B S I (bits 7:6 always set)
+    /// WK2/WK3 status format: 1 1 W W B B K I (bits 7:6 always set)
+    /// Bit 2 (0x04) = busy/buffer sending
+    /// Bit 1 (0x02) = breakin/key closed (key line is asserted)
+    /// Bit 0 (0x01) = waiting/has data
     /// </summary>
+    /// <remarks>
+    /// Note: bit 1 (breakin) does NOT toggle per dit/dah element — it reports at a coarser
+    /// granularity (character-level for many WK3 firmware versions). We cannot use it to
+    /// replicate individual CW elements to the remote Station. Remote keying from paddle
+    /// input works via the paddle poller + soft keyer, not via the hardware chip's status.
+    /// </remarks>
     private void ProcessStatusByte(byte status)
     {
         bool isBusy = (status & 0x04) != 0;
+        bool isKeyClosed = (status & 0x02) != 0;
         bool hasData = (status & 0x01) != 0;
 
         _state.BufferState = isBusy
             ? RWK.Shared.Protocol.BufferState.Sending
             : RWK.Shared.Protocol.BufferState.Idle;
 
-        LogHw($"STATUS: 0x{status:X2} busy={isBusy} hasData={hasData}");
+        LogHw($"STATUS: 0x{status:X2} busy={isBusy} key={isKeyClosed} hasData={hasData}");
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -394,8 +476,12 @@ public sealed class HardwareWinKeyerHost : IWinKeyerProtocolHost
     {
         try
         {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "RWK Router Keyer");
+            Directory.CreateDirectory(dir);
             File.AppendAllText(
-                Path.Combine(AppContext.BaseDirectory, "winkeyer.log"),
+                Path.Combine(dir, "winkeyer-hw.log"),
                 $"[{DateTime.Now:HH:mm:ss.fff}] [HW] {msg}\n");
         }
         catch { }

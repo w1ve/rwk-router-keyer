@@ -499,6 +499,9 @@ func (n *Node) refresh(ctx context.Context) {
 	n.backend = st.BackendState
 	if st.BackendState == "Running" {
 		n.everRunning = true
+		// Clear the interactive auth URL once we're connected — the user has
+		// completed login and the C# side should dismiss the login panel.
+		n.authURL = ""
 	}
 	if st.Self != nil {
 		n.selfDNS = strings.TrimSuffix(st.Self.DNSName, ".")

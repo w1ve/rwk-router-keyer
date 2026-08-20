@@ -76,6 +76,10 @@ public partial class MainForm : Form
                 _controller?.StopDiscoveryCapture();
         };
 
+        // Logger Input controls.
+        _loggerEnableCheck.CheckedChanged += OnLoggerEnableChanged;
+        _loggerComPortCombo.SelectedIndexChanged += OnLoggerPortChanged;
+
         // Populate COM port dropdown with available ports.
         PopulateComPorts();
 
@@ -129,11 +133,12 @@ public partial class MainForm : Form
         // If a COM port is already selected in the dropdown, connect it now.
         // (SelectedIndexChanged doesn't fire for the initial auto-selection.)
         if (_comPortCombo.InvokeRequired)
-            Invoke(() => { LoadKeyingConfigToUi(); TryConnectSelectedPort(); });
+            Invoke(() => { LoadKeyingConfigToUi(); TryConnectSelectedPort(); LoadLoggerConfigToUi(); });
         else
         {
             LoadKeyingConfigToUi();
             TryConnectSelectedPort();
+            LoadLoggerConfigToUi();
         }
     }
 
@@ -211,6 +216,9 @@ public partial class MainForm : Form
             else if (_comPortCombo.Items.Count > 0)
                 _comPortCombo.SelectedIndex = 0;
         }
+
+        // Also refresh the logger port list (excludes the keying port).
+        RefreshLoggerComPorts();
     }
 
     private void OnComPortSelectionChanged(object? sender, EventArgs e)
@@ -305,6 +313,87 @@ public partial class MainForm : Form
         bool pttInvert = _pttInvertCheck.Checked;
 
         return new KeyingOutputConfig(portName, keyLine, pttLine, keyInvert, pttInvert);
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Logger Input controls
+    // ────────────────────────────────────────────────────────────────
+
+    private void OnLoggerEnableChanged(object? sender, EventArgs e)
+    {
+        bool enabled = _loggerEnableCheck.Checked;
+        _loggerComPortCombo.Enabled = enabled;
+
+        if (_controller is null) return;
+
+        if (enabled)
+        {
+            string? port = _loggerComPortCombo.SelectedItem as string;
+            if (!string.IsNullOrEmpty(port) && port != "(None)")
+            {
+                _controller.StartLoggerHost(port);
+            }
+        }
+        else
+        {
+            _controller.StopLoggerHost();
+        }
+    }
+
+    private void OnLoggerPortChanged(object? sender, EventArgs e)
+    {
+        if (!_loggerEnableCheck.Checked || _controller is null) return;
+
+        string? port = _loggerComPortCombo.SelectedItem as string;
+        if (!string.IsNullOrEmpty(port) && port != "(None)")
+        {
+            _controller.StartLoggerHost(port);
+        }
+    }
+
+    private void RefreshLoggerComPorts()
+    {
+        string? keyingPort = _comPortCombo.SelectedItem as string;
+        var allPorts = GetSortedComPorts();
+
+        // Filter out the keying port, prepend (None).
+        var loggerPorts = new[] { "(None)" }.Concat(
+            allPorts.Where(p =>
+                !string.Equals(p, keyingPort, StringComparison.OrdinalIgnoreCase))).ToArray();
+
+        string? selected = _loggerComPortCombo.SelectedItem as string;
+        var existingPorts = new string[_loggerComPortCombo.Items.Count];
+        for (int i = 0; i < _loggerComPortCombo.Items.Count; i++)
+            existingPorts[i] = (string)_loggerComPortCombo.Items[i]!;
+
+        if (!loggerPorts.SequenceEqual(existingPorts))
+        {
+            _loggerComPortCombo.Items.Clear();
+            foreach (var p in loggerPorts)
+                _loggerComPortCombo.Items.Add(p);
+
+            if (selected is not null && _loggerComPortCombo.Items.Contains(selected))
+                _loggerComPortCombo.SelectedItem = selected;
+            else if (_loggerComPortCombo.Items.Count > 0)
+                _loggerComPortCombo.SelectedIndex = 0;
+        }
+    }
+
+    private void LoadLoggerConfigToUi()
+    {
+        if (_controller is null) return;
+        var config = _controller.Config;
+
+        RefreshLoggerComPorts();
+
+        if (config.LoggerInputEnabled && !string.IsNullOrEmpty(config.LoggerPortName))
+        {
+            if (_loggerComPortCombo.Items.Contains(config.LoggerPortName))
+                _loggerComPortCombo.SelectedItem = config.LoggerPortName;
+
+            _loggerEnableCheck.Checked = true;
+            _loggerComPortCombo.Enabled = true;
+        }
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -622,9 +711,10 @@ public partial class MainForm : Form
     {
         if (InvokeRequired) { Invoke(() => OnControllerAuthUrlAvailable(sender, authUrl)); return; }
 
-        // Don't show if already dismissed or if stored auth key exists (sidecar auto-connects).
+        // Don't show if already dismissed (auth succeeded this session).
+        // Note: we do NOT check HasPersistedTailscaleState() here because the sidecar
+        // is actively reporting NeedsAuth — the persisted state is stale or invalid.
         if (_loginDismissed) return;
-        if (HasPersistedTailscaleState()) return;
 
         _pendingAuthUrl = authUrl;
         ShowLoginPanel(authUrl);
@@ -855,7 +945,7 @@ public partial class MainForm : Form
         }
     }
 
-    private void OnDeleteTailscaleAuthClick(object? sender, EventArgs e)
+    private async void OnDeleteTailscaleAuthClick(object? sender, EventArgs e)
     {
         var result = MessageBox.Show(
             "Do you really want to delete the Tailscale authorization?\n\n" +
@@ -868,6 +958,15 @@ public partial class MainForm : Form
 
         try
         {
+            // Stop the controller (including sidecar) so file locks are released.
+            if (_controller is not null)
+            {
+                await _controller.StopAsync().ConfigureAwait(true);
+            }
+
+            // Small delay to let the process fully exit and release handles.
+            await Task.Delay(500).ConfigureAwait(true);
+
             string stateDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "RWK", "tailscale", "rwk-station");

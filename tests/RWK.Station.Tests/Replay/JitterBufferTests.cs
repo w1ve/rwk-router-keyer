@@ -59,7 +59,7 @@ public class JitterBufferTests
 
     [Theory]
     [InlineData(1, 30)]      // below the direct minimum
-    [InlineData(1000, 150)]  // above the direct maximum
+    [InlineData(1000, 300)]  // above the direct maximum
     public void ConfiguredDirectDelayIsClampedIntoTheDirectBand(int configuredMs, int expectedMs)
     {
         var config = new JitterBufferConfig(

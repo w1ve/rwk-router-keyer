@@ -764,13 +764,19 @@ public sealed class TsnetSidecarHost : ITsnetSidecarHost
         string? previousAuthUrl = _authUrl;
         _authUrl = status.AuthUrl;
 
-        if (!string.IsNullOrEmpty(status.AuthUrl) && string.IsNullOrEmpty(previousAuthUrl))
+        if (!string.IsNullOrEmpty(status.AuthUrl))
         {
-            // Override state to NeedsAuth when the sidecar is waiting for browser login.
+            // Override state to NeedsAuth whenever the sidecar has a pending auth URL,
+            // not just on the initial transition. This prevents the state from bouncing
+            // to Disconnected on subsequent polls while the user hasn't yet authenticated.
             if (newState != TailscaleState.Connected)
                 newState = TailscaleState.NeedsAuth;
 
-            AuthUrlAvailable?.Invoke(this, status.AuthUrl);
+            // Only fire the event on the initial transition (empty → non-empty).
+            if (string.IsNullOrEmpty(previousAuthUrl))
+            {
+                AuthUrlAvailable?.Invoke(this, status.AuthUrl);
+            }
         }
 
         // Clear authUrl-derived NeedsAuth when we actually become connected.

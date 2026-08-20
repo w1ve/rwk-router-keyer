@@ -92,6 +92,8 @@ public sealed class StationController : IDisposable
     private PortForwardManager? _portForwardManager;
     private SidecarFailureHandler? _sidecarFailureHandler;
     private StationDiscoveryListener? _discoveryListener;
+    private StationLoggerHost? _loggerHost;
+    private volatile bool _loggerSending;
 
     // ──────────────────────────────────────────────────────────────────────────────
     //  Events (for UI binding)
@@ -132,6 +134,12 @@ public sealed class StationController : IDisposable
     /// The list contains the rules received (for UI display on the Station).
     /// </summary>
     public event EventHandler<List<ForwardRuleInfo>>? ForwardRulesReceived;
+
+    /// <summary>
+    /// Raised when the logger WinKeyer input starts or stops sending CW.
+    /// True = logger is sending (remote edges suppressed); False = logger idle.
+    /// </summary>
+    public event EventHandler<bool>? LoggerSendingChanged;
 
     // ──────────────────────────────────────────────────────────────────────────────
     //  Construction
@@ -370,6 +378,12 @@ public sealed class StationController : IDisposable
             StartJitterTimer();
             SetState(StationControllerState.Armed);
             _diagnostics?.Invoke("Station ARMED.");
+
+            // Step 9.5: Start Logger WinKeyer Input if configured.
+            if (_config.LoggerInputEnabled && !string.IsNullOrEmpty(_config.LoggerPortName))
+            {
+                StartLoggerHost(_config.LoggerPortName);
+            }
         }
         catch (Exception ex)
         {
@@ -441,6 +455,9 @@ public sealed class StationController : IDisposable
             _sidecarFailureHandler.Dispose();
             _sidecarFailureHandler = null;
         }
+
+        // Stop logger host.
+        StopLoggerHostInternal();
 
         // Close keying output — drops all lines (F8).
         try { _keyingOutput?.EnsureAllLinesDown(); } catch { /* best effort */ }
@@ -719,6 +736,9 @@ public sealed class StationController : IDisposable
         // If no keying output, don't process edge transitions (nothing to key).
         if (_keyingOutput is null) return;
 
+        // Logger interlock: when the logger is sending CW macros, suppress remote edges.
+        if (_loggerSending) return;
+
         if (frame.EdgeCount == 0) return;
 
         Span<EdgeEntry> edges = stackalloc EdgeEntry[RwkPaddleFrame.MaxEdgeCount];
@@ -762,6 +782,117 @@ public sealed class StationController : IDisposable
         _jitterDelayTicks = Stopwatch.Frequency * Math.Clamp(delayMs, 0, 500) / 1000;
     }
 
+    // ──────────────────────────────────────────────────────────────────────────────
+    //  Logger WinKeyer Input
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Whether the logger host is currently running.</summary>
+    public bool IsLoggerHostRunning => _loggerHost?.IsRunning ?? false;
+
+    /// <summary>Whether the logger is currently sending CW (interlock active).</summary>
+    public bool IsLoggerSending => _loggerSending;
+
+    /// <summary>
+    /// Starts or restarts the logger WinKeyer host on the specified port.
+    /// Called by the UI when the user enables logger input or changes the port.
+    /// </summary>
+    public void StartLoggerHost(string portName)
+    {
+        StopLoggerHost();
+
+        if (_keyingOutput is null || !_keyingOutput.IsOpen)
+        {
+            _diagnostics?.Invoke("Cannot start logger host: no keying output configured.");
+            return;
+        }
+
+        if (string.Equals(portName, _keyingOutput.PortName, StringComparison.OrdinalIgnoreCase))
+        {
+            _diagnostics?.Invoke($"Cannot start logger host: port {portName} is used for keying output.");
+            return;
+        }
+
+        try
+        {
+            _loggerHost = new StationLoggerHost();
+            _loggerHost.SendingStarted += OnLoggerSendingStarted;
+            _loggerHost.SendingCompleted += OnLoggerSendingCompleted;
+            _loggerHost.SpeedChanged += OnLoggerSpeedChanged;
+
+            IPttOutput? pttOutput = _keyingOutput.PttLine == KeyingLine.None ? null : _keyingOutput;
+            _loggerHost.Start(portName, _keyingOutput, pttOutput);
+
+            _config = _config with { LoggerInputEnabled = true, LoggerPortName = portName };
+            _configStore.TrySave(_config);
+
+            _diagnostics?.Invoke($"Logger WinKeyer host started on {portName}.");
+        }
+        catch (Exception ex)
+        {
+            _diagnostics?.Invoke($"Failed to start logger host on {portName}: {ex.Message}");
+            _loggerHost?.Dispose();
+            _loggerHost = null;
+        }
+    }
+
+    /// <summary>
+    /// Stops the logger WinKeyer host.
+    /// Called by the UI when the user disables logger input.
+    /// </summary>
+    public void StopLoggerHost()
+    {
+        StopLoggerHostInternal();
+
+        _config = _config with { LoggerInputEnabled = false };
+        _configStore.TrySave(_config);
+
+        _diagnostics?.Invoke("Logger WinKeyer host stopped.");
+    }
+
+    /// <summary>
+    /// Internal stop without persisting config change. Used during shutdown cleanup.
+    /// </summary>
+    private void StopLoggerHostInternal()
+    {
+        if (_loggerHost is null) return;
+
+        _loggerHost.SendingStarted -= OnLoggerSendingStarted;
+        _loggerHost.SendingCompleted -= OnLoggerSendingCompleted;
+        _loggerHost.SpeedChanged -= OnLoggerSpeedChanged;
+        _loggerHost.Dispose();
+        _loggerHost = null;
+
+        if (_loggerSending)
+        {
+            _loggerSending = false;
+            LoggerSendingChanged?.Invoke(this, false);
+        }
+    }
+
+    private void OnLoggerSendingStarted(object? sender, EventArgs e)
+    {
+        _loggerSending = true;
+
+        // Force key up on the remote path — any pending remote edges are stale now.
+        try { _keyingOutput?.KeyUp(); } catch { /* best effort */ }
+        lock (_jitterQueue) { _jitterQueue.Clear(); }
+
+        LoggerSendingChanged?.Invoke(this, true);
+        _diagnostics?.Invoke("Logger sending — remote edges suppressed.");
+    }
+
+    private void OnLoggerSendingCompleted(object? sender, EventArgs e)
+    {
+        _loggerSending = false;
+        LoggerSendingChanged?.Invoke(this, false);
+        _diagnostics?.Invoke("Logger idle — remote edges resumed.");
+    }
+
+    private void OnLoggerSpeedChanged(object? sender, int wpm)
+    {
+        _diagnostics?.Invoke($"Logger speed: {wpm} WPM.");
+    }
+
     private void StartJitterTimer()
     {
         _jitterTimer = new System.Threading.Timer(ProcessJitterQueue, null, 0, 1);
@@ -769,6 +900,9 @@ public sealed class StationController : IDisposable
 
     private void ProcessJitterQueue(object? state)
     {
+        // Logger interlock: skip processing while logger is sending.
+        if (_loggerSending) return;
+
         long now = Stopwatch.GetTimestamp();
         while (true)
         {

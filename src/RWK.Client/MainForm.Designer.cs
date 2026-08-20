@@ -53,6 +53,7 @@ partial class MainForm
     private Label _toneLevelCaptionLabel = null!;
     private TrackBar _toneLevelSlider = null!;
     private Label _toneLevelValueLabel = null!;
+    private Label _sidetoneMuteLabel = null!;
 
     // === Device Selection (13.11) ===
     private GroupBox _portsGroup = null!;
@@ -62,6 +63,7 @@ partial class MainForm
     private ComboBox _winKeyerPortCombo = null!;
     private RadioButton _wkModeLoggerRadio = null!;
     private RadioButton _wkModeHardwareRadio = null!;
+    private Label _wkHardwareStatus = null!;
     private Button _wkLoopbackTestBtn = null!;
     private Label _wkDitDot = null!;
     private Label _wkDahDot = null!;
@@ -84,6 +86,8 @@ partial class MainForm
     private Button _disableSelectedBtn = null!;
     private Button _enableAllBtn = null!;
     private Button _disableAllBtn = null!;
+    private Button _wizardBtn = null!;
+    private Button _importBtn = null!;
     private Label _bindWarningLabel = null!;
     private Label _remoteRigWarningLabel = null!;
 
@@ -266,8 +270,8 @@ partial class MainForm
         _modeCaptionLabel.Name = "_modeCaptionLabel";
 
         _modeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _modeCombo.Location = new Point(70, 109);
-        _modeCombo.Size = new Size(120, 23);
+        _modeCombo.Location = new Point(60, 109);
+        _modeCombo.Size = new Size(130, 23);
         _modeCombo.Name = "_modeCombo";
 
         _paddleReverseCheck.Text = "Paddle Reverse";
@@ -277,8 +281,8 @@ partial class MainForm
 
         _testTxButton = new Button();
         _testTxButton.Text = "TestTX";
-        _testTxButton.Size = new Size(70, 24);
-        _testTxButton.Location = new Point(200, 109);
+        _testTxButton.Size = new Size(70, 26);
+        _testTxButton.Location = new Point(12, 168);
         _testTxButton.UseVisualStyleBackColor = true;
         _testTxButton.Name = "_testTxButton";
 
@@ -351,7 +355,7 @@ partial class MainForm
 
         _toneFreqValueLabel.Text = "600 Hz";
         _toneFreqValueLabel.AutoSize = false;
-        _toneFreqValueLabel.Dock = DockStyle.Top;
+        _toneFreqValueLabel.Dock = DockStyle.Bottom;
         _toneFreqValueLabel.Height = 18;
         _toneFreqValueLabel.TextAlign = ContentAlignment.TopCenter;
         _toneFreqValueLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
@@ -383,7 +387,7 @@ partial class MainForm
 
         _toneLevelValueLabel.Text = "70%";
         _toneLevelValueLabel.AutoSize = false;
-        _toneLevelValueLabel.Dock = DockStyle.Top;
+        _toneLevelValueLabel.Dock = DockStyle.Bottom;
         _toneLevelValueLabel.Height = 18;
         _toneLevelValueLabel.TextAlign = ContentAlignment.TopCenter;
         _toneLevelValueLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
@@ -400,6 +404,19 @@ partial class MainForm
         sidetoneInnerLayout.Controls.Add(levelPanel, 1, 2);
 
         _sidetoneGroup.Controls.Add(sidetoneInnerLayout);
+
+        // Mute indicator (shown when Hardware WinKey mode is active)
+        _sidetoneMuteLabel = new Label();
+        _sidetoneMuteLabel.Text = "\U0001F507 Muted (HW WK sidetone)";
+        _sidetoneMuteLabel.Font = new Font("Segoe UI", 8F, FontStyle.Italic);
+        _sidetoneMuteLabel.ForeColor = Color.FromArgb(160, 60, 60);
+        _sidetoneMuteLabel.AutoSize = true;
+        _sidetoneMuteLabel.Location = new Point(8, 0);
+        _sidetoneMuteLabel.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+        _sidetoneMuteLabel.Visible = false;
+        _sidetoneMuteLabel.Name = "_sidetoneMuteLabel";
+        _sidetoneGroup.Controls.Add(_sidetoneMuteLabel);
+        _sidetoneMuteLabel.BringToFront();
 
         // ============================================================
         // DEVICE SELECTION / INPUT PORTS (13.11) — uses inner TableLayoutPanel
@@ -470,7 +487,16 @@ partial class MainForm
         _wkModeHardwareRadio.Location = new Point(95, 2);
         _wkModeHardwareRadio.Name = "_wkModeHardwareRadio";
 
-        wkModePanel.Controls.AddRange(new Control[] { _wkModeLoggerRadio, _wkModeHardwareRadio });
+        _wkHardwareStatus = new Label();
+        _wkHardwareStatus.Text = "";
+        _wkHardwareStatus.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        _wkHardwareStatus.ForeColor = Color.FromArgb(200, 0, 0);
+        _wkHardwareStatus.AutoSize = true;
+        _wkHardwareStatus.Location = new Point(230, 3);
+        _wkHardwareStatus.Name = "_wkHardwareStatus";
+        _wkHardwareStatus.Visible = false;
+
+        wkModePanel.Controls.AddRange(new Control[] { _wkModeLoggerRadio, _wkModeHardwareRadio, _wkHardwareStatus });
 
         // Loopback test button
         _wkLoopbackTestBtn.Text = "WinKeyer Loopback Test";
@@ -650,7 +676,7 @@ partial class MainForm
         _bindWarningLabel.AutoSize = false;
         _bindWarningLabel.Size = new Size(500, 32);
         _bindWarningLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        _bindWarningLabel.Location = new Point(0, 34);
+        _bindWarningLabel.Location = new Point(160, 34);
         _bindWarningLabel.Visible = false;
         _bindWarningLabel.Name = "_bindWarningLabel";
 
@@ -661,12 +687,30 @@ partial class MainForm
         _remoteRigWarningLabel.AutoSize = false;
         _remoteRigWarningLabel.Size = new Size(500, 18);
         _remoteRigWarningLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        _remoteRigWarningLabel.Location = new Point(0, 56);
+        _remoteRigWarningLabel.Location = new Point(160, 56);
         _remoteRigWarningLabel.Visible = false;
         _remoteRigWarningLabel.Name = "_remoteRigWarningLabel";
 
+        // Wizard and Import buttons (second row)
+        _wizardBtn = new Button();
+        _wizardBtn.Text = "Wizard";
+        _wizardBtn.UseVisualStyleBackColor = true;
+        _wizardBtn.Size = new Size(70, 26);
+        _wizardBtn.Location = new Point(0, 34);
+        _wizardBtn.Name = "_wizardBtn";
+        _wizardBtn.Click += OnWizardClick;
+
+        _importBtn = new Button();
+        _importBtn.Text = "Import";
+        _importBtn.UseVisualStyleBackColor = true;
+        _importBtn.Size = new Size(70, 26);
+        _importBtn.Location = new Point(76, 34);
+        _importBtn.Name = "_importBtn";
+        _importBtn.Click += OnImportProfileClick;
+
         forwardButtonPanel.Controls.AddRange(new Control[] {
-            _addRuleBtn, _removeRuleBtn, _enableSelectedBtn, _disableSelectedBtn, _enableAllBtn, _disableAllBtn, _bindWarningLabel, _remoteRigWarningLabel
+            _addRuleBtn, _removeRuleBtn, _enableSelectedBtn, _disableSelectedBtn, _enableAllBtn, _disableAllBtn,
+            _wizardBtn, _importBtn, _bindWarningLabel, _remoteRigWarningLabel
         });
 
         forwardInnerLayout.Controls.Add(_forwardGrid, 0, 0);
@@ -857,6 +901,10 @@ partial class MainForm
         var exitMenuItem = new ToolStripMenuItem("E&xit");
         exitMenuItem.Click += (_, _) => Close();
         rwkMenuItem.DropDownItems.Add(aboutMenuItem);
+        rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
+        var wizardMenuItem = new ToolStripMenuItem("Port Forward &Wizard...");
+        wizardMenuItem.Click += (_, _) => OnWizardClick(null, EventArgs.Empty);
+        rwkMenuItem.DropDownItems.Add(wizardMenuItem);
         rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
         rwkMenuItem.DropDownItems.Add(deleteTsAuthMenuItem);
         rwkMenuItem.DropDownItems.Add(tsAdminMenuItem);

@@ -60,6 +60,12 @@ partial class MainForm
     private GroupBox _flexDiscoveryGroup = null!;
     private CheckBox _flexDiscoveryEnable = null!;
 
+    // ─── Logger Input ───
+    private GroupBox _loggerInputGroup = null!;
+    private CheckBox _loggerEnableCheck = null!;
+    private Label _loggerPortLabel = null!;
+    private ComboBox _loggerComPortCombo = null!;
+
     // ─── Menu ───
     private MenuStrip _mainMenu = null!;
 
@@ -170,8 +176,8 @@ partial class MainForm
         _keyingOutputGroup = new GroupBox
         {
             Text = "Keying Output",
-            Location = new Point(12, 140),
-            Size = new Size(300, 170),
+            Location = new Point(12, 148),
+            Size = new Size(300, 135),
             Name = "_keyingOutputGroup"
         };
 
@@ -229,8 +235,8 @@ partial class MainForm
         _sessionGroup = new GroupBox
         {
             Text = "Session",
-            Location = new Point(324, 140),
-            Size = new Size(300, 170),
+            Location = new Point(324, 148),
+            Size = new Size(300, 135),
             Name = "_sessionGroup"
         };
 
@@ -340,6 +346,47 @@ partial class MainForm
         _flexDiscoveryGroup.Controls.Add(_flexDiscoveryEnable);
 
         // ═══════════════════════════════════════════════════════════
+        // Logger Input (WK2 from logging software on Station PC)
+        // ═══════════════════════════════════════════════════════════
+        _loggerInputGroup = new GroupBox
+        {
+            Text = "Logger Input",
+            Location = new Point(220, 85),
+            Size = new Size(200, 60),
+            Name = "_loggerInputGroup"
+        };
+
+        _loggerEnableCheck = new CheckBox
+        {
+            Text = "Enable",
+            Location = new Point(10, 18),
+            AutoSize = true,
+            Name = "_loggerEnableCheck"
+        };
+
+        _loggerPortLabel = new Label
+        {
+            Text = "Port:",
+            Location = new Point(10, 40),
+            AutoSize = true,
+            Name = "_loggerPortLabel"
+        };
+
+        _loggerComPortCombo = new ComboBox
+        {
+            Location = new Point(50, 37),
+            Size = new Size(90, 23),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Enabled = false,
+            Name = "_loggerComPortCombo"
+        };
+
+        _loggerInputGroup.Controls.AddRange(new Control[]
+        {
+            _loggerEnableCheck, _loggerPortLabel, _loggerComPortCombo
+        });
+
+        // ═══════════════════════════════════════════════════════════
         // Status Strip (13.10)
         // ═══════════════════════════════════════════════════════════
         _statusStrip = new StatusStrip
@@ -377,6 +424,7 @@ partial class MainForm
         Controls.Add(_keyIndicatorCaption);
         Controls.Add(_pttIndicator);
         Controls.Add(_pttIndicatorCaption);
+        Controls.Add(_loggerInputGroup);
         Controls.Add(_keyingOutputGroup);
         Controls.Add(_sessionGroup);
         Controls.Add(_flexDiscoveryGroup);

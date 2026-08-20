@@ -67,7 +67,7 @@ public sealed class JitterBuffer
     public static readonly TimeSpan DirectMinDelay = TimeSpan.FromMilliseconds(30);
 
     /// <summary>Longest delay permitted on a direct path (7.1).</summary>
-    public static readonly TimeSpan DirectMaxDelay = TimeSpan.FromMilliseconds(150);
+    public static readonly TimeSpan DirectMaxDelay = TimeSpan.FromMilliseconds(300);
 
     /// <summary>Shortest delay permitted on a DERP-class path (7.1).</summary>
     public static readonly TimeSpan DerpMinDelay = TimeSpan.FromMilliseconds(100);

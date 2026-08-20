@@ -36,6 +36,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RWK.Shared\RWK.Shared.csproj" />
+    <!-- WK2 state machine for the Logger Input WinKeyer host.
+         Same reference as the Client; provides the protocol engine. -->
+    <ProjectReference Include="..\WinKeyerEmulator.Core\WinKeyerEmulator.Core.csproj" />
   </ItemGroup>
 
 </Project>

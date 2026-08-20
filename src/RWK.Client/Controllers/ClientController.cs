@@ -51,6 +51,7 @@ public sealed class ClientController : IDisposable
     private IWinKeyerProtocolHost _winKeyerHost;
     private HardwareWinKeyerHost? _hardwareWinKeyerHost;
     private WinKeyerMode _winKeyerMode = WinKeyerMode.LoggerApp;
+    private bool _sidetoneMuted;
     private readonly IWinKeyerProtocolHost _loggerWinKeyerHost;
     private readonly ISoftWinKeyerCore _keyer;
     private readonly ILocalSidetoneEngine _sidetone;
@@ -194,6 +195,12 @@ public sealed class ClientController : IDisposable
     /// </summary>
     public event EventHandler<string>? SessionStatusChanged;
 
+    /// <summary>
+    /// Raised when a hardware WinKeyer chip responds to Admin Open successfully.
+    /// The int is the chip version number.
+    /// </summary>
+    public event EventHandler<int>? HardwareWinKeyerConnected;
+
     // ──────────────────────────────────────────────────────────────────────────────
     //  Lifecycle
     // ──────────────────────────────────────────────────────────────────────────────
@@ -327,17 +334,27 @@ public sealed class ClientController : IDisposable
             _config = _config with { WinKeyerPortName = portName };
             _configStore.TrySave(_config);
             LogDebug($"ConnectWinKeyerPort: SUCCESS on {portName} (mode={_winKeyerMode})");
-            _log?.Info($"WinKeyer connected on {portName} ({_winKeyerMode}).");
 
-            // For hardware mode, set the speed immediately after connecting
-            if (_winKeyerMode == WinKeyerMode.HardwareWinKey && _hardwareWinKeyerHost is not null)
+            if (_winKeyerMode == WinKeyerMode.HardwareWinKey)
             {
-                _hardwareWinKeyerHost.SetSpeed(_config.SpeedWpm);
+                _log?.Info($"WinKeyer: opened {portName} in Hardware WinKey mode. Admin Open sent to K1EL chip.");
+                // Set the speed immediately after connecting
+                if (_hardwareWinKeyerHost is not null)
+                {
+                    _hardwareWinKeyerHost.SetSpeed(_config.SpeedWpm);
+                    _log?.Info($"WinKeyer: speed set to {_config.SpeedWpm} WPM on hardware.");
+                    HardwareWinKeyerConnected?.Invoke(this, _hardwareWinKeyerHost.ChipVersion);
+                }
+            }
+            else
+            {
+                _log?.Info($"WinKeyer: opened {portName} in Logger App mode (emulating WK2).");
             }
         }
         catch (Exception ex)
         {
             LogDebug($"ConnectWinKeyerPort: FAILED: {ex.Message}");
+            _log?.Info($"WinKeyer: failed to open {portName} — {ex.Message}");
         }
     }
 
@@ -349,13 +366,19 @@ public sealed class ClientController : IDisposable
     public void SetWinKeyerMode(WinKeyerMode mode)
     {
         _winKeyerMode = mode;
-        LogDebug($"SetWinKeyerMode: {mode}");
+        _sidetoneMuted = (mode == WinKeyerMode.HardwareWinKey);
+        LogDebug($"SetWinKeyerMode: {mode} (sidetone muted={_sidetoneMuted})");
     }
 
     /// <summary>
     /// Gets the current WinKeyer operating mode.
     /// </summary>
     public WinKeyerMode CurrentWinKeyerMode => _winKeyerMode;
+
+    /// <summary>
+    /// True when the local sidetone is muted (Hardware WinKey mode — chip provides its own sidetone).
+    /// </summary>
+    public bool IsSidetoneMuted => _sidetoneMuted;
 
     /// <summary>
     /// Runs a WinKeyer loopback test: injects WK2 protocol bytes directly into the
@@ -468,11 +491,44 @@ public sealed class ClientController : IDisposable
             _paddlePoller.Start(portName);
             _config = _config with { PaddlePortName = portName };
             _configStore.TrySave(_config);
+            _log?.Info($"Paddle: opened {portName}.");
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Port may not be available
+            _log?.Info($"Paddle: failed to open {portName} — {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Disconnects the paddle port (user selected "(None)").
+    /// </summary>
+    public void DisconnectPaddlePort()
+    {
+        try { _paddlePoller.Stop(); } catch { }
+        _config = _config with { PaddlePortName = null };
+        _configStore.TrySave(_config);
+        _log?.Info("Paddle: port closed (None selected).");
+    }
+
+    /// <summary>
+    /// Disconnects the WinKeyer port (user selected "(None)").
+    /// </summary>
+    public void DisconnectWinKeyerPort()
+    {
+        UnwireWinKeyerEvents();
+        try { _winKeyerHost.Stop(); } catch { }
+        _config = _config with { WinKeyerPortName = null };
+        _configStore.TrySave(_config);
+        _log?.Info("WinKeyer: port closed (None selected).");
+    }
+
+    /// <summary>
+    /// Persists the WinKeyer mode to config.
+    /// </summary>
+    public void PersistWinKeyerMode(WinKeyerMode mode)
+    {
+        _config = _config with { WinKeyerMode = mode };
+        _configStore.TrySave(_config);
     }
 
     /// <summary>Updates sidetone frequency live from the UI.</summary>
@@ -668,11 +724,15 @@ public sealed class ClientController : IDisposable
 
     private void OnEdgeGenerated(object? sender, EdgeEvent e)
     {
-        // Always drive sidetone regardless of network state (4.7)
-        if (e.KeyDown)
-            _sidetone.KeyDown();
-        else
-            _sidetone.KeyUp();
+        // In Hardware WinKey mode, sidetone is muted (the chip provides its own sidetone).
+        // The local software sidetone would be delayed by one character and sound wrong.
+        if (!_sidetoneMuted)
+        {
+            if (e.KeyDown)
+                _sidetone.KeyDown();
+            else
+                _sidetone.KeyUp();
+        }
 
         // Build and send RWK-PADDLE frame if connected (and not suppressed for local-only playback)
         if (_tailscaleNode.State == TailscaleState.Connected && !_suppressEdgeSend)
@@ -909,6 +969,16 @@ public sealed class ClientController : IDisposable
         _config = _config with { Tailscale = _config.Tailscale with { AuthKey = null } };
         _configStore.TrySave(_config);
         _log?.Info("Tailscale authorization cleared from config.");
+    }
+
+    /// <summary>
+    /// Stops the Tailscale sidecar process so its file locks are released.
+    /// Used before deleting the state directory. The app should be restarted afterward.
+    /// </summary>
+    public async Task StopSidecarAsync()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        await StopTailscaleAsync().ConfigureAwait(false);
     }
 
     /// <summary>
