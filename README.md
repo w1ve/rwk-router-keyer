@@ -316,12 +316,32 @@ RWK intercepts VITA-49 discovery broadcasts at the Station, rewrites the endpoin
 
 ## Tailscale Authentication
 
-Both Client and Station must join your Tailscale network. This is a one-time setup.
+Both Client and Station must join your Tailscale network (tailnet). This is a one-time setup per machine.
+
+### Step 0: Create a Dedicated Tailnet
+
+> **Important:** Create a **new Tailscale account** (using a new email or Google account) specifically for your RWK network. The email you use to create the tailnet becomes the **administrator**. If you join an existing tailnet where you're not an admin, your RWK nodes will require manual approval by the admin before they can connect.
+
+1. Go to https://login.tailscale.com and sign up with a dedicated email
+2. This creates a fresh tailnet where you are the admin
+3. The personal plan is **always free** (up to 100 devices)
+
+### Key Expiry -- Disable It
+
+By default, Tailscale keys expire after **90 days**. When a key expires, the node disconnects and requires re-authentication. For a remote station that may run unattended, this is a problem.
+
+**To disable key expiry:**
+1. Go to https://login.tailscale.com/admin/machines
+2. Click the three-dot menu next to your RWK node
+3. Select **Disable key expiry**
+4. Repeat for both Client and Station nodes
+
+With key expiry disabled, your nodes stay connected indefinitely without re-authentication.
 
 ### Option A: Browser Login (recommended)
 
 1. Launch RWK. A login panel appears.
-2. Click **Open Browser**. Sign in to Tailscale.
+2. Click **Open Browser**. Sign in with your **dedicated RWK Tailscale account**.
 3. Authorize the device. Panel dismisses automatically.
 4. Status bar shows "Connected" with IP (100.x.x.x).
 
@@ -329,15 +349,19 @@ Identity is persisted -- subsequent launches connect automatically.
 
 ### Option B: Auth Key (headless machines)
 
+For machines without a browser (headless Station at a remote site):
+
 1. Go to https://login.tailscale.com/admin/settings/keys
-2. Generate an auth key. Copy it (`tskey-auth-...`).
+2. Generate an auth key. Check "Reusable" if desired. Copy it (`tskey-auth-...`).
 3. In RWK, click **Paste Auth Key Instead**. Paste and Submit.
 4. No browser needed.
 
 ### Troubleshooting
 
-- **Panel stays at "Waiting...":** Use Paste Auth Key instead.
+- **Panel stays at "Waiting...":** Use Paste Auth Key instead. This bypasses the browser OAuth flow.
 - **Panel doesn't appear:** Already authenticated. Check status bar.
+- **Node shows "needs authorization":** You joined a tailnet where you're not the admin. Either have the admin approve the node, or create your own dedicated tailnet.
+- **Disconnected after 90 days:** Key expiry hit. Re-authenticate and then disable key expiry in the admin console.
 - **Reset auth:** File menu -> Delete Tailscale Authorization -> restart.
 
 ---
