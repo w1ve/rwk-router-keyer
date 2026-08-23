@@ -232,7 +232,62 @@ Hams running their logging program over Remote Desktop on the Station PC want to
 - New file: `src/RWK.Station/IO/StationSoftKeyer.cs` — local CW generation (or reuse `SoftWinKeyerCore` from Client)
 - `src/RWK.Shared/Config/StationConfig.cs` — add logger port config fields
 
-## Planned Work — Port Forward Wizard (Client)
+## Planned Work — v1.0.3: Ham Router Architecture
+
+### Branch: `v1.0.3-ham-router` (from main)
+
+### Major Changes
+
+1. **Client UI Restructure — TabControl**
+   - Tab 1: "Keyer" — all keyer stuff (paddle, WinKeyer, sidetone, speed, mode) + Network Connection/Pairing UI (Station Address, Pair, Station Armed, Set Key). Required for keyer — can't do anything until Tailnet is connected.
+   - Tab 2: "Ham Router" — Port forwarding UI with much larger grid, Wizard button, Import button, direction column. All port forwarding and routing configuration lives here.
+   - Remove the existing "WinKeyer / Forwarding" + "Log" tab split. New split: Keyer | Ham Router | Log.
+
+2. **Station-Side Inbound Forwards (eliminate Client-side listeners)**
+   - Instead of Client binding localhost ports, the Station sidecar listens on its Tailscale IP
+   - Client apps connect directly to `<Station Tailscale IP>:<port>`
+   - Wizard generates rules as before, but they're registered as inbound forwards on the Station sidecar
+   - No port conflicts with local services (Tailscale IP binding is exclusive to RWK)
+   - Wizard output changes: "connect to 100.x.x.x:50001" instead of "connect to 127.0.0.1:50001"
+
+3. **Reverse Port Forwards (Station → Client direction)**
+   - ForwardRule model gets a `Direction` field: `ClientToStation` (default) or `StationToClient`
+   - Station-to-Client: Station sidecar registers outbound forward → Client sidecar registers inbound
+   - Use cases: N1MM broadcasts from Station logger to Client, license servers, cluster connections
+   - Wizard and grid show direction indicator
+
+4. **N1MM+ Network Discovery Relay**
+   - Similar to FlexRadio VITA-49 discovery relay
+   - Station captures N1MM discovery packets on port 12070 (format: `COMPUTER%LAN_IP%PORT%VERSION%CALLSIGN%%`)
+   - Rewrites LAN_IP field to Station's Tailscale IP
+   - Forwards to Client over control channel
+   - Client re-emits on localhost:12070 so remote N1MM instance discovers the Station's N1MM
+   - Enables N1MM multi-op networking over RWK without system Tailscale
+
+5. **Port Grid Enhancements**
+   - Larger grid (Tab 2 gives full form height)
+   - Direction column (→ or ←)
+   - Status column with probe results (reachable/unreachable/unknown)
+   - Target validation: optional Station-side probe after rules are pushed
+
+### Key Design Decisions
+- Binding on Tailscale IP (`100.x.x.x`) eliminates manufacturer port conflicts with local services
+- No TUN, no wintun, no admin elevation required
+- Wizard and Import still work — just targeting Station inbound forwards instead of Client listeners
+- Profile format compatible (existing profiles load, direction defaults to ClientToStation)
+
+### Files Likely to Change
+- `src/RWK.Client/MainForm.Designer.cs` — major restructure to TabControl (Keyer | Ham Router | Log)
+- `src/RWK.Client/MainForm.cs` — reorganize event handlers into tab-specific regions
+- `src/RWK.Client/Wizard/` — update output to reference Station Tailscale IP instead of localhost
+- `src/RWK.Shared/Config/ForwardRule.cs` — add Direction field
+- `src/RWK.Shared/Config/ClientConfig.cs` — any new config fields
+- `src/RWK.Station/Controllers/StationController.cs` — register inbound forwards from pushed rules
+- `src/RWK.TailscaleSidecar/forward.go` — verify inbound forward on specific Tailscale IP (not 0.0.0.0)
+- New: `src/RWK.Station/Discovery/N1mmDiscoveryListener.cs` — capture port 12070 packets
+- New: `src/RWK.Client/Discovery/N1mmDiscoveryEmitter.cs` — re-emit rewritten packets
+- `src/RWK.Shared/Discovery/` — N1MM packet codec (parse/rewrite the %-delimited format)
+- `Directory.Build.props` — version 1.0.3
 
 ### Motivation
 Operators don't know which ports to forward for their radio/software combination. The Wizard asks 3-5 questions and produces live port forward rules, a saved JSON profile, and a plain-text setup guide.
