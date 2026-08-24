@@ -269,11 +269,26 @@ public class KeyerElementPumpTests
     }
 
     [Fact]
-    public void Straight_IgnoresPaddleContacts()
+    public void Straight_DitContactActsAsStraightKey()
     {
         var (pump, _, _, edges) = NewPump(KeyerMode.Straight);
 
-        pump.SetPaddleState(dit: true, dah: true, straight: false);
+        // In Straight mode, DitPressed is treated as the straight-key contact
+        // (allows paddle users without a separate straight-key line to use Straight mode).
+        pump.SetPaddleState(dit: true, dah: false, straight: false);
+
+        Assert.Equal(PumpAction.StraightKey, pump.Pump());
+        Assert.Single(edges);
+        Assert.True(edges[0].KeyDown);
+    }
+
+    [Fact]
+    public void Straight_DahContactAloneIgnored()
+    {
+        var (pump, _, _, edges) = NewPump(KeyerMode.Straight);
+
+        // Dah contact alone does NOT key in Straight mode — only dit or straight-key.
+        pump.SetPaddleState(dit: false, dah: true, straight: false);
 
         Assert.Equal(PumpAction.Idle, pump.Pump());
         Assert.Empty(edges);

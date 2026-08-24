@@ -44,6 +44,11 @@ public partial class MainForm : Form
     private readonly LogService _logService = new();
     private bool _suppressGridEvents;
     private bool _suppressPortEvents;
+    private bool _suppressFlexCheckEvent;
+    private NotifyIcon? _trayIcon;
+
+    // "PLEASE WAIT" overlay — shown from startup until Connected or Wizard opens
+    private Panel? _waitOverlay;
 
     // Device monitoring
     private System.Windows.Forms.Timer? _portPollTimer;
@@ -59,13 +64,53 @@ public partial class MainForm : Form
         InitializeDeviceMonitoring();
         InitializeLogService();
 
+        // System tray icon — minimize to tray
+        InitializeTrayIcon();
+
         // Auto-start the controller on form load so the interactive login
         // prompt appears immediately on first run (matching Station behavior).
         Load += async (_, _) =>
         {
+            ShowWaitOverlay();
             await Task.Yield(); // Let the form finish rendering first
             OnStartClick(this, EventArgs.Empty);
         };
+    }
+
+    private void InitializeTrayIcon()
+    {
+        _trayIcon = new NotifyIcon
+        {
+            Text = "RWK Client",
+            Visible = false
+        };
+
+        string icoPath = Path.Combine(AppContext.BaseDirectory, "rwk.ico");
+        if (File.Exists(icoPath))
+            _trayIcon.Icon = new Icon(icoPath);
+
+        _trayIcon.Click += (_, _) =>
+        {
+            Show();
+            WindowState = FormWindowState.Normal;
+            Activate();
+        };
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (WindowState == FormWindowState.Minimized)
+        {
+            Hide();
+            if (_trayIcon is not null)
+                _trayIcon.Visible = true;
+        }
+        else
+        {
+            if (_trayIcon is not null)
+                _trayIcon.Visible = false;
+        }
     }
 
     private void PopulateDefaults()
@@ -102,6 +147,9 @@ public partial class MainForm : Form
         // Connect button wiring
         _connectButton.Click += OnConnectClick;
 
+        // Pair button validation: enable only when IP is valid-looking and key is set
+        _stationAddressTextBox.TextChanged += (_, _) => ValidatePairButton();
+
         // Station ARM toggle
         _stationArmToggle.CheckedChanged += OnStationArmToggleChanged;
 
@@ -119,12 +167,509 @@ public partial class MainForm : Form
         // WinKeyer loopback test
         _wkLoopbackTestBtn.Click += OnWinKeyerLoopbackTestClick;
 
+        // Keyer mode combo
+        _modeCombo.SelectedIndexChanged += OnModeComboChanged;
+
         // FlexRadio discovery re-emission
         _flexEnableCheck.CheckedChanged += (_, _) =>
         {
+            if (_suppressFlexCheckEvent) return;
             _controller?.SetDiscoveryEmitEnabled(_flexEnableCheck.Checked);
         };
+
+        // Keyboard paddle presets
+        foreach (var preset in IO.KeyboardPaddleInput.Presets)
+            _keyboardPaddleCombo.Items.Add(preset);
+        _keyboardPaddleCombo.SelectedIndex = 0;
+        _keyboardPaddleCheck.CheckedChanged += OnKeyboardPaddleCheckChanged;
+        _keyboardPaddleCombo.SelectedIndexChanged += OnKeyboardPaddlePresetChanged;
+
+        // CW Macros + Type-ahead
+        WireMacroButtons();
+
+        // PTT button, hotkey, footswitch
+        WirePttControls();
+
+        // Keyer and Inputs panels disabled until paired
+        _keyerGroup.Enabled = false;
+        _portsGroup.Enabled = false;
+
+        // PageUp/PageDn speed adjustment (global within the app)
+        KeyPreview = true;
+        KeyDown += OnFormKeyDown;
     }
+
+    private void OnFormKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.PageUp)
+        {
+            int newSpeed = Math.Min(_speedSlider.Value + 2, _speedSlider.Maximum);
+            _speedSlider.Value = newSpeed;
+            _speedLabel.Text = newSpeed.ToString();
+            _controller?.SetSpeed(newSpeed);
+            e.Handled = true;
+        }
+        else if (e.KeyCode == Keys.PageDown)
+        {
+            int newSpeed = Math.Max(_speedSlider.Value - 2, _speedSlider.Minimum);
+            _speedSlider.Value = newSpeed;
+            _speedLabel.Text = newSpeed.ToString();
+            _controller?.SetSpeed(newSpeed);
+            e.Handled = true;
+        }
+    }
+
+    private Label? _keyerBusyLabel;
+
+    private void OnControllerKeyerBusy(object? sender, EventArgs e)
+    {
+        if (InvokeRequired) { BeginInvoke(() => OnControllerKeyerBusy(sender, e)); return; }
+
+        // Show a red KEYER BUSY label below the Pair button
+        if (_keyerBusyLabel is null)
+        {
+            _keyerBusyLabel = new Label
+            {
+                Text = " KEYER BUSY ",
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.FromArgb(200, 40, 40),
+                AutoSize = true,
+                Location = new Point(460, 32),
+                Padding = new Padding(4, 2, 4, 2),
+                Name = "_keyerBusyLabel"
+            };
+            // Add to the connection panel (parent of _connectButton)
+            _connectButton.Parent?.Controls.Add(_keyerBusyLabel);
+        }
+        _keyerBusyLabel.Visible = true;
+        _pathLabel.Text = "Keyer Busy (N1MM relay active)";
+    }
+
+
+
+    private IO.KeyboardPaddleInput? _keyboardPaddle;
+
+    private void OnKeyboardPaddleCheckChanged(object? sender, EventArgs e)
+    {
+        _keyboardPaddleCombo.Enabled = _keyboardPaddleCheck.Checked;
+
+        if (_keyboardPaddleCheck.Checked)
+        {
+            _keyboardPaddle ??= new IO.KeyboardPaddleInput();
+            if (_keyboardPaddleCombo.SelectedItem is IO.KeyPairPreset preset)
+                _keyboardPaddle.SetKeyPair(preset);
+            _keyboardPaddle.StateChanged += OnKeyboardPaddleStateChanged;
+            _keyboardPaddle.Start("keyboard");
+            _logService.Info($"Keyboard paddle enabled: {_keyboardPaddle.ActivePreset.DisplayName}");
+        }
+        else
+        {
+            if (_keyboardPaddle is not null)
+            {
+                _keyboardPaddle.StateChanged -= OnKeyboardPaddleStateChanged;
+                _keyboardPaddle.Stop();
+            }
+            _logService.Info("Keyboard paddle disabled.");
+        }
+    }
+
+    private void OnKeyboardPaddlePresetChanged(object? sender, EventArgs e)
+    {
+        if (_keyboardPaddle is not null && _keyboardPaddleCheck.Checked &&
+            _keyboardPaddleCombo.SelectedItem is IO.KeyPairPreset preset)
+        {
+            _keyboardPaddle.SetKeyPair(preset);
+            _logService.Info($"Keyboard paddle keys: {preset.DisplayName}");
+        }
+    }
+
+    private void OnKeyboardPaddleStateChanged(object? sender, PaddleStateChangedEventArgs e)
+    {
+        // Feed keyboard paddle state into the controller's keyer, same as the serial paddle.
+        _controller?.InjectPaddleState(e);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    //  CW Macros
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    private string[] _macroTexts = new string[8] { "CQ DE MYCALL", "599", "TU", "73", "MYCALL", "QRL?", "?", "QRX" };
+    private string[] _macroNames = new string[8] { "CQ", "599", "TU", "73", "MYCALL", "QRL?", "?", "QRX" };
+
+    private void WireMacroButtons()
+    {
+        _macro1Btn.Click += (_, _) => SendMacro(0);
+        _macro2Btn.Click += (_, _) => SendMacro(1);
+        _macro3Btn.Click += (_, _) => SendMacro(2);
+        _macro4Btn.Click += (_, _) => SendMacro(3);
+        _macro5Btn.Click += (_, _) => SendMacro(4);
+        _macro6Btn.Click += (_, _) => SendMacro(5);
+        _macro7Btn.Click += (_, _) => SendMacro(6);
+        _macro8Btn.Click += (_, _) => SendMacro(7);
+        _macroEditBtn.Click += OnMacroEditClick;
+
+        // Load persisted macros from config
+        LoadMacrosFromConfig();
+        UpdateMacroButtonLabels();
+
+        // Type-ahead CW box: send each character as it's typed
+        _cwTypeAheadBox.KeyPress += OnCwTypeAheadKeyPress;
+    }
+
+    private void SendMacro(int slot)
+    {
+        if (slot < 0 || slot >= _macroTexts.Length) return;
+        string text = _macroTexts[slot];
+        if (!string.IsNullOrEmpty(text))
+        {
+            _controller?.SendCwText(text);
+            _logService.Info($"Macro F{slot + 1}: {text}");
+        }
+    }
+
+    private void OnCwTypeAheadKeyPress(object? sender, KeyPressEventArgs e)
+    {
+        if (_controller is null) return;
+        char c = char.ToUpperInvariant(e.KeyChar);
+        if (c >= ' ' && c <= '~') // Printable ASCII
+        {
+            _controller.SendCwText(c.ToString());
+            e.Handled = true;
+        }
+    }
+
+    private void OnMacroEditClick(object? sender, EventArgs e)
+    {
+        using var dlg = new Form
+        {
+            Text = "Edit CW Macros",
+            Size = new Size(420, 480),
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false
+        };
+
+        var labels = new Label[8];
+        var nameBoxes = new TextBox[8];
+        var textBoxes = new TextBox[8];
+
+        for (int i = 0; i < 8; i++)
+        {
+            int y = 12 + i * 50;
+            labels[i] = new Label { Text = $"F{i + 1}:", Location = new Point(10, y + 3), AutoSize = true };
+            nameBoxes[i] = new TextBox { Location = new Point(35, y), Size = new Size(60, 22), Text = _macroNames[i] };
+            textBoxes[i] = new TextBox { Location = new Point(100, y), Size = new Size(290, 22), Text = _macroTexts[i] };
+            dlg.Controls.AddRange(new Control[] { labels[i], nameBoxes[i], textBoxes[i] });
+        }
+
+        var okBtn = new Button { Text = "OK", DialogResult = DialogResult.OK, Location = new Point(230, 418), Size = new Size(75, 28) };
+        var cancelBtn = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(310, 418), Size = new Size(75, 28) };
+        dlg.Controls.AddRange(new Control[] { okBtn, cancelBtn });
+        dlg.AcceptButton = okBtn;
+        dlg.CancelButton = cancelBtn;
+
+        if (dlg.ShowDialog(this) == DialogResult.OK)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                _macroNames[i] = nameBoxes[i].Text.Trim();
+                _macroTexts[i] = textBoxes[i].Text.Trim();
+            }
+            UpdateMacroButtonLabels();
+            SaveMacrosToConfig();
+        }
+    }
+
+    private void UpdateMacroButtonLabels()
+    {
+        _macro1Btn.Text = string.IsNullOrEmpty(_macroNames[0]) ? "F1" : _macroNames[0];
+        _macro2Btn.Text = string.IsNullOrEmpty(_macroNames[1]) ? "F2" : _macroNames[1];
+        _macro3Btn.Text = string.IsNullOrEmpty(_macroNames[2]) ? "F3" : _macroNames[2];
+        _macro4Btn.Text = string.IsNullOrEmpty(_macroNames[3]) ? "F4" : _macroNames[3];
+        _macro5Btn.Text = string.IsNullOrEmpty(_macroNames[4]) ? "F5" : _macroNames[4];
+        _macro6Btn.Text = string.IsNullOrEmpty(_macroNames[5]) ? "F6" : _macroNames[5];
+        _macro7Btn.Text = string.IsNullOrEmpty(_macroNames[6]) ? "F7" : _macroNames[6];
+        _macro8Btn.Text = string.IsNullOrEmpty(_macroNames[7]) ? "F8" : _macroNames[7];
+    }
+
+    private void LoadMacrosFromConfig()
+    {
+        // Macros stored in a simple text file alongside the config
+        string path = Path.Combine(AppContext.BaseDirectory, "macros.txt");
+        if (!File.Exists(path)) return;
+        try
+        {
+            var lines = File.ReadAllLines(path);
+            for (int i = 0; i < Math.Min(lines.Length / 2, 8); i++)
+            {
+                _macroNames[i] = lines[i * 2];
+                _macroTexts[i] = lines[i * 2 + 1];
+            }
+        }
+        catch { }
+    }
+
+    private void SaveMacrosToConfig()
+    {
+        string path = Path.Combine(AppContext.BaseDirectory, "macros.txt");
+        try
+        {
+            var lines = new string[16];
+            for (int i = 0; i < 8; i++)
+            {
+                lines[i * 2] = _macroNames[i];
+                lines[i * 2 + 1] = _macroTexts[i];
+            }
+            File.WriteAllLines(path, lines);
+        }
+        catch { }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    //  PTT Controls (button, hotkey, footswitch)
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    private IO.PttHotKeyHook? _pttHotKeyHook;
+    private IO.PttFootswitchPoller? _pttFootswitch;
+    private bool _pttHookEnabledForSession;
+
+    private void WirePttControls()
+    {
+        // PTT button: momentary (MouseDown = assert, MouseUp = deassert)
+        _pttButton.MouseDown += OnPttButtonMouseDown;
+        _pttButton.MouseUp += OnPttButtonMouseUp;
+        _pttButton.MouseLeave += OnPttButtonMouseLeave; // safety: release if cursor leaves
+
+        // Set Hot Key button
+        _pttSetHotKeyBtn.Click += OnPttSetHotKeyClick;
+
+        // Initialize the hotkey hook (but don't start it yet — starts on pair)
+        _pttHotKeyHook = new IO.PttHotKeyHook();
+        _pttHotKeyHook.PttStateChanged += OnPttHotKeyStateChanged;
+        _pttHotKeyHook.HotKeyCaptured += OnPttHotKeyCaptured;
+
+        // Load persisted hotkey
+        var config = _controller?.Config;
+        if (config is not null && !string.IsNullOrEmpty(config.PttHotKey))
+        {
+            var info = IO.PttHotKeyInfo.Deserialize(config.PttHotKey);
+            if (info is not null)
+            {
+                _pttHotKeyHook.SetHotKey(info);
+                _pttHotKeyLabel.Text = $"Hot Key: {info.ToDisplayString()}";
+                _pttHotKeyLabel.ForeColor = SystemColors.ControlText;
+            }
+        }
+
+        // PTT footswitch COM port: populate and wire
+        _pttPortCombo.Items.Clear();
+        _pttPortCombo.Items.Add("(None)");
+        foreach (string port in System.IO.Ports.SerialPort.GetPortNames().OrderBy(p => p.Length).ThenBy(p => p))
+            _pttPortCombo.Items.Add(port);
+        _pttPortCombo.SelectedIndex = 0;
+
+        // Restore persisted PTT port selection
+        if (config is not null && !string.IsNullOrEmpty(config.PttInputPortName))
+        {
+            int idx = _pttPortCombo.Items.IndexOf(config.PttInputPortName);
+            if (idx >= 0) _pttPortCombo.SelectedIndex = idx;
+        }
+
+        // Restore persisted PTT line selection
+        if (config is not null && config.PttInputLine == "RTS")
+            _pttLineCombo.SelectedIndex = 1; // RTS
+
+        _pttPortCombo.SelectedIndexChanged += OnPttPortChanged;
+        _pttLineCombo.SelectedIndexChanged += OnPttLineChanged;
+    }
+
+    private void OnPttButtonMouseDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left)
+        {
+            _pttButton.BackColor = Color.FromArgb(200, 40, 40); // Red when active
+            _controller?.AssertPtt();
+        }
+    }
+
+    private void OnPttButtonMouseUp(object? sender, MouseEventArgs e)
+    {
+        if (e.Button == MouseButtons.Left)
+        {
+            _pttButton.BackColor = Color.FromArgb(60, 60, 60);
+            _controller?.DeassertPtt();
+        }
+    }
+
+    private void OnPttButtonMouseLeave(object? sender, EventArgs e)
+    {
+        // Safety: if mouse leaves button while held, release PTT
+        _pttButton.BackColor = Color.FromArgb(60, 60, 60);
+        if (_controller?.IsPttAsserted == true)
+            _controller.DeassertPtt();
+    }
+
+    private void OnPttSetHotKeyClick(object? sender, EventArgs e)
+    {
+        if (_pttHotKeyHook is null) return;
+
+        _pttSetHotKeyBtn.Text = "Press key...";
+        _pttSetHotKeyBtn.Enabled = false;
+        _pttHotKeyLabel.Text = "Waiting for key combo...";
+        _pttHotKeyLabel.ForeColor = Color.FromArgb(200, 120, 0);
+        _pttHotKeyHook.StartCapture();
+    }
+
+    private void OnPttHotKeyCaptured(object? sender, IO.PttHotKeyInfo info)
+    {
+        if (InvokeRequired) { BeginInvoke(() => OnPttHotKeyCaptured(sender, info)); return; }
+
+        _pttSetHotKeyBtn.Text = "Set Hot Key";
+        _pttSetHotKeyBtn.Enabled = true;
+        _pttHotKeyLabel.Text = $"Hot Key: {info.ToDisplayString()}";
+        _pttHotKeyLabel.ForeColor = SystemColors.ControlText;
+
+        // Persist to config
+        if (_controller is not null)
+        {
+            _controller.UpdateConfig(c => c with { PttHotKey = info.Serialize() });
+        }
+
+        _logService.Info($"PTT hotkey set: {info.ToDisplayString()}");
+    }
+
+    private void OnPttHotKeyStateChanged(object? sender, bool pttDown)
+    {
+        if (InvokeRequired) { BeginInvoke(() => OnPttHotKeyStateChanged(sender, pttDown)); return; }
+
+        if (pttDown)
+        {
+            _pttButton.BackColor = Color.FromArgb(200, 40, 40);
+            _controller?.AssertPtt();
+        }
+        else
+        {
+            _pttButton.BackColor = Color.FromArgb(60, 60, 60);
+            _controller?.DeassertPtt();
+        }
+    }
+
+    private void OnPttPortChanged(object? sender, EventArgs e)
+    {
+        string? selected = _pttPortCombo.SelectedItem?.ToString();
+        StopPttFootswitch();
+
+        if (selected is null or "(None)")
+        {
+            _controller?.UpdateConfig(c => c with { PttInputPortName = null });
+            return;
+        }
+
+        _controller?.UpdateConfig(c => c with { PttInputPortName = selected });
+        StartPttFootswitchIfPaired(selected);
+    }
+
+    private void OnPttLineChanged(object? sender, EventArgs e)
+    {
+        string line = _pttLineCombo.SelectedItem?.ToString() ?? "DTR";
+        _controller?.UpdateConfig(c => c with { PttInputLine = line });
+
+        // Restart footswitch with new line setting
+        string? port = _pttPortCombo.SelectedItem?.ToString();
+        if (port is not null and not "(None)")
+        {
+            StopPttFootswitch();
+            StartPttFootswitchIfPaired(port);
+        }
+    }
+
+    private void StartPttFootswitchIfPaired(string portName)
+    {
+        if (!_pttHookEnabledForSession) return; // Only active while paired
+
+        var line = (_pttLineCombo.SelectedItem?.ToString() ?? "DTR") == "RTS"
+            ? IO.PttFootswitchPoller.PttInputLine.CTS
+            : IO.PttFootswitchPoller.PttInputLine.DSR;
+
+        _pttFootswitch = new IO.PttFootswitchPoller(line);
+        _pttFootswitch.PttStateChanged += OnPttFootswitchStateChanged;
+        try
+        {
+            _pttFootswitch.Start(portName);
+            _logService.Info($"PTT footswitch started on {portName} ({_pttLineCombo.SelectedItem}).");
+        }
+        catch (Exception ex)
+        {
+            _logService.Info($"PTT footswitch failed on {portName}: {ex.Message}");
+            _pttFootswitch.Dispose();
+            _pttFootswitch = null;
+        }
+    }
+
+    private void StopPttFootswitch()
+    {
+        if (_pttFootswitch is not null)
+        {
+            _pttFootswitch.PttStateChanged -= OnPttFootswitchStateChanged;
+            _pttFootswitch.Dispose();
+            _pttFootswitch = null;
+        }
+    }
+
+    private void OnPttFootswitchStateChanged(object? sender, bool pressed)
+    {
+        if (InvokeRequired) { BeginInvoke(() => OnPttFootswitchStateChanged(sender, pressed)); return; }
+
+        if (pressed)
+        {
+            _pttButton.BackColor = Color.FromArgb(200, 40, 40);
+            _controller?.AssertPtt();
+        }
+        else
+        {
+            _pttButton.BackColor = Color.FromArgb(60, 60, 60);
+            _controller?.DeassertPtt();
+        }
+    }
+
+    /// <summary>
+    /// Called when pairing succeeds — enables the PTT hotkey hook and footswitch.
+    /// </summary>
+    private void EnablePttForSession()
+    {
+        _pttHookEnabledForSession = true;
+
+        // Start the hotkey hook if a hotkey is configured
+        if (_pttHotKeyHook?.HasHotKey == true && !_pttHotKeyHook.IsRunning)
+            _pttHotKeyHook.Start();
+
+        // Start footswitch if a port is configured
+        string? port = _pttPortCombo.SelectedItem?.ToString();
+        if (port is not null and not "(None)")
+            StartPttFootswitchIfPaired(port);
+    }
+
+    /// <summary>
+    /// Called on unpair / session loss — disables PTT hotkey hook and footswitch.
+    /// </summary>
+    private void DisablePttForSession()
+    {
+        _pttHookEnabledForSession = false;
+
+        // Stop the hotkey hook (but don't clear the configured key)
+        _pttHotKeyHook?.Stop();
+
+        // Stop footswitch
+        StopPttFootswitch();
+
+        // Ensure PTT is released
+        if (_controller?.IsPttAsserted == true)
+            _controller.DeassertPtt();
+        _pttButton.BackColor = Color.FromArgb(60, 60, 60);
+    }
+
 
     // --- Event handlers (UI only, no backend) ---
 
@@ -176,7 +721,7 @@ public partial class MainForm : Form
 
         // Add to UI grid (unchecked = OFF) — suppress events during add
         _suppressGridEvents = true;
-        _forwardGrid.Rows.Add("OFF", rule.Name, "TCP", rule.ClientPort, rule.StationPort, rule.BindAddress, rule.StationTargetAddress, "Idle");
+        _forwardGrid.Rows.Add("OFF", DirectionArrow(rule.Direction), rule.Name, "TCP", rule.ClientPort, rule.StationPort, rule.BindAddress, rule.StationTargetAddress, "Idle");
         _forwardGrid.Rows[_forwardGrid.Rows.Count - 1].Tag = rule.Id;
         _suppressGridEvents = false;
         EvaluateBindWarning();
@@ -420,6 +965,8 @@ public partial class MainForm : Form
             else
             {
                 // Add new rule.
+                var direction = pfr.Direction.Equals("StationToClient", StringComparison.OrdinalIgnoreCase)
+                    ? ForwardDirection.StationToClient : ForwardDirection.ClientToStation;
                 var newRule = new ForwardRule(
                     Guid.NewGuid(),
                     pfr.Name,
@@ -429,7 +976,8 @@ public partial class MainForm : Form
                     pfr.Enabled,
                     pfr.BindAddress,
                     ForwardRuleType.Generic,
-                    pfr.StationTarget);
+                    pfr.StationTarget,
+                    direction);
 
                 try { _controller.AddForwardRule(newRule); } catch { }
             }
@@ -448,6 +996,8 @@ public partial class MainForm : Form
         int.TryParse(row.Cells["StationPort"]?.Value?.ToString(), out int stationPort);
         string bind = row.Cells["BindAddress"]?.Value?.ToString() ?? "127.0.0.1";
         string target = row.Cells["StationTarget"]?.Value?.ToString() ?? "127.0.0.1";
+        string dirStr = row.Cells["Direction"]?.Value?.ToString() ?? "\u2192";
+        var direction = dirStr == "\u2190" ? ForwardDirection.StationToClient : ForwardDirection.ClientToStation;
 
         return new ForwardRule(
             Guid.NewGuid(),
@@ -457,8 +1007,13 @@ public partial class MainForm : Form
             stationPort > 0 ? stationPort : 4532,
             Enabled: false,
             BindAddress: bind,
-            StationTargetAddress: target);
+            StationTargetAddress: target,
+            Direction: direction);
     }
+
+    /// <summary>Returns a Unicode arrow indicating forward direction: → for ClientToStation, ← for StationToClient.</summary>
+    private static string DirectionArrow(ForwardDirection dir)
+        => dir == ForwardDirection.StationToClient ? "\u2190" : "\u2192";
 
     private void LoadForwardRulesIntoGrid()
     {
@@ -472,6 +1027,7 @@ public partial class MainForm : Form
             {
                 _forwardGrid.Rows.Add(
                     rule.Enabled ? "ON" : "OFF",
+                    DirectionArrow(rule.Direction),
                     rule.Name,
                     rule.Protocol.ToString().ToUpperInvariant(),
                     rule.ClientPort,
@@ -743,6 +1299,11 @@ public partial class MainForm : Form
             if (!string.IsNullOrEmpty(_controller.Config.Tailscale.StationAddress))
                 _stationAddressTextBox.Text = _controller.Config.Tailscale.StationAddress;
 
+            // Show key-set indicator if a pairing secret is already saved
+            if (!string.IsNullOrEmpty(_controller.Config.Tailscale.PairingSecret))
+                _keySetIndicator.Visible = true;
+            ValidatePairButton();
+
             // Load persisted port selections
             // Suppress event handlers during load so we don't double-connect.
             _suppressPortEvents = true;
@@ -786,11 +1347,30 @@ public partial class MainForm : Form
             _speedLabel.Text = _speedSlider.Value.ToString();
             _weightSlider.Value = Math.Clamp(_controller.Config.Weight, _weightSlider.Minimum, _weightSlider.Maximum);
             _weightValueLabel.Text = $"{_weightSlider.Value}%";
+
+            // Restore keyer mode to combo (same order as PopulateDefaults: IambicB=0, IambicA=1, Ultimatic=2, Bug=3, Straight=4)
+            int modeIndex = _controller.Config.KeyerMode switch
+            {
+                KeyerMode.IambicB => 0,
+                KeyerMode.IambicA => 1,
+                KeyerMode.Ultimatic => 2,
+                KeyerMode.Bug => 3,
+                KeyerMode.Straight => 4,
+                _ => 0
+            };
+            _modeCombo.SelectedIndex = modeIndex;
             _toneFreqSlider.Value = Math.Clamp(_controller.Config.Sidetone.FrequencyHz, _toneFreqSlider.Minimum, _toneFreqSlider.Maximum);
             _toneFreqValueLabel.Text = $"{_toneFreqSlider.Value} Hz";
             int volPct = (int)(_controller.Config.Sidetone.Volume * 100);
             _toneLevelSlider.Value = Math.Clamp(volPct, _toneLevelSlider.Minimum, _toneLevelSlider.Maximum);
             _toneLevelValueLabel.Text = $"{_toneLevelSlider.Value}%";
+
+            // Restore FlexRadio discovery checkbox state visually (disabled until paired).
+            // Don't trigger SetDiscoveryEmitEnabled here — rules are already in config
+            // and will be pushed when the session is established.
+            _suppressFlexCheckEvent = true;
+            _flexEnableCheck.Checked = _controller.Config.DiscoveryEmitEnabled;
+            _suppressFlexCheckEvent = false;
 
             // Load persisted forward rules into the grid
             LoadForwardRulesIntoGrid();
@@ -843,6 +1423,11 @@ public partial class MainForm : Form
         _portPollTimer?.Stop();
         _portPollTimer?.Dispose();
         _portPollTimer = null;
+
+        // Stop PTT hook and footswitch
+        DisablePttForSession();
+        _pttHotKeyHook?.Dispose();
+        _pttHotKeyHook = null;
 
         if (_audioNotificationClient != null && _audioEnumerator != null)
         {
@@ -899,7 +1484,9 @@ public partial class MainForm : Form
         controller.AuthUrlAvailable += OnControllerAuthUrlAvailable;
         controller.SessionStatusChanged += OnSessionStatusChanged;
         controller.ForwardRuleStatusChanged += OnForwardRuleStatusChanged;
+        controller.ForwardRulesChanged += OnForwardRulesChanged;
         controller.HardwareWinKeyerConnected += OnHardwareWinKeyerConnected;
+        controller.KeyerBusy += OnControllerKeyerBusy;
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -986,7 +1573,14 @@ public partial class MainForm : Form
             status.Contains("failed", StringComparison.OrdinalIgnoreCase))
         {
             _connectButton.Text = "Pair";
+            _connectButton.BackColor = Color.FromArgb(200, 40, 40);
+            _connectButton.ForeColor = Color.White;
+            _connectButton.FlatStyle = FlatStyle.Flat;
             _connectButton.Enabled = true;
+            _flexEnableCheck.Enabled = false;
+            _keyerGroup.Enabled = false;
+            _portsGroup.Enabled = false;
+            DisablePttForSession();
         }
     }
 
@@ -1029,6 +1623,17 @@ public partial class MainForm : Form
         }
     }
 
+    private void OnForwardRulesChanged(object? sender, EventArgs e)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => OnForwardRulesChanged(sender, e));
+            return;
+        }
+
+        LoadForwardRulesIntoGrid();
+    }
+
     // ──────────────────────────────────────────────────────────────────────────────
     //  Interactive Tailscale Login
     // ──────────────────────────────────────────────────────────────────────────────
@@ -1064,20 +1669,36 @@ public partial class MainForm : Form
             return;
         }
 
-        // Don't show the panel if it was already dismissed (auth succeeded).
-        // Note: we do NOT check HasPersistedTailscaleState() here because the sidecar
-        // is actively reporting NeedsAuth — the persisted state is stale or invalid.
+        // Don't show the wizard if auth was already completed in this session.
         if (_loginDismissed) return;
 
         _pendingAuthUrl = authUrl;
-        if (_loginPanel is not null)
+
+        // Show the Auth Wizard instead of the old login panel.
+        // The wizard is modal and owns its own polling — no dismiss races.
+        _loginDismissed = true; // Prevent re-entry while wizard is open
+        ShowAuthWizard();
+    }
+
+    private void ShowAuthWizard()
+    {
+        if (_controller is null) return;
+
+        DismissWaitOverlay(); // Remove overlay before showing wizard
+
+        var provider = new RWK.Shared.Auth.SidecarAuthProvider(_controller.SidecarHost);
+        using var wizard = new Auth.TailscaleAuthWizard(provider);
+        wizard.ShowDialog(this);
+
+        if (wizard.AuthSucceeded)
         {
-            if (_loginStatusLabel is not null && !string.IsNullOrEmpty(authUrl))
-                _loginStatusLabel.Text = "Login URL ready — click Open Browser.";
+            _logService.Info("Tailscale authentication completed via wizard.");
         }
         else
         {
-            ShowLoginPanel(authUrl);
+            // User cancelled — allow re-showing if auth URL appears again
+            _loginDismissed = false;
+            _logService.Info("Tailscale auth wizard cancelled by user.");
         }
     }
 
@@ -1253,33 +1874,100 @@ public partial class MainForm : Form
         {
             case TailscaleState.Connected:
                 _linkIndicator.ForeColor = Color.LimeGreen;
-                _linkIndicator.Text = "●";
+                _linkIndicator.Text = "\u25CF";
                 _pathLabel.Text = "Connected";
                 DismissLoginPanel();
+                DismissWaitOverlay();
                 break;
             case TailscaleState.Connecting:
                 _linkIndicator.ForeColor = SystemColors.Highlight;
-                _linkIndicator.Text = "●";
+                _linkIndicator.Text = "\u25CF";
                 _pathLabel.Text = "Connecting...";
-                // Don't dismiss login panel on Connecting — only dismiss on Connected.
-                // A transient Connecting state shouldn't permanently block the auth panel.
                 break;
             case TailscaleState.NeedsAuth:
                 _linkIndicator.ForeColor = SystemColors.Highlight;
-                _linkIndicator.Text = "●";
+                _linkIndicator.Text = "\u25CF";
                 _pathLabel.Text = "Waiting for login...";
                 break;
             case TailscaleState.Fault:
                 _linkIndicator.ForeColor = WarningRed;
-                _linkIndicator.Text = "●";
+                _linkIndicator.Text = "\u25CF";
                 _pathLabel.Text = "Path lost";
+                DismissWaitOverlay();
                 break;
             default:
                 _linkIndicator.ForeColor = Color.Gray;
-                _linkIndicator.Text = "●";
+                _linkIndicator.Text = "\u25CF";
                 _pathLabel.Text = "Disconnected";
                 break;
         }
+    }
+
+    private void ShowWaitOverlay()
+    {
+        if (_waitOverlay is not null) return;
+
+        _waitOverlay = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(220, 240, 240, 240),
+            Name = "_waitOverlay"
+        };
+
+        // White box with black border, centered on the entire window
+        var box = new Panel
+        {
+            Size = new Size(340, 80),
+            BackColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            Name = "_waitBox"
+        };
+
+        var label = new Label
+        {
+            Text = "Wait... Connecting to Tailscale",
+            Font = new Font("Segoe UI", 14f, FontStyle.Bold),
+            ForeColor = Color.Black,
+            AutoSize = true,
+            Name = "_waitLabel"
+        };
+
+        // Center label inside the box
+        box.Controls.Add(label);
+        box.Layout += (_, _) =>
+        {
+            label.Location = new Point(
+                (box.Width - label.Width) / 2,
+                (box.Height - label.Height) / 2);
+        };
+
+        // Center the box on the full window (not just client area)
+        _waitOverlay.Controls.Add(box);
+        _waitOverlay.Resize += (_, _) =>
+        {
+            box.Location = new Point(
+                (_waitOverlay.Width - box.Width) / 2,
+                (_waitOverlay.Height - box.Height) / 2 - 20);
+        };
+
+        Controls.Add(_waitOverlay);
+        _waitOverlay.BringToFront();
+
+        // Trigger initial centering
+        box.Location = new Point(
+            (ClientSize.Width - box.Width) / 2,
+            (ClientSize.Height - box.Height) / 2 - 20);
+        label.Location = new Point(
+            (box.Width - label.PreferredWidth) / 2,
+            (box.Height - label.PreferredHeight) / 2);
+    }
+
+    private void DismissWaitOverlay()
+    {
+        if (_waitOverlay is null) return;
+        Controls.Remove(_waitOverlay);
+        _waitOverlay.Dispose();
+        _waitOverlay = null;
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -1358,14 +2046,36 @@ public partial class MainForm : Form
             await _controller.ConnectToStationAsync(address).ConfigureAwait(true);
 
             _pathLabel.Text = $"Session active to {address}";
-            _connectButton.Text = "Paired";
+            _connectButton.Text = "Unpair";
+            _connectButton.BackColor = SystemColors.Control;
+            _connectButton.ForeColor = SystemColors.ControlText;
+            _connectButton.FlatStyle = FlatStyle.Standard;
+
+            // Enable Keyer and Inputs panels now that we're paired.
+            _keyerGroup.Enabled = true;
+            _portsGroup.Enabled = true;
+
+            // Enable FlexRadio discovery checkbox now that session is active.
+            _flexEnableCheck.Enabled = true;
+
+            // Enable PTT hotkey hook and footswitch for this session.
+            EnablePttForSession();
+
+            // If discovery was already enabled (from config), activate the emitter
+            // and ensure forward rules are pushed (ConnectToStationAsync already
+            // pushed all persisted rules, but the emitter needs to be initialized).
+            if (_flexEnableCheck.Checked)
+                _controller.SetDiscoveryEmitEnabled(true);
         }
         catch (Exception ex)
         {
             string msg = ex.InnerException?.Message ?? ex.Message;
             _pathLabel.Text = $"Connect failed: {msg}";
-            try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "client.log"), $"[{DateTime.Now:HH:mm:ss.fff}] CONNECT ERROR: {ex}\n"); } catch { }
+            try { RotatingFileLog.Append("client.log", $"CONNECT ERROR: {ex}"); } catch { }
             _connectButton.Text = "Pair";
+            _connectButton.BackColor = Color.FromArgb(200, 40, 40);
+            _connectButton.ForeColor = Color.White;
+            _connectButton.FlatStyle = FlatStyle.Flat;
             _connectButton.Enabled = true;
         }
     }
@@ -1403,6 +2113,18 @@ public partial class MainForm : Form
 
         _controller?.SetPairingSecret(input);
         _logService.Info($"Station pairing key set: {input}");
+
+        // Show the red check indicator and re-validate Pair button
+        _keySetIndicator.Visible = true;
+        ValidatePairButton();
+    }
+
+    private void ValidatePairButton()
+    {
+        string addr = _stationAddressTextBox.Text.Trim();
+        bool hasKey = _keySetIndicator.Visible;
+        bool validIp = !string.IsNullOrEmpty(addr) && System.Net.IPAddress.TryParse(addr, out _);
+        _connectButton.Enabled = validIp && hasKey;
     }
 
     private static string? ShowInputDialog(string prompt, string title, string defaultValue)
@@ -1433,8 +2155,8 @@ public partial class MainForm : Form
     private async void OnDeleteTailscaleAuthClick(object? sender, EventArgs e)
     {
         var result = MessageBox.Show(
-            "Do you really want to delete the Tailscale authorization?\n\n" +
-            "You will need to re-authenticate on the next connection.",
+            "This will disconnect from the Tailscale network and delete the stored authorization.\n\n" +
+            "You will be guided through re-authentication immediately.",
             "Delete Tailscale Authorization",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Warning);
@@ -1443,7 +2165,10 @@ public partial class MainForm : Form
 
         try
         {
-            // Stop the sidecar first so it releases file locks on the state directory.
+            // Show overlay while we reset
+            ShowWaitOverlay();
+
+            // Stop the sidecar so it releases file locks on the state directory.
             if (_controller is not null)
             {
                 await _controller.StopSidecarAsync().ConfigureAwait(true);
@@ -1468,15 +2193,25 @@ public partial class MainForm : Form
                 _controller.ClearTailscaleAuth();
             }
 
-            MessageBox.Show(
-                "Tailscale authorization has been deleted.\n\n" +
-                "Restart the application to re-authenticate.",
-                "Authorization Deleted",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            // Restart the sidecar (it will enter NeedsAuth state)
+            if (_controller is not null)
+            {
+                await _controller.RestartSidecarAsync().ConfigureAwait(true);
+            }
+
+            // Reset the login-dismissed flag so the wizard can appear
+            _loginDismissed = false;
+
+            // Wait briefly for the sidecar to start and report NeedsAuth
+            await Task.Delay(1000).ConfigureAwait(true);
+
+            // Dismiss overlay and show the auth wizard directly
+            DismissWaitOverlay();
+            ShowAuthWizard();
         }
         catch (Exception ex)
         {
+            DismissWaitOverlay();
             MessageBox.Show(
                 $"Failed to delete authorization: {ex.Message}",
                 "Error",
@@ -1489,7 +2224,7 @@ public partial class MainForm : Form
     {
         if (_suppressPortEvents) return;
         string? port = _winKeyerPortCombo.SelectedItem as string;
-        try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "winkeyer.log"), $"[{DateTime.Now:HH:mm:ss.fff}] UI: WinKeyer port selected: '{port}'\n"); } catch { }
+        try { RotatingFileLog.Append("winkeyer.log", $"UI: WinKeyer port selected: '{port}'"); } catch { }
         if (string.IsNullOrEmpty(port) || port == "(None)" || _controller is null)
         {
             // (None) selected — stop existing WinKeyer connection.

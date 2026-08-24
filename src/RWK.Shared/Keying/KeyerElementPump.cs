@@ -67,6 +67,7 @@ public sealed class KeyerElementPump
     private bool _keyDown;
     private bool _immediateHeld;
     private bool _straightHeld;
+    private bool _bugDahHeld;
 
     /// <summary>
     /// Raised for every key-state transition, with the timestamp taken at the transition (3.8).
@@ -289,7 +290,10 @@ public sealed class KeyerElementPump
         if (Mode == KeyerMode.Straight)
         {
             // Straight key: the contact is the key. No elements are generated (3.6).
-            bool contact = _engine.StraightPressed;
+            // Use StraightPressed if available (DCD line), otherwise treat DitPressed
+            // as the straight key — allows operators without a separate straight-key
+            // contact (or keyboard paddle users) to use Straight mode.
+            bool contact = _engine.StraightPressed || _engine.DitPressed;
             if (contact != _straightHeld)
             {
                 _straightHeld = contact;
@@ -301,11 +305,31 @@ public sealed class KeyerElementPump
             if (contact)
                 return PumpAction.Idle;
         }
-        else if (_straightHeld)
+        else if (Mode == KeyerMode.Bug)
         {
-            // Mode changed out from under a closed straight-key contact. Release the key
-            // rather than leave it asserted with nothing now watching the contact.
+            // Bug mode: dah contact is manual (keyed for as long as held, like a straight
+            // key). Dit contact generates auto-timed elements via the engine.
+            // Check the dah-as-straight-key FIRST — if dah is held, key the output directly.
+            bool dahContact = _engine.DahPressed;
+            if (dahContact != _bugDahHeld)
+            {
+                _bugDahHeld = dahContact;
+                long stamp = Interlocked.Read(ref _paddleTimestamp);
+                EmitEdge(dahContact, EdgeSource.Paddle, stamp == 0 ? null : stamp);
+                return PumpAction.StraightKey;
+            }
+
+            if (dahContact)
+                return PumpAction.Idle; // Dah held — don't process dit elements while manual keying
+
+            // Dit contact falls through to normal element generation below.
+        }
+        else if (_straightHeld || _bugDahHeld)
+        {
+            // Mode changed out from under a closed straight-key or bug-dah contact.
+            // Release the key rather than leave it asserted.
             _straightHeld = false;
+            _bugDahHeld = false;
             EnsureKeyUp(EdgeSource.Paddle);
             return PumpAction.StraightKey;
         }

@@ -56,9 +56,9 @@ partial class MainForm
     private Label _tailscaleIpValue = null!;
     private Button _copyIpButton = null!;
 
-    // ─── FlexRadio discovery capture (13.16, 15.6, 15.7) ───
-    private GroupBox _flexDiscoveryGroup = null!;
-    private CheckBox _flexDiscoveryEnable = null!;
+    // ─── FlexRadio discovery (auto-enabled by Client flex rules) ───
+    private Label _flexForwardingLabel = null!;
+    private Label _flexForwardingIndicator = null!;
 
     // ─── Logger Input ───
     private GroupBox _loggerInputGroup = null!;
@@ -81,6 +81,8 @@ partial class MainForm
     {
         if (disposing)
         {
+            _trayIcon?.Dispose();
+            _trayIcon = null;
             components?.Dispose();
         }
         base.Dispose(disposing);
@@ -276,12 +278,32 @@ partial class MainForm
             Name = "_disconnectButton"
         };
 
+        _flexForwardingLabel = new Label
+        {
+            Text = "Flex Forwarding",
+            Location = new Point(120, 101),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 8.5F),
+            Name = "_flexForwardingLabel"
+        };
+
+        _flexForwardingIndicator = new Label
+        {
+            Text = "✓",
+            Location = new Point(225, 98),
+            AutoSize = true,
+            Font = new Font("Segoe UI", 12F, FontStyle.Bold),
+            ForeColor = Color.Red,
+            Visible = false,
+            Name = "_flexForwardingIndicator"
+        };
+
         _sessionGroup.Controls.AddRange(new Control[]
         {
             _tailscaleIpCaptionLabel, _tailscaleIpValue, _copyIpButton,
             _sessionClientLabel, _sessionClientValue,
             _sessionDurationLabel, _sessionDurationValue,
-            _disconnectButton
+            _disconnectButton, _flexForwardingLabel, _flexForwardingIndicator
         });
 
         // ═══════════════════════════════════════════════════════════
@@ -320,30 +342,6 @@ partial class MainForm
         _forwardRulesGrid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Target Host", Name = "ColTargetOverride", FillWeight = 22, ReadOnly = true });
 
         _forwardRulesGroup.Controls.Add(_forwardRulesGrid);
-
-        // ═══════════════════════════════════════════════════════════
-        // FlexRadio Discovery Capture (13.16, 15.6, 15.7) — greyed-out placeholder
-        // ═══════════════════════════════════════════════════════════
-        _flexDiscoveryGroup = new GroupBox
-        {
-            Text = "FlexRadio Discovery Capture",
-            Location = new Point(324, 218),
-            Size = new Size(300, 48),
-            Enabled = true,
-            Name = "_flexDiscoveryGroup"
-        };
-
-        _flexDiscoveryEnable = new CheckBox
-        {
-            Text = "Enable discovery capture",
-            Location = new Point(10, 22),
-            AutoSize = true,
-            Checked = false,
-            Enabled = true,
-            Name = "_flexDiscoveryEnable"
-        };
-
-        _flexDiscoveryGroup.Controls.Add(_flexDiscoveryEnable);
 
         // ═══════════════════════════════════════════════════════════
         // Logger Input (WK2 from logging software on Station PC)
@@ -427,7 +425,6 @@ partial class MainForm
         Controls.Add(_loggerInputGroup);
         Controls.Add(_keyingOutputGroup);
         Controls.Add(_sessionGroup);
-        Controls.Add(_flexDiscoveryGroup);
         Controls.Add(_forwardRulesGroup);
         Controls.Add(_statusStrip);
 
@@ -457,6 +454,16 @@ partial class MainForm
         rwkMenuItem.DropDownItems.Add(showPairingKeyMenuItem);
         rwkMenuItem.DropDownItems.Add(deleteTsAuthMenuItem);
         rwkMenuItem.DropDownItems.Add(tsAdminMenuItem);
+        rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
+        var deleteLogsMenuItem = new ToolStripMenuItem("Delete Debugging &Logs");
+        deleteLogsMenuItem.Click += (_, _) =>
+        {
+            int count = RWK.Shared.IO.RotatingFileLog.DeleteAll(
+                "station.log", "station-logger.log", "replayer.log", "sidecar.log", "crash.log");
+            MessageBox.Show($"Deleted {count} log file(s).", "Logs Deleted",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        };
+        rwkMenuItem.DropDownItems.Add(deleteLogsMenuItem);
         rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
         rwkMenuItem.DropDownItems.Add(exitMenuItem);
         _mainMenu.Items.Add(rwkMenuItem);

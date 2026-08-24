@@ -213,6 +213,7 @@ public static class ProfileManager
                 StationPort = fwd.Port,
                 PortIdentity = fwd.PortIdentity,
                 Role = fwd.Role,
+                Direction = fwd.Direction,
                 Notes = fwd.Notes
             });
         }
@@ -238,6 +239,7 @@ public static class ProfileManager
                         StationPort = fwd.Port,
                         PortIdentity = fwd.PortIdentity,
                         Role = fwd.Role,
+                        Direction = fwd.Direction,
                         Notes = fwd.Notes
                     });
                 }

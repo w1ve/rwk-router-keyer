@@ -246,6 +246,37 @@ public sealed class WizardForm : Form
                 return true;
 
             case 3:
+                if (_selectedEntry?.IsGenericSerial == true)
+                {
+                    // Validate serial bridge fields
+                    if (string.IsNullOrWhiteSpace(_deviceNameBox?.Text))
+                    {
+                        MessageBox.Show("Please enter a device name.", "Name Required",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return false;
+                    }
+                    if (string.IsNullOrWhiteSpace(_stationComPortBox?.Text))
+                    {
+                        MessageBox.Show("Please enter the Station COM port.", "Port Required",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return false;
+                    }
+                    if (!int.TryParse(_tcpPortBox?.Text, out int tcpPort) || tcpPort < 1 || tcpPort > 65535)
+                    {
+                        MessageBox.Show("TCP port must be 1-65535.", "Invalid Port",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return false;
+                    }
+                    if (!int.TryParse(_clientComPortBox?.Text, out int comNum) || comNum < 1 || comNum > 256)
+                    {
+                        MessageBox.Show("Client COM port number must be 1-256.", "Invalid Port",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return false;
+                    }
+                    _stationTarget = "127.0.0.1"; // Serial bridge always targets Station localhost
+                    return true;
+                }
+
                 _stationTarget = _stationTargetBox.Text.Trim();
                 if (string.IsNullOrEmpty(_stationTarget))
                 {
@@ -383,11 +414,31 @@ public sealed class WizardForm : Form
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
-    //  Step 3: Endpoint Location
+    //  Step 3: Endpoint Location / Serial Bridge Config
     // ──────────────────────────────────────────────────────────────────────────────
+
+    // Serial bridge state (populated when _selectedEntry.IsGenericSerial)
+    private SerialPreset? _selectedPreset;
+    private ComboBox? _serialPresetCombo;
+    private ComboBox? _baudCombo;
+    private ComboBox? _dataBitsCombo;
+    private ComboBox? _parityCombo;
+    private ComboBox? _stopBitsCombo;
+    private ComboBox? _dtrCombo;
+    private ComboBox? _rtsCombo;
+    private TextBox? _stationComPortBox;
+    private TextBox? _clientComPortBox;
+    private TextBox? _tcpPortBox;
+    private TextBox? _deviceNameBox;
 
     private void BuildStep3_Endpoint()
     {
+        if (_selectedEntry?.IsGenericSerial == true)
+        {
+            BuildStep3_SerialBridge();
+            return;
+        }
+
         _stepTitle.Text = "Station Target Address";
 
         var prompt = _selectedEntry?.Prompts.GetValueOrDefault("stationTarget");
@@ -474,6 +525,139 @@ public sealed class WizardForm : Form
             };
             _stepPanel.Controls.Add(ifWrongBox);
         }
+    }
+
+    private void BuildStep3_SerialBridge()
+    {
+        _stepTitle.Text = "Serial Bridge Configuration";
+        _stepDescription.Text = "Configure the serial port parameters for this CAT bridge. " +
+            "Select your radio type to pre-fill settings, then adjust as needed.";
+
+        int y = 0;
+
+        // Device name
+        AddLabel("Device name:", 0, y, true);
+        _deviceNameBox = new TextBox { Location = new Point(140, y), Size = new Size(200, 24), Text = "CAT Bridge" };
+        _stepPanel.Controls.Add(_deviceNameBox);
+        y += 30;
+
+        // Radio type preset
+        AddLabel("Radio type:", 0, y, true);
+        _serialPresetCombo = new ComboBox
+        {
+            Location = new Point(140, y), Size = new Size(320, 24),
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        foreach (var preset in SerialPresets.All)
+            _serialPresetCombo.Items.Add(preset);
+        _serialPresetCombo.SelectedIndex = _serialPresetCombo.Items.Count - 1; // Generic last
+        _serialPresetCombo.SelectedIndexChanged += OnPresetChanged;
+        _stepPanel.Controls.Add(_serialPresetCombo);
+        y += 30;
+
+        // Station COM port
+        AddLabel("Station COM port:", 0, y, false);
+        _stationComPortBox = new TextBox { Location = new Point(140, y), Size = new Size(80, 24), Text = "COM3" };
+        _stepPanel.Controls.Add(_stationComPortBox);
+        AddLabel("(real port connected to radio)", 230, y, false).ForeColor = SystemColors.GrayText;
+        y += 28;
+
+        // Client virtual COM port
+        AddLabel("Client COM port:", 0, y, false);
+        _clientComPortBox = new TextBox { Location = new Point(140, y), Size = new Size(80, 24), Text = "20" };
+        _stepPanel.Controls.Add(_clientComPortBox);
+        AddLabel("(virtual port for your logger — COM20+)", 230, y, false).ForeColor = SystemColors.GrayText;
+        y += 28;
+
+        // TCP port
+        AddLabel("TCP port:", 0, y, false);
+        _tcpPortBox = new TextBox { Location = new Point(140, y), Size = new Size(80, 24), Text = "4000" };
+        _stepPanel.Controls.Add(_tcpPortBox);
+        AddLabel("(tunnel port — increment for additional bridges)", 230, y, false).ForeColor = SystemColors.GrayText;
+        y += 32;
+
+        // Serial parameters (editable)
+        var paramGroup = new GroupBox
+        {
+            Text = "Serial Parameters (from preset, editable)",
+            Location = new Point(0, y),
+            Size = new Size(575, 100)
+        };
+        _stepPanel.Controls.Add(paramGroup);
+
+        int py = 20;
+        AddLabelTo(paramGroup, "Baud:", 10, py);
+        _baudCombo = new ComboBox { Location = new Point(90, py), Size = new Size(90, 22), DropDownStyle = ComboBoxStyle.DropDownList };
+        foreach (int b in SerialPresets.BaudRates) _baudCombo.Items.Add(b);
+        _baudCombo.SelectedItem = 9600;
+        paramGroup.Controls.Add(_baudCombo);
+
+        AddLabelTo(paramGroup, "Data:", 190, py);
+        _dataBitsCombo = new ComboBox { Location = new Point(230, py), Size = new Size(50, 22), DropDownStyle = ComboBoxStyle.DropDownList };
+        _dataBitsCombo.Items.AddRange(new object[] { 7, 8 });
+        _dataBitsCombo.SelectedItem = 8;
+        paramGroup.Controls.Add(_dataBitsCombo);
+
+        AddLabelTo(paramGroup, "Parity:", 290, py);
+        _parityCombo = new ComboBox { Location = new Point(340, py), Size = new Size(80, 22), DropDownStyle = ComboBoxStyle.DropDownList };
+        _parityCombo.Items.AddRange(SerialPresets.ParityOptions);
+        _parityCombo.SelectedItem = "None";
+        paramGroup.Controls.Add(_parityCombo);
+
+        AddLabelTo(paramGroup, "Stop:", 430, py);
+        _stopBitsCombo = new ComboBox { Location = new Point(470, py), Size = new Size(50, 22), DropDownStyle = ComboBoxStyle.DropDownList };
+        _stopBitsCombo.Items.AddRange(new object[] { 1, 2 });
+        _stopBitsCombo.SelectedItem = 1;
+        paramGroup.Controls.Add(_stopBitsCombo);
+
+        py += 30;
+        AddLabelTo(paramGroup, "DTR:", 10, py);
+        _dtrCombo = new ComboBox { Location = new Point(90, py), Size = new Size(100, 22), DropDownStyle = ComboBoxStyle.DropDownList };
+        _dtrCombo.Items.AddRange(SerialPresets.HandshakeOptions);
+        _dtrCombo.SelectedItem = "Off";
+        paramGroup.Controls.Add(_dtrCombo);
+
+        AddLabelTo(paramGroup, "RTS:", 200, py);
+        _rtsCombo = new ComboBox { Location = new Point(240, py), Size = new Size(100, 22), DropDownStyle = ComboBoxStyle.DropDownList };
+        _rtsCombo.Items.AddRange(SerialPresets.HandshakeOptions);
+        _rtsCombo.SelectedItem = "Off";
+        paramGroup.Controls.Add(_rtsCombo);
+
+        // Apply the default preset
+        OnPresetChanged(null, EventArgs.Empty);
+    }
+
+    private void OnPresetChanged(object? sender, EventArgs e)
+    {
+        if (_serialPresetCombo?.SelectedItem is not SerialPreset preset) return;
+        _selectedPreset = preset;
+
+        _baudCombo!.SelectedItem = preset.BaudRate;
+        _dataBitsCombo!.SelectedItem = preset.DataBits;
+        _parityCombo!.SelectedItem = preset.Parity;
+        _stopBitsCombo!.SelectedItem = preset.StopBits;
+        _dtrCombo!.SelectedItem = preset.DtrControl;
+        _rtsCombo!.SelectedItem = preset.RtsControl;
+    }
+
+    private Label AddLabel(string text, int x, int y, bool bold)
+    {
+        var lbl = new Label
+        {
+            Text = text,
+            Location = new Point(x, y + 3),
+            AutoSize = true,
+            Font = bold ? new Font("Segoe UI", 9f, FontStyle.Bold) : new Font("Segoe UI", 9f)
+        };
+        _stepPanel.Controls.Add(lbl);
+        return lbl;
+    }
+
+    private static Label AddLabelTo(Control parent, string text, int x, int y)
+    {
+        var lbl = new Label { Text = text, Location = new Point(x, y + 3), AutoSize = true };
+        parent.Controls.Add(lbl);
+        return lbl;
     }
 
     private void OnEndpointTypeChanged(object? sender, EventArgs e)
@@ -574,6 +758,7 @@ public sealed class WizardForm : Form
             BorderStyle = BorderStyle.FixedSingle
         };
         _reviewGrid.Columns.Add("Name", "Name");
+        _reviewGrid.Columns.Add("Dir", "Dir");
         _reviewGrid.Columns.Add("Proto", "Proto");
         _reviewGrid.Columns.Add("Client", "Client Port");
         _reviewGrid.Columns.Add("Target", "Station Target");
@@ -581,7 +766,8 @@ public sealed class WizardForm : Form
 
         foreach (var rule in preview)
         {
-            _reviewGrid.Rows.Add(rule.Name, rule.Protocol, rule.ClientPort,
+            string arrow = rule.Direction == "StationToClient" ? "\u2190" : "\u2192";
+            _reviewGrid.Rows.Add(rule.Name, arrow, rule.Protocol, rule.ClientPort,
                 $"{rule.StationTarget}", rule.StationPort);
         }
         _stepPanel.Controls.Add(_reviewGrid);
@@ -621,6 +807,30 @@ public sealed class WizardForm : Form
     {
         if (_selectedEntry is null) return new();
 
+        if (_selectedEntry.IsGenericSerial)
+        {
+            // Serial bridge: single TCP forward rule using the configured TCP port
+            int tcpPort = int.TryParse(_tcpPortBox?.Text, out int p) ? p : 4000;
+            string deviceName = _deviceNameBox?.Text?.Trim() ?? "CAT Bridge";
+            return new List<ProfileForwardRule>
+            {
+                new()
+                {
+                    Name = $"Serial-{deviceName}",
+                    Protocol = "TCP",
+                    Enabled = _enableRules,
+                    BindAddress = "127.0.0.1",
+                    ClientPort = tcpPort,
+                    StationTarget = "127.0.0.1",
+                    StationPort = tcpPort,
+                    PortIdentity = "floating",
+                    Role = "cat",
+                    Direction = "ClientToStation",
+                    Notes = $"Serial bridge for {deviceName}"
+                }
+            };
+        }
+
         var profile = ProfileManager.BuildProfile(
             _selectedEntry,
             _profileName,
@@ -642,13 +852,129 @@ public sealed class WizardForm : Form
         _profileName = _profileNameBox.Text.Trim();
         _enableRules = _enableImmediately.Checked;
 
-        // Build the profile.
-        var profile = ProfileManager.BuildProfile(
-            _selectedEntry,
-            _profileName,
-            _stationTarget,
-            _enableRules,
-            _selectedExtras.Count > 0 ? _selectedExtras : null);
+        WizardProfile profile;
+
+        if (_selectedEntry.IsGenericSerial)
+        {
+            // Build serial bridge profile
+            int tcpPort = int.TryParse(_tcpPortBox?.Text, out int p) ? p : 4000;
+            int clientCom = int.TryParse(_clientComPortBox?.Text, out int c) ? c : 20;
+            string stationCom = _stationComPortBox?.Text?.Trim() ?? "COM3";
+            string deviceName = _deviceNameBox?.Text?.Trim() ?? "CAT Bridge";
+
+            int baudRate = _baudCombo?.SelectedItem as int? ?? 9600;
+            int dataBits = _dataBitsCombo?.SelectedItem as int? ?? 8;
+            string parity = _parityCombo?.SelectedItem?.ToString() ?? "None";
+            int stopBits = _stopBitsCombo?.SelectedItem as int? ?? 1;
+            string dtr = _dtrCombo?.SelectedItem?.ToString() ?? "Off";
+            string rts = _rtsCombo?.SelectedItem?.ToString() ?? "Off";
+
+            profile = new WizardProfile
+            {
+                CreatedUtc = DateTime.UtcNow.ToString("o"),
+                Profile = new ProfileInfo
+                {
+                    Name = _profileName,
+                    CatalogId = "generic.serial-bridge",
+                    Confidence = "verified"
+                },
+                SetupNotes = new SetupNotes
+                {
+                    Client = new List<string>
+                    {
+                        $"Install VSPE (or com0com + com2tcp) on this PC",
+                        $"Load the generated client .vspe file, or create a TcpClient device:",
+                        $"  Virtual COM port: COM{clientCom}",
+                        $"  Target: 127.0.0.1:{tcpPort}",
+                        $"Configure your logger to use COM{clientCom}"
+                    },
+                    Station = new List<string>
+                    {
+                        $"Install VSPE (or com2tcp) on the Station PC",
+                        $"Load the generated station .vspe file, or create a TcpServer device:",
+                        $"  Listen on: 0.0.0.0:{tcpPort}",
+                        $"  Data source: {stationCom}",
+                        $"  Baud: {baudRate}, {dataBits}{parity[0]}{stopBits}",
+                        $"  DTR: {dtr}, RTS: {rts}"
+                    },
+                    Radio = new List<string>
+                    {
+                        $"Ensure radio CAT port matches: {baudRate} baud, {dataBits}{parity[0]}{stopBits}"
+                    }
+                },
+                SerialBridge = new SerialBridgeInfo
+                {
+                    DeviceName = deviceName,
+                    TcpPort = tcpPort,
+                    ClientComPort = clientCom,
+                    StationComPort = stationCom,
+                    BaudRate = baudRate,
+                    DataBits = dataBits,
+                    Parity = parity,
+                    StopBits = stopBits,
+                    DtrControl = dtr,
+                    RtsControl = rts,
+                    PresetName = _selectedPreset?.Name ?? "Generic"
+                }
+            };
+
+            profile.Forwards.Add(new ProfileForwardRule
+            {
+                Name = $"Serial-{deviceName}",
+                Protocol = "TCP",
+                Enabled = _enableRules,
+                BindAddress = "127.0.0.1",
+                ClientPort = tcpPort,
+                StationTarget = "127.0.0.1",
+                StationPort = tcpPort,
+                PortIdentity = "floating",
+                Role = "cat",
+                Direction = "ClientToStation",
+                Notes = $"Serial bridge: COM{clientCom} (client) <-> {stationCom} (station) via TCP {tcpPort}"
+            });
+
+            // Generate VSPE files
+            try
+            {
+                var vspeConfig = new VspeGenerator.SerialBridgeConfig
+                {
+                    DeviceName = deviceName,
+                    TcpPort = tcpPort,
+                    ClientComPort = clientCom,
+                    StationComPort = stationCom,
+                    BaudRate = baudRate,
+                    DataBits = dataBits,
+                    Parity = parity,
+                    StopBits = stopBits,
+                    DtrControl = dtr,
+                    RtsControl = rts,
+                    PresetName = _selectedPreset?.Name ?? "Generic"
+                };
+                string baseName = ProfileManager.SanitizeFileName(_profileName);
+                var files = VspeGenerator.WriteFiles(vspeConfig, baseName);
+                profile.SetupNotes.VirtualSerial = new List<string>
+                {
+                    $"Client VSPE file: {files.ClientVspePath}",
+                    $"Station VSPE file: {files.StationVspePath}",
+                    $"com2tcp commands: {files.Com2TcpPath}"
+                };
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Warning: Could not generate VSPE files: {ex.Message}",
+                    "VSPE Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+        else
+        {
+            // Standard radio/service profile
+            profile = ProfileManager.BuildProfile(
+                _selectedEntry,
+                _profileName,
+                _stationTarget,
+                _enableRules,
+                _selectedExtras.Count > 0 ? _selectedExtras : null);
+        }
 
         // Run conflict detection.
         var conflicts = ConflictDetector.Detect(profile.Forwards, _existingRules, trialBind: false);
@@ -704,6 +1030,7 @@ public sealed class WizardForm : Form
             _profileName = "";
             _enableRules = false;
             _selectedExtras.Clear();
+            _selectedPreset = null;
             ShowStep(1);
         }
         else

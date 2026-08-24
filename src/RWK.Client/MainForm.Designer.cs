@@ -21,8 +21,7 @@ partial class MainForm
     private ToolStripStatusLabel _bufferLabel = null!;
     private ToolStripStatusLabel _keyStateLabel = null!;
 
-    // === Paddle State Indicators (13.2) ===
-    private GroupBox _paddleGroup = null!;
+    // === Paddle State Indicators (now in Keyer group) ===
     private Label _ditIndicator = null!;
     private Label _dahIndicator = null!;
     private Label _skIndicator = null!;
@@ -42,6 +41,23 @@ partial class MainForm
     private ComboBox _modeCombo = null!;
     private CheckBox _paddleReverseCheck = null!;
     private Button _testTxButton = null!;
+    private CheckBox _keyboardPaddleCheck = null!;
+    private ComboBox _keyboardPaddleCombo = null!;
+
+    // === CW Macros + Type-ahead + PTT ===
+    private Button _macro1Btn = null!;
+    private Button _macro2Btn = null!;
+    private Button _macro3Btn = null!;
+    private Button _macro4Btn = null!;
+    private Button _macro5Btn = null!;
+    private Button _macro6Btn = null!;
+    private Button _macro7Btn = null!;
+    private Button _macro8Btn = null!;
+    private Button _macroEditBtn = null!;
+    private TextBox _cwTypeAheadBox = null!;
+    private Button _pttButton = null!;
+    private Button _pttSetHotKeyBtn = null!;
+    private Label _pttHotKeyLabel = null!;
 
     // === Sidetone Panel ===
     private GroupBox _sidetoneGroup = null!;
@@ -68,11 +84,16 @@ partial class MainForm
     private Label _wkDitDot = null!;
     private Label _wkDahDot = null!;
     private Label _wkSkDot = null!;
+    private Label _pttPortCaptionLabel = null!;
+    private ComboBox _pttPortCombo = null!;
+    private Label _pttLineCaptionLabel = null!;
+    private ComboBox _pttLineCombo = null!;
 
     // === Port Forwarding (13.12, 13.14, 13.15) ===
     private GroupBox _forwardGroup = null!;
     private DataGridView _forwardGrid = null!;
     private DataGridViewTextBoxColumn _enabledColumn = null!;
+    private DataGridViewTextBoxColumn _directionColumn = null!;
     private DataGridViewTextBoxColumn _ruleNameColumn = null!;
     private DataGridViewComboBoxColumn _protocolColumn = null!;
     private DataGridViewTextBoxColumn _clientPortColumn = null!;
@@ -97,10 +118,12 @@ partial class MainForm
     private ListBox _flexRadioList = null!;
     private Label _flexPlaceholderLabel = null!;
 
+
     // === Layout containers ===
     private MenuStrip _mainMenu = null!;
     private TabControl _tabControl = null!;
-    private TabPage _mainTab = null!;
+    private TabPage _keyerTab = null!;
+    private TabPage _hamRouterTab = null!;
     private TabPage _logTab = null!;
     private TableLayoutPanel _mainLayout = null!;
     private GroupBox _remoteWinKeyerGroup = null!;
@@ -114,11 +137,14 @@ partial class MainForm
     private Button _connectButton = null!;
     private CheckBox _stationArmToggle = null!;
     private Button _setStationKeyBtn = null!;
+    private Label _keySetIndicator = null!;
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            _trayIcon?.Dispose();
+            _trayIcon = null;
             components?.Dispose();
         }
         base.Dispose(disposing);
@@ -172,9 +198,8 @@ partial class MainForm
         });
 
         // ============================================================
-        // PADDLE STATE INDICATORS (13.2)
+        // KEYER CONTROLS + MACROS + TYPE-AHEAD + PTT
         // ============================================================
-        _paddleGroup = new GroupBox();
         _ditIndicator = new Label();
         _dahIndicator = new Label();
         _skIndicator = new Label();
@@ -182,30 +207,6 @@ partial class MainForm
         _dahLabel = new Label();
         _skLabel = new Label();
 
-        _paddleGroup.Text = "Paddle";
-        _paddleGroup.Dock = DockStyle.Fill;
-        _paddleGroup.Name = "_paddleGroup";
-        _paddleGroup.Padding = new Padding(8);
-
-        ConfigureIndicator(_ditIndicator, "●", SystemColors.GrayText, 12, 22, "_ditIndicator");
-        ConfigureIndicator(_dahIndicator, "●", SystemColors.GrayText, 50, 22, "_dahIndicator");
-        ConfigureIndicator(_skIndicator, "●", SystemColors.GrayText, 88, 22, "_skIndicator");
-
-        _ditLabel.Text = "Dit"; _ditLabel.AutoSize = true;
-        _ditLabel.Location = new Point(10, 50); _ditLabel.Name = "_ditLabel";
-        _dahLabel.Text = "Dah"; _dahLabel.AutoSize = true;
-        _dahLabel.Location = new Point(46, 50); _dahLabel.Name = "_dahLabel";
-        _skLabel.Text = "SK"; _skLabel.AutoSize = true;
-        _skLabel.Location = new Point(88, 50); _skLabel.Name = "_skLabel";
-
-        _paddleGroup.Controls.AddRange(new Control[] {
-            _ditIndicator, _dahIndicator, _skIndicator,
-            _ditLabel, _dahLabel, _skLabel
-        });
-
-        // ============================================================
-        // KEYER CONTROLS (13.3, 13.4)
-        // ============================================================
         _keyerGroup = new GroupBox();
         _speedLabel = new Label();
         _speedCaptionLabel = new Label();
@@ -222,17 +223,25 @@ partial class MainForm
         _keyerGroup.Name = "_keyerGroup";
         _keyerGroup.Padding = new Padding(8);
 
-        // Large WPM readout
+        // Hidden indicators (used programmatically for LED state, not shown visually)
+        _ditIndicator.Visible = false; _ditIndicator.Name = "_ditIndicator";
+        _dahIndicator.Visible = false; _dahIndicator.Name = "_dahIndicator";
+        _skIndicator.Visible = false; _skIndicator.Name = "_skIndicator";
+        _ditLabel.Visible = false; _ditLabel.Name = "_ditLabel";
+        _dahLabel.Visible = false; _dahLabel.Name = "_dahLabel";
+        _skLabel.Visible = false; _skLabel.Name = "_skLabel";
+
+        // Large WPM readout at top-left
         _speedLabel.Text = "20";
         _speedLabel.Font = new Font("Segoe UI", 28F, FontStyle.Bold);
         _speedLabel.ForeColor = SystemColors.Highlight;
         _speedLabel.AutoSize = true;
-        _speedLabel.Location = new Point(12, 20);
+        _speedLabel.Location = new Point(12, 18);
         _speedLabel.Name = "_speedLabel";
 
         _speedCaptionLabel.Text = "WPM";
         _speedCaptionLabel.AutoSize = true;
-        _speedCaptionLabel.Location = new Point(14, 68);
+        _speedCaptionLabel.Location = new Point(14, 58);
         _speedCaptionLabel.Name = "_speedCaptionLabel";
 
         _speedSlider.Minimum = 5;
@@ -240,61 +249,108 @@ partial class MainForm
         _speedSlider.Value = 20;
         _speedSlider.TickFrequency = 5;
         _speedSlider.Location = new Point(70, 24);
-        _speedSlider.Size = new Size(200, 45);
+        _speedSlider.Size = new Size(140, 45);
         _speedSlider.Name = "_speedSlider";
         _speedSlider.Scroll += OnSpeedSliderScroll;
 
-        _weightCaptionLabel.Text = "Weight:";
+        // Weight row (Y=72, clear of speed slider)
+        _weightCaptionLabel.Text = "Wt:";
         _weightCaptionLabel.AutoSize = true;
-        _weightCaptionLabel.Location = new Point(12, 82);
+        _weightCaptionLabel.Location = new Point(12, 76);
         _weightCaptionLabel.Name = "_weightCaptionLabel";
 
         _weightSlider.Minimum = 25;
         _weightSlider.Maximum = 75;
         _weightSlider.Value = 50;
         _weightSlider.TickFrequency = 5;
-        _weightSlider.Location = new Point(70, 76);
-        _weightSlider.Size = new Size(150, 30);
+        _weightSlider.Location = new Point(34, 72);
+        _weightSlider.Size = new Size(80, 30);
         _weightSlider.AutoSize = false;
         _weightSlider.Name = "_weightSlider";
         _weightSlider.Scroll += OnWeightSliderScroll;
 
         _weightValueLabel.Text = "50%";
         _weightValueLabel.AutoSize = true;
-        _weightValueLabel.Location = new Point(224, 82);
+        _weightValueLabel.Location = new Point(116, 76);
         _weightValueLabel.Name = "_weightValueLabel";
 
         _modeCaptionLabel.Text = "Mode:";
         _modeCaptionLabel.AutoSize = true;
-        _modeCaptionLabel.Location = new Point(12, 112);
+        _modeCaptionLabel.Location = new Point(150, 76);
         _modeCaptionLabel.Name = "_modeCaptionLabel";
 
         _modeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _modeCombo.Location = new Point(60, 109);
-        _modeCombo.Size = new Size(130, 23);
+        _modeCombo.Location = new Point(192, 73);
+        _modeCombo.Size = new Size(100, 23);
         _modeCombo.Name = "_modeCombo";
 
-        _paddleReverseCheck.Text = "Paddle Reverse";
+        // Paddle Reverse + Keyboard Paddle on same line (Y=104)
+        _paddleReverseCheck.Text = "Paddle Rev";
         _paddleReverseCheck.AutoSize = true;
-        _paddleReverseCheck.Location = new Point(12, 140);
+        _paddleReverseCheck.Location = new Point(12, 104);
         _paddleReverseCheck.Name = "_paddleReverseCheck";
 
+        // Keyboard paddle
+        _keyboardPaddleCheck = new CheckBox();
+        _keyboardPaddleCheck.Text = "Keyboard Paddle";
+        _keyboardPaddleCheck.AutoSize = true;
+        _keyboardPaddleCheck.Location = new Point(120, 104);
+        _keyboardPaddleCheck.Name = "_keyboardPaddleCheck";
+
+        // Paddle Keys label + combo (Y=128)
+        var _paddleKeysCaptionLabel = new Label();
+        _paddleKeysCaptionLabel.Text = "Paddle Keys:";
+        _paddleKeysCaptionLabel.AutoSize = true;
+        _paddleKeysCaptionLabel.Location = new Point(12, 131);
+        _paddleKeysCaptionLabel.Name = "_paddleKeysCaptionLabel";
+
+        _keyboardPaddleCombo = new ComboBox();
+        _keyboardPaddleCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _keyboardPaddleCombo.Location = new Point(90, 128);
+        _keyboardPaddleCombo.Size = new Size(200, 22);
+        _keyboardPaddleCombo.Enabled = false;
+        _keyboardPaddleCombo.Name = "_keyboardPaddleCombo";
+
+        // CW Macro buttons (2 rows of 4 + Edit) — Y=156
+        _macro1Btn = new Button { Text = "CQ", Size = new Size(60, 24), Location = new Point(12, 156), UseVisualStyleBackColor = true, Name = "_macro1Btn" };
+        _macro2Btn = new Button { Text = "599", Size = new Size(60, 24), Location = new Point(76, 156), UseVisualStyleBackColor = true, Name = "_macro2Btn" };
+        _macro3Btn = new Button { Text = "TU", Size = new Size(60, 24), Location = new Point(140, 156), UseVisualStyleBackColor = true, Name = "_macro3Btn" };
+        _macro4Btn = new Button { Text = "73", Size = new Size(60, 24), Location = new Point(204, 156), UseVisualStyleBackColor = true, Name = "_macro4Btn" };
+        _macro5Btn = new Button { Text = "MYCALL", Size = new Size(60, 24), Location = new Point(12, 184), UseVisualStyleBackColor = true, Name = "_macro5Btn" };
+        _macro6Btn = new Button { Text = "QRL?", Size = new Size(60, 24), Location = new Point(76, 184), UseVisualStyleBackColor = true, Name = "_macro6Btn" };
+        _macro7Btn = new Button { Text = "?", Size = new Size(60, 24), Location = new Point(140, 184), UseVisualStyleBackColor = true, Name = "_macro7Btn" };
+        _macro8Btn = new Button { Text = "QRX", Size = new Size(60, 24), Location = new Point(204, 184), UseVisualStyleBackColor = true, Name = "_macro8Btn" };
+        _macroEditBtn = new Button { Text = "Edit", Size = new Size(40, 24), Location = new Point(268, 156), UseVisualStyleBackColor = true, Name = "_macroEditBtn" };
+
+        // Type-ahead CW input box — Y=214
+        _cwTypeAheadBox = new TextBox();
+        _cwTypeAheadBox.Location = new Point(12, 214);
+        _cwTypeAheadBox.Size = new Size(220, 22);
+        _cwTypeAheadBox.PlaceholderText = "Type CW here (sent immediately)...";
+        _cwTypeAheadBox.Name = "_cwTypeAheadBox";
+
+        // Test TX button — right of type-ahead, top-aligned
         _testTxButton = new Button();
-        _testTxButton.Text = "TestTX";
-        _testTxButton.Size = new Size(70, 26);
-        _testTxButton.Location = new Point(12, 168);
+        _testTxButton.Text = "Test TX";
+        _testTxButton.Size = new Size(64, 23);
+        _testTxButton.Location = new Point(236, 214);
         _testTxButton.UseVisualStyleBackColor = true;
         _testTxButton.Name = "_testTxButton";
 
         _keyerGroup.Controls.AddRange(new Control[] {
+            _ditIndicator, _dahIndicator, _skIndicator, _ditLabel, _dahLabel, _skLabel,
             _speedLabel, _speedCaptionLabel, _speedSlider,
             _weightCaptionLabel, _weightSlider, _weightValueLabel,
             _modeCaptionLabel, _modeCombo, _paddleReverseCheck,
+            _keyboardPaddleCheck, _paddleKeysCaptionLabel, _keyboardPaddleCombo,
+            _macro1Btn, _macro2Btn, _macro3Btn, _macro4Btn,
+            _macro5Btn, _macro6Btn, _macro7Btn, _macro8Btn, _macroEditBtn,
+            _cwTypeAheadBox,
             _testTxButton
         });
 
         // ============================================================
-        // SIDETONE PANEL — uses inner TableLayoutPanel for no-clip layout
+        // SIDETONE PANEL — vertical layout: Device, Frequency (value+slider), Volume (value+slider)
         // ============================================================
         _sidetoneGroup = new GroupBox();
         _toneDeviceCaptionLabel = new Label();
@@ -309,101 +365,74 @@ partial class MainForm
         _sidetoneGroup.Text = "Sidetone";
         _sidetoneGroup.Dock = DockStyle.Fill;
         _sidetoneGroup.Name = "_sidetoneGroup";
-        _sidetoneGroup.Padding = new Padding(4);
+        _sidetoneGroup.Padding = new Padding(8, 4, 8, 4);
 
-        var sidetoneInnerLayout = new TableLayoutPanel();
-        sidetoneInnerLayout.Dock = DockStyle.Fill;
-        sidetoneInnerLayout.ColumnCount = 2;
-        sidetoneInnerLayout.RowCount = 3;
-        sidetoneInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90F));
-        sidetoneInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        sidetoneInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));
-        sidetoneInnerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
-        sidetoneInnerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
-        sidetoneInnerLayout.Name = "sidetoneInnerLayout";
-
+        // Device row
         _toneDeviceCaptionLabel.Text = "Device:";
         _toneDeviceCaptionLabel.AutoSize = true;
-        _toneDeviceCaptionLabel.Dock = DockStyle.Fill;
-        _toneDeviceCaptionLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _toneDeviceCaptionLabel.Location = new Point(8, 22);
         _toneDeviceCaptionLabel.Name = "_toneDeviceCaptionLabel";
 
         _audioDeviceCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _audioDeviceCombo.Dock = DockStyle.Fill;
+        _audioDeviceCombo.Location = new Point(60, 19);
+        _audioDeviceCombo.Size = new Size(160, 22);
         _audioDeviceCombo.Name = "_audioDeviceCombo";
 
-        // Freq row: label + panel containing slider + value label
-        _toneFreqCaptionLabel.Text = "Frequency:";
+        // Frequency section: caption label, value label centered above slider, slider
+        _toneFreqCaptionLabel.Text = "Frequency";
+        _toneFreqCaptionLabel.Font = new Font("Segoe UI", 8.5F);
         _toneFreqCaptionLabel.AutoSize = true;
-        _toneFreqCaptionLabel.Dock = DockStyle.Fill;
-        _toneFreqCaptionLabel.TextAlign = ContentAlignment.TopLeft;
+        _toneFreqCaptionLabel.Location = new Point(8, 52);
         _toneFreqCaptionLabel.Name = "_toneFreqCaptionLabel";
 
-        var freqPanel = new Panel();
-        freqPanel.Dock = DockStyle.Fill;
-        freqPanel.Name = "freqPanel";
+        _toneFreqValueLabel.Text = "600 Hz";
+        _toneFreqValueLabel.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
+        _toneFreqValueLabel.AutoSize = false;
+        _toneFreqValueLabel.Size = new Size(180, 20);
+        _toneFreqValueLabel.Location = new Point(30, 68);
+        _toneFreqValueLabel.TextAlign = ContentAlignment.MiddleCenter;
+        _toneFreqValueLabel.Name = "_toneFreqValueLabel";
 
         _toneFreqSlider.Minimum = 400;
         _toneFreqSlider.Maximum = 1000;
         _toneFreqSlider.Value = 600;
         _toneFreqSlider.TickFrequency = 100;
-        _toneFreqSlider.Dock = DockStyle.Top;
-        _toneFreqSlider.Height = 30;
+        _toneFreqSlider.Location = new Point(20, 88);
+        _toneFreqSlider.Size = new Size(200, 30);
         _toneFreqSlider.AutoSize = false;
         _toneFreqSlider.Name = "_toneFreqSlider";
         _toneFreqSlider.Scroll += OnToneFreqSliderScroll;
 
-        _toneFreqValueLabel.Text = "600 Hz";
-        _toneFreqValueLabel.AutoSize = false;
-        _toneFreqValueLabel.Dock = DockStyle.Bottom;
-        _toneFreqValueLabel.Height = 18;
-        _toneFreqValueLabel.TextAlign = ContentAlignment.TopCenter;
-        _toneFreqValueLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
-        _toneFreqValueLabel.Name = "_toneFreqValueLabel";
-
-        freqPanel.Controls.Add(_toneFreqValueLabel);
-        freqPanel.Controls.Add(_toneFreqSlider);
-
-        // Volume row: label + panel containing slider + value label
-        _toneLevelCaptionLabel.Text = "Volume:";
+        // Volume section: caption label, value label centered above slider, slider
+        _toneLevelCaptionLabel.Text = "Volume";
+        _toneLevelCaptionLabel.Font = new Font("Segoe UI", 8.5F);
         _toneLevelCaptionLabel.AutoSize = true;
-        _toneLevelCaptionLabel.Dock = DockStyle.Fill;
-        _toneLevelCaptionLabel.TextAlign = ContentAlignment.TopLeft;
+        _toneLevelCaptionLabel.Location = new Point(8, 124);
         _toneLevelCaptionLabel.Name = "_toneLevelCaptionLabel";
 
-        var levelPanel = new Panel();
-        levelPanel.Dock = DockStyle.Fill;
-        levelPanel.Name = "levelPanel";
+        _toneLevelValueLabel.Text = "70%";
+        _toneLevelValueLabel.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
+        _toneLevelValueLabel.AutoSize = false;
+        _toneLevelValueLabel.Size = new Size(180, 20);
+        _toneLevelValueLabel.Location = new Point(30, 140);
+        _toneLevelValueLabel.TextAlign = ContentAlignment.MiddleCenter;
+        _toneLevelValueLabel.Name = "_toneLevelValueLabel";
 
         _toneLevelSlider.Minimum = 0;
         _toneLevelSlider.Maximum = 100;
         _toneLevelSlider.Value = 70;
         _toneLevelSlider.TickFrequency = 10;
-        _toneLevelSlider.Dock = DockStyle.Top;
-        _toneLevelSlider.Height = 30;
+        _toneLevelSlider.Location = new Point(20, 160);
+        _toneLevelSlider.Size = new Size(200, 30);
         _toneLevelSlider.AutoSize = false;
         _toneLevelSlider.Name = "_toneLevelSlider";
         _toneLevelSlider.Scroll += OnToneLevelSliderScroll;
 
-        _toneLevelValueLabel.Text = "70%";
-        _toneLevelValueLabel.AutoSize = false;
-        _toneLevelValueLabel.Dock = DockStyle.Bottom;
-        _toneLevelValueLabel.Height = 18;
-        _toneLevelValueLabel.TextAlign = ContentAlignment.TopCenter;
-        _toneLevelValueLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
-        _toneLevelValueLabel.Name = "_toneLevelValueLabel";
-
-        levelPanel.Controls.Add(_toneLevelValueLabel);
-        levelPanel.Controls.Add(_toneLevelSlider);
-
-        sidetoneInnerLayout.Controls.Add(_toneDeviceCaptionLabel, 0, 0);
-        sidetoneInnerLayout.Controls.Add(_audioDeviceCombo, 1, 0);
-        sidetoneInnerLayout.Controls.Add(_toneFreqCaptionLabel, 0, 1);
-        sidetoneInnerLayout.Controls.Add(freqPanel, 1, 1);
-        sidetoneInnerLayout.Controls.Add(_toneLevelCaptionLabel, 0, 2);
-        sidetoneInnerLayout.Controls.Add(levelPanel, 1, 2);
-
-        _sidetoneGroup.Controls.Add(sidetoneInnerLayout);
+        _sidetoneGroup.Controls.AddRange(new Control[] {
+            _toneDeviceCaptionLabel, _audioDeviceCombo,
+            _toneFreqCaptionLabel, _toneFreqValueLabel, _toneFreqSlider,
+            _toneLevelCaptionLabel, _toneLevelValueLabel, _toneLevelSlider
+        });
 
         // Mute indicator (shown when Hardware WinKey mode is active)
         _sidetoneMuteLabel = new Label();
@@ -432,23 +461,29 @@ partial class MainForm
         _wkDitDot = new Label();
         _wkDahDot = new Label();
         _wkSkDot = new Label();
+        _pttPortCaptionLabel = new Label();
+        _pttPortCombo = new ComboBox();
+        _pttLineCaptionLabel = new Label();
+        _pttLineCombo = new ComboBox();
 
-        _portsGroup.Text = "Input Ports";
+        _portsGroup.Text = "Inputs";
         _portsGroup.Dock = DockStyle.Fill;
         _portsGroup.Name = "_portsGroup";
         _portsGroup.Padding = new Padding(4);
 
         var portsInnerLayout = new TableLayoutPanel();
-        portsInnerLayout.Dock = DockStyle.Fill;
+        portsInnerLayout.Dock = DockStyle.Top;
+        portsInnerLayout.Height = 172;
         portsInnerLayout.ColumnCount = 2;
-        portsInnerLayout.RowCount = 5;
+        portsInnerLayout.RowCount = 6;
         portsInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72F));
         portsInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));  // Paddle port
-        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30F));  // WinKeyer port
+        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // Paddle port
+        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // WinKeyer port
         portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));  // WK mode radios
         portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // Loopback test button
-        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));  // Indicators
+        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // PTT COM port
+        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // PTT PIN (DTR/RTS)
         portsInnerLayout.Name = "portsInnerLayout";
 
         _paddlePortCaptionLabel.Text = "Paddle:";
@@ -505,16 +540,33 @@ partial class MainForm
         _wkLoopbackTestBtn.Dock = DockStyle.Left;
         _wkLoopbackTestBtn.Name = "_wkLoopbackTestBtn";
 
-        // WinKeyer dit/dah/SK live indicator dots in a small panel
-        var wkIndicatorPanel = new Panel();
-        wkIndicatorPanel.Dock = DockStyle.Fill;
-        wkIndicatorPanel.Name = "wkIndicatorPanel";
+        // WinKeyer indicator dots (hidden — no longer displayed)
+        _wkDitDot = new Label { Visible = false, Name = "_wkDitDot" };
+        _wkDahDot = new Label { Visible = false, Name = "_wkDahDot" };
+        _wkSkDot = new Label { Visible = false, Name = "_wkSkDot" };
 
-        ConfigureIndicator(_wkDitDot, "●", SystemColors.GrayText, 0, 4, "_wkDitDot");
-        ConfigureIndicator(_wkDahDot, "●", SystemColors.GrayText, 22, 4, "_wkDahDot");
-        ConfigureIndicator(_wkSkDot, "●", SystemColors.GrayText, 44, 4, "_wkSkDot");
+        // PTT footswitch COM port
+        _pttPortCaptionLabel.Text = "PTT In:";
+        _pttPortCaptionLabel.AutoSize = true;
+        _pttPortCaptionLabel.Dock = DockStyle.Fill;
+        _pttPortCaptionLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _pttPortCaptionLabel.Name = "_pttPortCaptionLabel";
 
-        wkIndicatorPanel.Controls.AddRange(new Control[] { _wkDitDot, _wkDahDot, _wkSkDot });
+        _pttPortCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _pttPortCombo.Dock = DockStyle.Fill;
+        _pttPortCombo.Name = "_pttPortCombo";
+
+        _pttLineCaptionLabel.Text = "PTT PIN:";
+        _pttLineCaptionLabel.AutoSize = true;
+        _pttLineCaptionLabel.Dock = DockStyle.Fill;
+        _pttLineCaptionLabel.TextAlign = ContentAlignment.TopLeft;
+        _pttLineCaptionLabel.Name = "_pttLineCaptionLabel";
+
+        _pttLineCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _pttLineCombo.Dock = DockStyle.Fill;
+        _pttLineCombo.Items.AddRange(new object[] { "DTR", "RTS" });
+        _pttLineCombo.SelectedIndex = 0;
+        _pttLineCombo.Name = "_pttLineCombo";
 
         portsInnerLayout.Controls.Add(_paddlePortCaptionLabel, 0, 0);
         portsInnerLayout.Controls.Add(_paddlePortCombo, 1, 0);
@@ -524,10 +576,41 @@ partial class MainForm
         portsInnerLayout.Controls.Add(wkModePanel, 0, 2);
         portsInnerLayout.SetColumnSpan(_wkLoopbackTestBtn, 2);
         portsInnerLayout.Controls.Add(_wkLoopbackTestBtn, 0, 3);
-        portsInnerLayout.SetColumnSpan(wkIndicatorPanel, 2);
-        portsInnerLayout.Controls.Add(wkIndicatorPanel, 0, 4);
+        portsInnerLayout.Controls.Add(_pttPortCaptionLabel, 0, 4);
+        portsInnerLayout.Controls.Add(_pttPortCombo, 1, 4);
+        portsInnerLayout.Controls.Add(_pttLineCaptionLabel, 0, 5);
+        portsInnerLayout.Controls.Add(_pttLineCombo, 1, 5);
+
+        // PTT momentary button (big, bold) — below the table layout
+        _pttButton = new Button();
+        _pttButton.Text = "PTT";
+        _pttButton.Font = new Font("Segoe UI", 12F, FontStyle.Bold);
+        _pttButton.Size = new Size(120, 36);
+        _pttButton.Location = new Point(6, 190);
+        _pttButton.BackColor = Color.FromArgb(60, 60, 60);
+        _pttButton.ForeColor = Color.White;
+        _pttButton.FlatStyle = FlatStyle.Flat;
+        _pttButton.FlatAppearance.BorderColor = Color.Gray;
+        _pttButton.Name = "_pttButton";
+
+        // PTT hotkey: Set Hot Key button + label
+        _pttSetHotKeyBtn = new Button();
+        _pttSetHotKeyBtn.Text = "Set Hot Key";
+        _pttSetHotKeyBtn.Size = new Size(80, 24);
+        _pttSetHotKeyBtn.Location = new Point(134, 196);
+        _pttSetHotKeyBtn.UseVisualStyleBackColor = true;
+        _pttSetHotKeyBtn.Name = "_pttSetHotKeyBtn";
+
+        _pttHotKeyLabel = new Label();
+        _pttHotKeyLabel.Text = "(none)";
+        _pttHotKeyLabel.AutoSize = true;
+        _pttHotKeyLabel.Font = new Font("Segoe UI", 8F);
+        _pttHotKeyLabel.ForeColor = SystemColors.GrayText;
+        _pttHotKeyLabel.Location = new Point(6, 230);
+        _pttHotKeyLabel.Name = "_pttHotKeyLabel";
 
         _portsGroup.Controls.Add(portsInnerLayout);
+        _portsGroup.Controls.AddRange(new Control[] { _pttButton, _pttSetHotKeyBtn, _pttHotKeyLabel });
 
         // ============================================================
         // PORT FORWARDING (13.12, 13.14, 13.15, 10.14, 10.18)
@@ -536,6 +619,7 @@ partial class MainForm
         _forwardGroup = new GroupBox();
         _forwardGrid = new DataGridView();
         _enabledColumn = new DataGridViewTextBoxColumn();
+        _directionColumn = new DataGridViewTextBoxColumn();
         _ruleNameColumn = new DataGridViewTextBoxColumn();
         _protocolColumn = new DataGridViewComboBoxColumn();
         _clientPortColumn = new DataGridViewTextBoxColumn();
@@ -580,6 +664,13 @@ partial class MainForm
         _enabledColumn.FillWeight = 12;
         _enabledColumn.ReadOnly = true;
 
+        _directionColumn.HeaderText = "Dir";
+        _directionColumn.Name = "Direction";
+        _directionColumn.Width = 30;
+        _directionColumn.FillWeight = 8;
+        _directionColumn.ReadOnly = true;
+        _directionColumn.DefaultCellStyle = new DataGridViewCellStyle { Alignment = DataGridViewContentAlignment.MiddleCenter };
+
         _ruleNameColumn.HeaderText = "Name";
         _ruleNameColumn.Name = "RuleName";
         _ruleNameColumn.FillWeight = 30;
@@ -612,7 +703,7 @@ partial class MainForm
         _statusColumn.FillWeight = 15;
 
         _forwardGrid.Columns.AddRange(new DataGridViewColumn[] {
-            _enabledColumn, _ruleNameColumn, _protocolColumn,
+            _enabledColumn, _directionColumn, _ruleNameColumn, _protocolColumn,
             _clientPortColumn, _stationPortColumn, _bindAddressColumn, _stationTargetColumn, _statusColumn
         });
 
@@ -719,7 +810,7 @@ partial class MainForm
         _forwardGroup.Controls.Add(forwardInnerLayout);
 
         // ============================================================
-        // FLEXRADIO DISCOVERY (13.17-13.20, 15.19) — greyed-out placeholder
+        // FLEXRADIO DISCOVERY (13.17-13.20, 15.19)
         // ============================================================
         _flexGroup = new GroupBox();
         _flexEnableCheck = new CheckBox();
@@ -730,12 +821,13 @@ partial class MainForm
         _flexGroup.Dock = DockStyle.Fill;
         _flexGroup.Name = "_flexGroup";
         _flexGroup.Padding = new Padding(8);
-        _flexGroup.Enabled = true; // FlexRadio VITA-49 discovery relay implemented
+        _flexGroup.Enabled = true;
 
         _flexEnableCheck.Text = "Enable discovery re-emission";
         _flexEnableCheck.AutoSize = true;
         _flexEnableCheck.Location = new Point(12, 24);
         _flexEnableCheck.Checked = false;
+        _flexEnableCheck.Enabled = false;
         _flexEnableCheck.Name = "_flexEnableCheck";
 
         _flexRadioList.BorderStyle = BorderStyle.FixedSingle;
@@ -757,6 +849,8 @@ partial class MainForm
         var toolTip = new ToolTip(components);
         toolTip.SetToolTip(_flexGroup, "FlexRadio VITA-49 discovery relay — enable on both Station and Client to discover remote radios.");
 
+
+
         // ============================================================
         // TOP-LEVEL GROUPBOX: "Remote WinKeyer"
         // Contains: Paddle, Keyer, Sidetone, Input Ports
@@ -769,40 +863,37 @@ partial class MainForm
 
         var topLayout = new TableLayoutPanel();
         topLayout.Dock = DockStyle.Fill;
-        topLayout.ColumnCount = 4;
+        topLayout.ColumnCount = 3;
         topLayout.RowCount = 1;
-        topLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 10F));
-        topLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30F));
+        topLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40F));
         topLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30F));
         topLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30F));
         topLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
         topLayout.Name = "topLayout";
-        topLayout.Controls.Add(_paddleGroup, 0, 0);
-        topLayout.Controls.Add(_keyerGroup, 1, 0);
-        topLayout.Controls.Add(_sidetoneGroup, 2, 0);
-        topLayout.Controls.Add(_portsGroup, 3, 0);
+        topLayout.Controls.Add(_keyerGroup, 0, 0);
+        topLayout.Controls.Add(_sidetoneGroup, 1, 0);
+        topLayout.Controls.Add(_portsGroup, 2, 0);
 
         _remoteWinKeyerGroup.Controls.Add(topLayout);
 
         // ============================================================
-        // TOP-LEVEL GROUPBOX: "Network Control"
-        // Contains: Port Forwards, FlexRadio Discovery
+        // CONNECTION PANEL — shared between Keyer tab (needed for pairing)
         // ============================================================
         _networkControlGroup = new GroupBox();
-        _networkControlGroup.Text = "Network Control";
+        _networkControlGroup.Text = "Pair with Station";
         _networkControlGroup.Dock = DockStyle.Fill;
         _networkControlGroup.Name = "_networkControlGroup";
         _networkControlGroup.Padding = new Padding(8, 4, 8, 4);
 
-        // Connection row: Station Address + Connect button
+        // Connection row: Station Tailscale IP + Pair button + Set Key
         var connectionPanel = new Panel();
         connectionPanel.Dock = DockStyle.Top;
-        connectionPanel.Height = 32;
+        connectionPanel.Height = 72;
         connectionPanel.Name = "connectionPanel";
 
         _stationAddressCaptionLabel = new Label
         {
-            Text = "Station Address:",
+            Text = "Station Tailscale IP Address:",
             AutoSize = true,
             Location = new Point(0, 7),
             Name = "_stationAddressCaptionLabel"
@@ -810,18 +901,42 @@ partial class MainForm
 
         _stationAddressTextBox = new TextBox
         {
-            Location = new Point(105, 4),
-            Size = new Size(200, 23),
-            PlaceholderText = "100.x.x.x or hostname",
+            Location = new Point(185, 4),
+            Size = new Size(160, 23),
+            PlaceholderText = "100.x.x.x",
             Name = "_stationAddressTextBox"
+        };
+
+        _setStationKeyBtn = new Button
+        {
+            Text = "Set Key",
+            Size = new Size(70, 25),
+            Location = new Point(355, 3),
+            UseVisualStyleBackColor = true,
+            Name = "_setStationKeyBtn"
+        };
+        _setStationKeyBtn.Click += OnSetStationKeyClick;
+
+        _keySetIndicator = new Label
+        {
+            Text = "\u2713",
+            Font = new Font("Segoe UI", 12F, FontStyle.Bold),
+            ForeColor = Color.FromArgb(200, 0, 0),
+            AutoSize = true,
+            Location = new Point(430, 4),
+            Visible = false,
+            Name = "_keySetIndicator"
         };
 
         _connectButton = new Button
         {
-            Text = "Pair",
-            Location = new Point(315, 3),
-            Size = new Size(75, 25),
-            UseVisualStyleBackColor = true,
+            Text = "Pair with Station",
+            Location = new Point(460, 3),
+            Size = new Size(150, 25),
+            BackColor = Color.FromArgb(200, 40, 40),
+            ForeColor = Color.White,
+            FlatStyle = FlatStyle.Flat,
+            Enabled = false,
             Name = "_connectButton"
         };
 
@@ -829,56 +944,77 @@ partial class MainForm
         {
             Text = "Station Armed",
             AutoSize = true,
-            Location = new Point(400, 6),
+            Location = new Point(0, 34),
             Checked = true,
             Name = "_stationArmToggle"
         };
 
-        _setStationKeyBtn = new Button
+        var pairingHelpLabel = new Label
         {
-            Text = "Set Key",
-            Size = new Size(60, 25),
-            Location = new Point(530, 3),
-            UseVisualStyleBackColor = true,
-            Name = "_setStationKeyBtn"
+            Text = "Enter the Station's Tailscale IP (from the Station app status bar) and the shared pairing key. " +
+                   "Multiple Client/Station pairs can share the same Tailnet — each pair uses its own pairing key.",
+            Font = new Font("Segoe UI", 8F),
+            ForeColor = SystemColors.GrayText,
+            Location = new Point(0, 54),
+            Size = new Size(620, 16),
+            AutoSize = false,
+            Name = "_pairingHelpLabel"
         };
-        _setStationKeyBtn.Click += OnSetStationKeyClick;
 
         connectionPanel.Controls.AddRange(new Control[] {
-            _stationAddressCaptionLabel, _stationAddressTextBox, _connectButton, _stationArmToggle, _setStationKeyBtn
+            _stationAddressCaptionLabel, _stationAddressTextBox, _setStationKeyBtn,
+            _keySetIndicator, _connectButton, _stationArmToggle, pairingHelpLabel
         });
 
-        var bottomLayout = new TableLayoutPanel();
-        bottomLayout.Dock = DockStyle.Fill;
-        bottomLayout.ColumnCount = 2;
-        bottomLayout.RowCount = 1;
-        bottomLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65F));
-        bottomLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35F));
-        bottomLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        bottomLayout.Name = "bottomLayout";
-        bottomLayout.Controls.Add(_forwardGroup, 0, 0);
-        bottomLayout.Controls.Add(_flexGroup, 1, 0);
-
-        _networkControlGroup.Controls.Add(bottomLayout);
-        _networkControlGroup.Controls.Add(connectionPanel); // Top of group (added after so Dock=Top works)
+        _networkControlGroup.Controls.Add(connectionPanel);
 
         // ============================================================
-        // MAIN LAYOUT — TableLayoutPanel with 2 rows
+        // KEYER TAB LAYOUT — TableLayoutPanel with 2 rows
+        // Row 0: Remote WinKeyer controls (paddle, keyer, sidetone, ports)
+        // Row 1: Network Connection (Station Address, Pair, Arm, Set Key)
         // ============================================================
         _mainLayout = new TableLayoutPanel();
         _mainLayout.Dock = DockStyle.Fill;
         _mainLayout.ColumnCount = 1;
         _mainLayout.RowCount = 2;
         _mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        _mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 45F));
-        _mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 55F));
+        _mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 65F));
+        _mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 35F));
         _mainLayout.Padding = new Padding(6);
         _mainLayout.Name = "_mainLayout";
         _mainLayout.Controls.Add(_remoteWinKeyerGroup, 0, 0);
         _mainLayout.Controls.Add(_networkControlGroup, 0, 1);
 
         // ============================================================
-        // MAIN FORM (13.1, 13.9) — wrapped in TabControl
+        // HAM ROUTER TAB LAYOUT
+        // Full-height port forwarding grid + discovery panels at bottom
+        // ============================================================
+        var hamRouterLayout = new TableLayoutPanel();
+        hamRouterLayout.Dock = DockStyle.Fill;
+        hamRouterLayout.ColumnCount = 1;
+        hamRouterLayout.RowCount = 2;
+        hamRouterLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        hamRouterLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 70F)); // Port forwards grid
+        hamRouterLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 30F)); // Discovery panels
+        hamRouterLayout.Padding = new Padding(6);
+        hamRouterLayout.Name = "hamRouterLayout";
+
+        hamRouterLayout.Controls.Add(_forwardGroup, 0, 0);
+
+        // Discovery panels — single FlexRadio discovery panel
+        var discoveryLayout = new TableLayoutPanel();
+        discoveryLayout.Dock = DockStyle.Fill;
+        discoveryLayout.ColumnCount = 1;
+        discoveryLayout.RowCount = 1;
+        discoveryLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        discoveryLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        discoveryLayout.Name = "discoveryLayout";
+        discoveryLayout.Controls.Add(_flexGroup, 0, 0);
+
+        hamRouterLayout.Controls.Add(discoveryLayout, 0, 1);
+
+        // ============================================================
+        // MAIN FORM — 3-Tab structure (Keyer | Ham Router | Log)
         // ============================================================
 
         // Main menu
@@ -909,6 +1045,17 @@ partial class MainForm
         rwkMenuItem.DropDownItems.Add(deleteTsAuthMenuItem);
         rwkMenuItem.DropDownItems.Add(tsAdminMenuItem);
         rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
+        var deleteLogsMenuItem = new ToolStripMenuItem("Delete Debugging &Logs");
+        deleteLogsMenuItem.Click += (_, _) =>
+        {
+            int count = RWK.Shared.IO.RotatingFileLog.DeleteAll(
+                "client.log", "client-debug.log", "winkeyer.log", "winkeyer-hw.log",
+                "sidecar.log", "crash.log");
+            MessageBox.Show($"Deleted {count} log file(s).", "Logs Deleted",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        };
+        rwkMenuItem.DropDownItems.Add(deleteLogsMenuItem);
+        rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
         rwkMenuItem.DropDownItems.Add(exitMenuItem);
         _mainMenu.Items.Add(rwkMenuItem);
 
@@ -917,13 +1064,19 @@ partial class MainForm
         _tabControl.Dock = DockStyle.Fill;
         _tabControl.Name = "_tabControl";
 
-        // Tab 1: WinKeyer / Forwarding (the existing main layout)
-        _mainTab = new TabPage();
-        _mainTab.Text = "WinKeyer / Forwarding";
-        _mainTab.Name = "_mainTab";
-        _mainTab.Controls.Add(_mainLayout);
+        // Tab 1: Keyer (Remote WinKeyer + Network Connection)
+        _keyerTab = new TabPage();
+        _keyerTab.Text = "Keyer";
+        _keyerTab.Name = "_keyerTab";
+        _keyerTab.Controls.Add(_mainLayout);
 
-        // Tab 2: Log
+        // Tab 2: Ham Router (Port Forwards full height + Discovery)
+        _hamRouterTab = new TabPage();
+        _hamRouterTab.Text = "Ham Router";
+        _hamRouterTab.Name = "_hamRouterTab";
+        _hamRouterTab.Controls.Add(hamRouterLayout);
+
+        // Tab 3: Log
         _logTab = new TabPage();
         _logTab.Text = "Log";
         _logTab.Name = "_logTab";
@@ -951,12 +1104,13 @@ partial class MainForm
         _logTab.Controls.Add(_logTextBox);
         _logTab.Controls.Add(_logLevelCombo); // Added after so Dock=Top renders above Fill
 
-        _tabControl.TabPages.Add(_mainTab);
+        _tabControl.TabPages.Add(_keyerTab);
+        _tabControl.TabPages.Add(_hamRouterTab);
         _tabControl.TabPages.Add(_logTab);
 
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(940, 600);
+        ClientSize = new Size(940, 540);
         Name = "MainForm";
         StartPosition = FormStartPosition.CenterScreen;
         Text = "RWK Client";

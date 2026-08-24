@@ -476,13 +476,7 @@ public sealed class HardwareWinKeyerHost : IWinKeyerProtocolHost
     {
         try
         {
-            string dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "RWK Router Keyer");
-            Directory.CreateDirectory(dir);
-            File.AppendAllText(
-                Path.Combine(dir, "winkeyer-hw.log"),
-                $"[{DateTime.Now:HH:mm:ss.fff}] [HW] {msg}\n");
+            RotatingFileLog.Append("winkeyer-hw.log", $"[HW] {msg}");
         }
         catch { }
     }

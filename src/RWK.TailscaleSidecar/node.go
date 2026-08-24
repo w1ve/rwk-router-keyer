@@ -503,6 +503,12 @@ func (n *Node) refresh(ctx context.Context) {
 		// completed login and the C# side should dismiss the login panel.
 		n.authURL = ""
 	}
+	// Also clear authURL on any state that indicates login is no longer needed
+	// (e.g. "Starting", "Authenticated"). This closes the timing window where
+	// the C# side sees a stale authUrl after the browser auth completes.
+	if st.BackendState != "NeedsLogin" && st.BackendState != "NeedsMachineAuth" {
+		n.authURL = ""
+	}
 	if st.Self != nil {
 		n.selfDNS = strings.TrimSuffix(st.Self.DNSName, ".")
 	}

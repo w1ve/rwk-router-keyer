@@ -95,6 +95,11 @@ public sealed class StationController : IDisposable
     private StationLoggerHost? _loggerHost;
     private volatile bool _loggerSending;
 
+    // Forward dedup: tracks (kind, tailnetPort, targetAddress) tuples currently registered
+    // on the sidecar. Rebuilt from scratch on each "forward_rules" control message to ensure
+    // disabled rules are pruned. Cleared on session end. Thread-safe via lock(_activeForwards).
+    private readonly HashSet<(string Kind, int TailnetPort, string Target)> _activeForwards = new();
+
     // ──────────────────────────────────────────────────────────────────────────────
     //  Events (for UI binding)
     // ──────────────────────────────────────────────────────────────────────────────
@@ -198,6 +203,9 @@ public sealed class StationController : IDisposable
     /// <summary>The Station's own Tailscale IPv4 address, or null if not yet joined.</summary>
     public string? SelfAddress => _sidecarHost?.SelfAddress;
 
+    /// <summary>The sidecar host instance, exposed for the auth wizard provider adapter.</summary>
+    public ITsnetSidecarHost? SidecarHost => _sidecarHost;
+
     /// <summary>Whether the key line is currently asserted (for UI indicator).</summary>
     public bool IsKeyDown => _keyingOutput?.IsKeyDown ?? _pttSequencer?.IsKeyAsserted ?? false;
 
@@ -227,6 +235,9 @@ public sealed class StationController : IDisposable
             // Step 1: Load config.
             _config = _configStore.Load();
             _diagnostics?.Invoke("Configuration loaded.");
+
+            // Ensure Windows Firewall allows inbound traffic for this exe
+            FirewallHelper.EnsureAppAllowed("RWK Station", _diagnostics);
 
             // Generate a pairing key on first run if one doesn't exist.
             if (string.IsNullOrEmpty(_config.Tailscale.PairingSecret))
@@ -354,6 +365,7 @@ public sealed class StationController : IDisposable
             _sessionManager = new SessionManager(secretBytes);
             _sessionManager.SessionStarted += OnSessionStarted;
             _sessionManager.SessionEnded += OnSessionEnded;
+
             _sessionManager.Start(DefaultControlPort);
             _diagnostics?.Invoke($"SessionManager listening on port {DefaultControlPort}.");
 
@@ -519,14 +531,21 @@ public sealed class StationController : IDisposable
 
     private void OnDiscoveryCaptured(object? sender, DiscoveryCapturedEventArgs e)
     {
+        _diagnostics?.Invoke($"Discovery packet captured: {e.Radio.Model} serial={e.Radio.Serial} ip={e.Radio.StationAddress}:{e.Radio.StationCommandPort}");
         // Forward the raw payload to the Client over the control channel
         _ = SendDiscoveryAnnounceAsync(e.RawPayload.ToArray());
     }
 
+
+
     private async Task SendDiscoveryAnnounceAsync(byte[] payload)
     {
         var stream = _sessionManager?.CurrentControlStream;
-        if (stream is null) return;
+        if (stream is null)
+        {
+            _diagnostics?.Invoke("Discovery announce: no control stream (not paired).");
+            return;
+        }
 
         try
         {
@@ -543,10 +562,12 @@ public sealed class StationController : IDisposable
             await stream.WriteAsync(lengthPrefix).ConfigureAwait(false);
             await stream.WriteAsync(body).ConfigureAwait(false);
             await stream.FlushAsync().ConfigureAwait(false);
+
+            _diagnostics?.Invoke($"Discovery announce sent to Client ({payload.Length} bytes payload).");
         }
-        catch
+        catch (Exception ex)
         {
-            // Session may have closed — ignore
+            _diagnostics?.Invoke($"Discovery announce send failed: {ex.Message}");
         }
     }
 
@@ -719,6 +740,9 @@ public sealed class StationController : IDisposable
     {
         _edgeReplayer?.EndSession();
         _diagnostics?.Invoke($"Session ended: {e.ClientName} ({e.ClientAddress}). Reason: {e.Reason}");
+
+        // Clear forward dedup tracking.
+        lock (_activeForwards) { _activeForwards.Clear(); }
 
         SessionEnded?.Invoke(this, e);
     }
@@ -1080,6 +1104,11 @@ public sealed class StationController : IDisposable
             {
                 var receivedRules = new List<ForwardRuleInfo>();
 
+                // Rebuild the active-forwards set from scratch on each full rule push.
+                // This ensures disabled rules are pruned and re-enabled rules with
+                // changed targets don't hit stale conflict entries.
+                lock (_activeForwards) { _activeForwards.Clear(); }
+
                 foreach (var ruleEl in rulesArray.EnumerateArray())
                 {
                     int port = ruleEl.GetProperty("port").GetInt32();
@@ -1092,33 +1121,146 @@ public sealed class StationController : IDisposable
                     string name = ruleEl.TryGetProperty("name", out var nmProp)
                         ? nmProp.GetString() ?? $"{protocol}:{port}"
                         : $"{protocol}:{port}";
+                    string direction = ruleEl.TryGetProperty("direction", out var dirProp)
+                        ? dirProp.GetString() ?? "ClientToStation"
+                        : "ClientToStation";
 
-                    receivedRules.Add(new ForwardRuleInfo(port, clientPort, protocol, targetAddress, name, enabled));
+                    receivedRules.Add(new ForwardRuleInfo(port, clientPort, protocol, targetAddress, name, enabled, direction));
 
-                    // Only register inbound forward for enabled rules.
+                    // Only register forwards for enabled rules.
                     if (enabled)
                     {
                         try
                         {
-                            if (protocol == "udp")
+                            if (direction == "StationToClient")
                             {
-                                await _sidecarHost!.CreateInboundUdpForwardAsync(port, port, targetAddress).ConfigureAwait(false);
+                                // Reverse direction: Station originates traffic.
+                                string? clientAddr = _sessionManager!.CurrentSession?.ClientAddress;
+                                if (string.IsNullOrEmpty(clientAddr))
+                                {
+                                    _diagnostics?.Invoke($"\u2717 Reverse forward '{name}' skipped: no active session/client address.");
+                                    continue;
+                                }
+
+                                var key = ("out-" + protocol, clientPort, clientAddr);
+
+                                // Conflict check: same outbound port, different peer?
+                                bool conflict = false;
+                                lock (_activeForwards)
+                                {
+                                    foreach (var existing in _activeForwards)
+                                    {
+                                        if (existing.Kind == key.Item1 && existing.TailnetPort == clientPort && existing.Target != clientAddr)
+                                        {
+                                            conflict = true;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (conflict)
+                                {
+                                    _diagnostics?.Invoke($"\u2717 Reverse forward CONFLICT: port {clientPort} ({protocol}) already registered with a different peer. Rejecting rule '{name}'.");
+                                }
+                                else
+                                {
+                                    bool alreadyRegistered;
+                                    lock (_activeForwards) { alreadyRegistered = !_activeForwards.Add(key); }
+
+                                    if (alreadyRegistered)
+                                    {
+                                        _diagnostics?.Invoke($"\u2713 Outbound forward reused (dedup): {protocol}:{clientPort} ({name})");
+                                    }
+                                    else
+                                    {
+                                        if (protocol == "udp")
+                                        {
+                                            await _sidecarHost!.CreateOutboundUdpForwardAsync(
+                                                clientAddr, clientPort).ConfigureAwait(false);
+                                        }
+                                        else
+                                        {
+                                            await _sidecarHost!.CreateOutboundForwardAsync(
+                                                clientAddr, clientPort).ConfigureAwait(false);
+                                        }
+                                        _diagnostics?.Invoke($"\u2713 Outbound forward registered (reverse): loopback:{port} \u2192 client:{clientPort} ({protocol})");
+                                    }
+                                }
                             }
                             else
                             {
-                                await _sidecarHost!.CreateInboundForwardAsync(port, port, targetAddress).ConfigureAwait(false);
+                                // Normal direction: Client → Station.
+                                (string Kind, int TailnetPort, string Target) key = ("in-" + protocol, port, targetAddress);
+
+                                // Conflict check: same port, different target?
+                                bool conflict = false;
+                                lock (_activeForwards)
+                                {
+                                    foreach (var existing in _activeForwards)
+                                    {
+                                        if (existing.Kind == key.Kind && existing.TailnetPort == port && existing.Target != targetAddress)
+                                        {
+                                            conflict = true;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (conflict)
+                                {
+                                    _diagnostics?.Invoke($"\u2717 Forward CONFLICT: port {port} ({protocol}) already registered with a different target. Rejecting rule '{name}'.");
+                                }
+                                else
+                                {
+                                    bool alreadyRegistered;
+                                    lock (_activeForwards) { alreadyRegistered = !_activeForwards.Add(key); }
+
+                                    if (alreadyRegistered)
+                                    {
+                                        _diagnostics?.Invoke($"\u2713 Inbound forward reused (dedup): tailnet:{port} \u2192 {targetAddress}:{port} ({protocol}) [{name}]");
+                                    }
+                                    else
+                                    {
+                                        if (protocol == "udp")
+                                        {
+                                            await _sidecarHost!.CreateInboundUdpForwardAsync(port, port, targetAddress).ConfigureAwait(false);
+                                        }
+                                        else
+                                        {
+                                            await _sidecarHost!.CreateInboundForwardAsync(port, port, targetAddress).ConfigureAwait(false);
+                                        }
+                                        _diagnostics?.Invoke($"\u2713 Inbound forward registered: tailnet:{port} \u2192 {targetAddress}:{port} ({protocol})");
+                                    }
+                                }
                             }
-                            _diagnostics?.Invoke($"✓ Inbound forward registered: tailnet:{port} → {targetAddress}:{port} ({protocol})");
                         }
                         catch (Exception ex)
                         {
-                            _diagnostics?.Invoke($"✗ Inbound forward failed for port {port}: {ex.Message}");
+                            _diagnostics?.Invoke($"\u2717 Forward registration failed for {name} ({direction}): {ex.Message}");
                         }
                     }
                 }
 
                 // Notify UI so the grid is updated.
                 ForwardRulesReceived?.Invoke(this, receivedRules);
+            }
+            else if (msgType == "ptt_assert")
+            {
+                // Client is asserting PTT (SSB mode / footswitch / hotkey).
+                if (_keyingOutput is not null && _keyingOutput.PttLine != KeyingLine.None)
+                {
+                    _keyingOutput.PttDown();
+                    _diagnostics?.Invoke("PTT asserted (Client request).");
+                }
+            }
+            else if (msgType == "ptt_deassert")
+            {
+                // Client is de-asserting PTT.
+                if (_keyingOutput is not null && _keyingOutput.PttLine != KeyingLine.None)
+                {
+                    _keyingOutput.PttUp();
+                    _diagnostics?.Invoke("PTT de-asserted (Client request).");
+                }
             }
         }
         catch (System.Text.Json.JsonException ex)
@@ -1213,7 +1355,7 @@ public sealed class StationController : IDisposable
 /// <summary>
 /// Info about a forward rule received from the Client, for UI display on the Station.
 /// </summary>
-public record ForwardRuleInfo(int Port, int ClientPort, string Protocol, string TargetAddress, string Name = "", bool Enabled = false);
+public record ForwardRuleInfo(int Port, int ClientPort, string Protocol, string TargetAddress, string Name = "", bool Enabled = false, string Direction = "ClientToStation");
 
 /// <summary>
 /// Controller lifecycle states.

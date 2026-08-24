@@ -1,12 +1,12 @@
-# RWK Router/Keyer v1.0.1
+# RWK Router/Keyer v1.0.4
 
 <p align="center">
-  <img src="splash.png" alt="RWK Router/Keyer" width="600">
+  <img src="rwk-full.png" alt="RWK Router/Keyer" width="400">
 </p>
 
 **Any Rig, Any Internet, Anytime.**
 
-Free, open-source CW remoting and port forwarding for amateur radio -- hand-generated Morse code sent across any internet connection without timing distortion.
+Free, open-source CW remoting, SSB PTT control, and port forwarding for amateur radio -- hand-generated Morse code sent across any internet connection without timing distortion.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: Windows x64](https://img.shields.io/badge/Platform-Windows%20x64-lightgrey.svg)]()
@@ -15,95 +15,252 @@ Free, open-source CW remoting and port forwarding for amateur radio -- hand-gene
 
 ---
 
-## What's New in v1.0.1
+## What's New in v1.0.4
+
+Version 1.0.4 is a major usability release focused on **preventing operators from shooting themselves in the foot.** The UI now guides you through every step: Tailscale authorization uses a 5-step wizard, port forwarding has a catalog-driven wizard with 31 radio/service presets, and the Keyer and Inputs panels are disabled until you successfully pair -- making it impossible to accidentally key a transmitter before a session is established.
+
+### Highlights
+
+- **Tailscale Auth Wizard** -- 5-step guided Tailscale login replaces the old manual process
+- **Port Forward Wizard** -- 31 radio/service presets, serial bridge generation, bidirectional forwarding
+- **SSB PTT Support** -- Momentary PTT button, global hotkey, and footswitch COM port input
+- **8 CW Macro Buttons** -- Two rows of 4, editable, with sensible defaults
+- **Three CW Keying Methods** -- Paddle keys, macro buttons, and live type-ahead
+- **FlexRadio Auto-Forwarding** -- Discovery checkbox auto-creates required port forward rules
+- **Log Rotation** -- 10KB max per log file with automatic rotation (-1, -2, etc.)
+- **UI Safety** -- Keyer/Inputs panels greyed out until paired; red Pair button
+
+---
 
 ### New Features
 
-- **Port Forward Wizard** -- A guided 5-step wizard inside the Client that configures port forwarding rules for your specific radio and control software. Supports Icom RS-BA1/wfview, Kenwood KNS/ARHP, Yaesu SCU-LAN10, FlexRadio SmartSDR, Elecraft K4, RemoteRig RRC-1258, generic RS-232 bridge, and ancillary services (rigctld, rotctld, RDP, VNC).
-- **Import Profiles** -- Load a previously saved `.rwkprofile.json` to restore or share configurations.
-- **Station Logger WinKeyer Input** -- Station accepts WK2 protocol CW macros from logging software (N1MM+, DXLog) running via Remote Desktop. Logger CW takes priority over remote paddle.
-- **Hardware WinKeyer Support (WK2/WK3)** -- Client drives a physical K1EL WinKeyer chip. Supports WK3 (version 31+).
-- **Improved Jitter Buffer** -- Direct path maximum raised to 300ms for Starlink/satellite links.
+- **SSB PTT Button** -- Big momentary PTT button in the Inputs panel. MouseDown = transmit, MouseUp = release. Works for SSB operators who need PTT without CW keying.
+- **PTT Global Hotkey** -- "Set Hot Key" captures any key combo (e.g. Alt+P). Hotkey is momentary like the button. Enabled only while paired, disabled on close.
+- **PTT Footswitch Input** -- Dedicated COM port in the Inputs panel monitors DSR or CTS at 10ms intervals. Connect a footswitch for hands-free PTT.
+- **8 CW Macro Buttons** -- Two rows of four: CQ, 599, TU, 73, MYCALL, QRL?, ?, QRX (all editable and persistent).
+- **Type-Ahead CW** -- Text box sends each character immediately through the keyer as you type.
+- **Tailscale Auth Wizard** -- Welcome, Browser OAuth, Verify, Authorization Required, Success (with key expiry warning). Replaces the confusing manual login panel.
+- **Port Forward Wizard** -- 31 catalog entries for radios (Icom, Kenwood, Yaesu, Elecraft, RemoteRig, 4O3A, Green Heron, SPE, SteppIR, Alpha, ACOM) and services. Generates rules, profiles, and setup guides.
+- **Bidirectional Port Forwarding** -- Rules can be Client-to-Station (forward) or Station-to-Client (reverse). Direction shown with arrow indicators in the grid.
+- **Serial Bridge Sub-Flow** -- Wizard generates VSPE configuration XML and com2tcp command lines for RS-232 CAT control.
+- **FlexRadio Auto-Forwarding** -- Checking "Enable discovery re-emission" auto-creates TCP 4992 and UDP 4991 rules with correct StationTargetAddress from the radio's VITA-49 announcement.
+- **Keyboard Paddle** -- Global key hook with 7 presets (Left/Right Ctrl, Shift, Z/X, comma/period, F/J, A/L, brackets). Combo disabled when unchecked.
+- **Log Rotation** -- All file logs rotate at 10KB (up to 5 rotated files per log).
+- **Delete Debugging Logs** -- File menu item on both Client and Station deletes all log files.
+- **CW Announcements Sidetone-Only** -- "HI", "OK READY", "AS", "KEYER BUSY" announcements play through sidetone without keying the transmitter.
+- **"HI" on Connect** -- Client plays "HI" via sidetone when Tailscale first connects.
+- **Windows Firewall Rules** -- Installer creates inbound allow rules for all three executables.
 
 ### Bug Fixes
 
-- Tailscale login panel never appeared on fresh installs (multiple causes fixed)
-- "Delete Tailscale Authorization" file lock error
-- Hardware WinKey mode: Admin Open on mode switch, WK3 single-byte response, paddle echo enabled, sidetone muted
-- COM port handling: (None) option, uniqueness enforced, mode persisted
-- Station Logger settings persisted across restarts
-- DPI scaling fixes for sidetone labels and mode controls
-- Installer auto-uninstalls previous version
-
----
-
-## Why This Project Exists
-
-Remote amateur radio operation has a fundamental problem: **hand-generated CW cannot tolerate network latency and jitter.** When an operator sends Morse code with a paddle, each dit and dah is precisely timed -- a 25 WPM dit is exactly 48 milliseconds. If those timing events cross a network with variable delay, the code arrives distorted. Characters merge, spacing is destroyed, and the result is unreadable.
-
-Commercial solutions exist (Icom RS-BA1, Kenwood KNS, Yaesu SCU-LAN10, FlexRadio SmartLink), but they all require a public IP address or router port forwarding. If you're on **Starlink, cellular, or behind CGNAT** -- which is increasingly common -- these solutions simply don't work.
-
-**RWK solves both problems:**
-
-1. **Timing-accurate CW remoting** -- The keyer runs at the operator's position. Edge transitions are timestamped with microsecond-resolution QPC clocks, packed into UDP datagrams, and replayed at the remote station with an adaptive jitter buffer. Accuracy within +/-2ms at 35 WPM.
-
-2. **Zero-configuration private networking** -- RWK uses [Tailscale](https://tailscale.com) to create a private WireGuard mesh. No port forwarding, no dynamic DNS, no public IP. Works over any internet connection on either end. **Nothing to install on the computer** -- RWK ships its own embedded Tailscale sidecar.
-
----
-
-## Three Independent Features
-
-### 1. Remote WinKeyer (CW Remoting)
-Sends hand-generated Morse code from a paddle or logger to a radio at a remote station. Requires pairing. This is the timing-critical path with fail-safe protection.
-
-### 2. Port Forwarding (TCP/UDP Tunneling)
-Tunnels arbitrary TCP and UDP traffic to the remote station's LAN. Used for CAT control, audio streaming, RemoteRig connections. Does not require pairing.
-
-### 3. FlexRadio Discovery Relay (No SmartLink Required)
-Discovers FlexRadio 6000/8000 series radios on the Station's LAN and makes them appear local -- without SmartLink, without a public IP, without Flex's cloud.
-
-Use any feature alone or in combination.
+- CW announcements (AS, OK READY, KEYER BUSY, AS UNPAIRED) were keying the transmitter -- now sidetone only
+- FlexVitaDiscoveryCodec rejected newer SmartUnlink class ID format -- now accepts both
+- Concurrent TCP control stream writes corrupted length-prefixed framing (added batch suppression)
+- Empty forward rule push did not reach Station (early-return on zero rules)
+- Weight slider and Mode combo obscured at high DPI -- repositioned with proper spacing
+- Choppy CW at 290ms RTT on Starlink -- raised DirectMaxDelay from 150ms to 300ms
+- Tailscale login panel never appeared on fresh installs (5 root causes fixed)
+- "Delete Tailscale Authorization" file lock error (sidecar stopped before delete)
+- DPI scaling: sidetone labels, mode combo, TestTX button all repositioned
+- "PLEASE WAIT" overlay now a visible white box with border, centered on window
+- Installer auto-uninstalls previous version before installing
 
 ---
 
 ## The Client
 
-![RWK Client](client.png)
+![RWK Client v1.0.4](client-104.png)
 
-The Client runs at your operating position:
+The Client runs at your operating position. The UI is organized into three tabs: **Keyer**, **Ham Router**, and **Log**.
 
-- **Paddle** -- Dit/Dah indicators. Connect paddle to a serial port.
-- **Keyer** -- Speed (WPM), weight, mode (Iambic A/B, Ultimatic, Bug, Straight).
-- **Sidetone** -- Local audio via WASAPI. Shares your sound card with receive audio.
-- **Input Ports** -- Paddle port and WinKeyer port. "Logger App" or "Hardware WinKey" mode.
-- **Port Forwards** -- TCP/UDP rules with Wizard and Import buttons.
-- **Status Bar** -- Connection state, path type, RTT, key state.
+The Keyer and Inputs panels are **disabled (greyed out) until you pair with a Station** -- preventing accidental keying before a session is established.
+
+### Keyer Panel
+
+- **Speed** -- Large WPM readout with slider (5-60 WPM)
+- **Weight** -- Element weighting (25-75%)
+- **Mode** -- Iambic A, Iambic B, Ultimatic, Bug, Straight
+- **Paddle Rev** -- Swap dit/dah contacts
+- **Keyboard Paddle** -- Key CW with your computer keyboard (7 key-pair presets)
+- **8 Macro Buttons** -- Two rows of 4, fully editable (Edit button). Defaults: CQ, 599, TU, 73, MYCALL, QRL?, ?, QRX
+- **Type-Ahead** -- Text box for live CW typing (each character sent immediately)
+- **Test TX** -- Sends "VVV TESTING" to verify the keying path
+
+### Inputs Panel
+
+- **Paddle** -- COM port for physical paddle
+- **WinKeyer** -- COM port for logger WK2 emulation or hardware K1EL chip
+- **PTT In** -- COM port for footswitch (monitors DSR or CTS)
+- **PTT PIN** -- Select DTR or RTS for the footswitch input line
+- **PTT Button** -- Big momentary button (hold to transmit)
+- **Set Hot Key** -- Capture any key combo as a PTT hotkey
+- **Logger App / Hardware WinKey** -- Mode selection for WinKeyer port
+
+### Pair with Station
+
+- Enter the Station's Tailscale IP address
+- Set the shared pairing key
+- **Red "Pair" button** indicates you are not yet paired
+- Once paired, button changes to "Unpair" (normal colors) and panels enable
+
+---
+
+## The Ham Router Tab
+
+![Ham Router Tab](client-router-104.png)
+
+Full-height port forwarding grid with:
+
+- **Direction** -- Arrow indicators (Client-to-Station or Station-to-Client)
+- **Rule Name, Protocol, Client Port, Station Port, Target Address, Status**
+- **Enable/Disable Selected**, **Enable/Disable All** buttons
+- **Add/Remove** rules manually
+- **Wizard** -- Catalog-driven configuration (see below)
+- **Import** -- Load a saved `.rwkprofile.json`
+- **FlexRadio Discovery** -- Checkbox auto-manages Flex forward rules
 
 ---
 
 ## The Station
 
-![RWK Station](station.png)
+![RWK Station v1.0.4](station-104.png)
 
 The Station runs at the remote radio site:
 
 - **ARMED/SAFE Banner** -- Green = keying active. Red = fail-safe latched.
-- **Logger Input** -- WK2 protocol from logging software on the Station PC.
-- **Keying Output** -- COM port, Key Line (RTS/DTR), PTT Line, polarity.
-- **Session** -- Paired Client info, Unpair button.
-- **Forward Rules** -- Rules pushed from Client.
+- **KEY/PTT LEDs** -- Real-time keying and PTT state indicators
+- **Keying Output** -- COM port, Key Line (RTS/DTR), PTT Line, polarity
+- **Session** -- Paired Client info, Unpair button, Flex Forwarding indicator
+- **Forward Rules** -- Rules pushed from Client with enabled/disabled state
+- **Logger Input** -- WK2 protocol from logging software on the Station PC
+
+---
+
+## Tailscale Auth Wizard
+
+The Tailscale Auth Wizard guides you through network setup in 5 steps:
+
+![Tailscale Wizard - Start](tailscale-wizard.png)
+
+**Step 1: Welcome** -- Explains what Tailscale is and why RWK uses it.  
+**Step 2: Browser OAuth** -- Opens your browser for Tailscale login.  
+**Step 3: Verify** -- Polls for authorization completion.  
+**Step 4: Authorization Required** -- Handles cases where admin approval is needed.  
+**Step 5: Success** -- Shows your Tailscale IP and warns about key expiry.
+
+![Tailscale Wizard - Complete](tailscale-wizard-104.png)
+
+The wizard appears automatically on first launch. After successful auth, RWK connects automatically on every subsequent launch.
 
 ---
 
 ## The Port Forward Wizard
 
-![Port Forward Wizard](wizard.png)
+The Wizard makes port forwarding configuration trivial. Select your radio type, answer a few questions, and click Apply.
 
-The fastest way to configure port forwarding. Select your radio, answer a few questions, click Apply. The Wizard creates rules, saves a profile, and opens a setup guide in Notepad.
+### Radio Selection
 
-**Supported radios:** Icom (RS-BA1, wfview), Kenwood (KNS, ARHP), Yaesu (SCU-LAN10), FlexRadio (SmartSDR), Elecraft (K4), RemoteRig (RRC-1258), plus generic serial bridge and TCP/UDP service entries.
+![Wizard - Radio Selection](wizard=radio-104.png)
 
-The catalog lives in `Wizard\radios.json` -- community contributions welcome via pull request.
+**31 catalog entries** covering:
+- **Icom** -- RS-BA1, wfview
+- **Kenwood** -- KNS, ARHP
+- **Yaesu** -- SCU-LAN10
+- **FlexRadio** -- SmartSDR (auto-managed via discovery)
+- **Elecraft** -- K4
+- **RemoteRig** -- RRC-1258
+- **4O3A, Green Heron, SPE, SteppIR, Alpha, ACOM** -- Rotator/amplifier/accessory control
+- **Generic** -- TCP forward, UDP forward, RS-232 serial bridge (with VSPE generation)
+
+### Services
+
+![Wizard - Services](wizard=services-104.png)
+
+Add ancillary services: rigctld, rotctld, RDP, VNC, and custom TCP/UDP forwards. Each generates appropriate Client-to-Station or Station-to-Client rules.
+
+### Bidirectional Forwarding
+
+Port forwarding now supports **both directions**:
+- **Client-to-Station (default)** -- Client binds a local port and tunnels to Station LAN
+- **Station-to-Client** -- Station originates traffic back to the Client
+
+Direction is shown with arrow indicators in the forwarding grid.
+
+---
+
+## Three CW Keying Methods
+
+RWK offers three ways to send CW, all routed through the same keyer engine and timing-accurate network path:
+
+### 1. Paddle Keys (Physical or Keyboard)
+
+Connect a physical paddle to a serial port, or use the Keyboard Paddle with any of 7 key-pair presets. The software keyer generates proper iambic timing locally at 1ms resolution.
+
+### 2. CW Macro Buttons
+
+Eight pre-programmed buttons send stored CW text through the keyer. Defaults:
+| Button | Sends |
+|--------|-------|
+| CQ | CQ DE MYCALL |
+| 599 | 599 |
+| TU | TU |
+| 73 | 73 |
+| MYCALL | MYCALL |
+| QRL? | QRL? |
+| ? | ? |
+| QRX | QRX |
+
+All labels and texts are editable and persist across restarts.
+
+### 3. Type-Ahead
+
+A text input box sends each character through the keyer as you type. Supports all printable ASCII characters, immediately converted to properly-timed CW.
+
+---
+
+## SSB PTT Control
+
+For SSB operators who need to assert PTT without CW keying:
+
+### PTT Button
+
+A large momentary button in the Inputs panel. Hold it down to transmit, release to stop. Visual feedback: button turns red while active.
+
+### PTT Global Hotkey
+
+Click "Set Hot Key", then press any key combo (e.g. Ctrl+Shift+P, F9, Alt+Space). The hotkey works globally -- you can be in any application and the hotkey triggers PTT. Displayed in plain English below the PTT button.
+
+The hotkey is **enabled only while paired** and disabled on unpair or app close.
+
+### PTT Footswitch (COM Port)
+
+Select a COM port in "PTT In" and choose the pin to monitor (DTR reads as DSR, RTS reads as CTS). Connect a footswitch that grounds the selected line when pressed.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    PTT Input Sources                             │
+│                                                                 │
+│  ┌──────────────┐  ┌───────────────┐  ┌─────────────────────┐  │
+│  │  PTT Button  │  │  Global       │  │  Footswitch         │  │
+│  │  (UI click)  │  │  Hotkey       │  │  (COM port DSR/CTS) │  │
+│  └──────┬───────┘  └───────┬───────┘  └──────────┬──────────┘  │
+│         └───────────────────┴─────────────────────┘             │
+│                             │                                   │
+│                    ┌────────▼────────┐                          │
+│                    │ ClientController │                          │
+│                    │ AssertPtt() /    │                          │
+│                    │ DeassertPtt()    │                          │
+│                    └────────┬────────┘                          │
+│                             │ Control Channel                   │
+│                             │ {"type":"ptt_assert"}             │
+│                             │ {"type":"ptt_deassert"}           │
+│                             ▼                                   │
+│                    ┌─────────────────┐                          │
+│                    │ Station PTT     │                          │
+│                    │ (serial DTR/RTS)│                          │
+│                    └─────────────────┘                          │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -114,7 +271,7 @@ The catalog lives in `Wizard\radios.json` -- community contributions welcome via
 │                           OPERATOR POSITION (Client)                             │
 │                                                                                 │
 │  ┌──────────┐  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐   │
-│  │  Paddle  │  │   Logger     │  │  Hardware    │  │  Local Applications   │   │
+│  │  Paddle  │  │  Logger      │  │  Hardware    │  │  Local Applications   │   │
 │  │  (CTS/   │  │  (N1MM,      │  │  WinKeyer    │  │  (CAT, Audio, RRC)    │   │
 │  │  DSR/DCD)│  │  DXLog, etc) │  │  (K1EL)      │  │                       │   │
 │  └────┬─────┘  └──────┬───────┘  └──────┬───────┘  └───────────┬───────────┘   │
@@ -130,28 +287,31 @@ The catalog lives in `Wizard\radios.json` -- community contributions welcome via
 │  │        └─────────────────┴───────────────┘                │             │    │
 │  │                          │ UDP Edges                      │ TCP/UDP     │    │
 │  │                          ▼                                ▼             │    │
-│  │                 ┌──────────────────────────────────────────────┐         │    │
+│  │  ┌─────────────┐ ┌──────────────────────────────────────────────┐       │    │
+│  │  │ PTT Control │ │       Tailscale Sidecar (Go tsnet)           │       │    │
+│  │  │ (Button,    │ │                                              │       │    │
+│  │  │  Hotkey,    ├─┤  UDP edge datagrams + TCP control channel    │       │    │
+│  │  │  Footswitch)│ │  TCP/UDP port forwards                      │       │    │
+│  │  └─────────────┘ └────────────────────┬───────────────────────┘        │    │
+│  └───────────────────────────────────────┼─────────────────────────────────┘    │
+└──────────────────────────────────────────┼──────────────────────────────────────┘
+                                           │ WireGuard Mesh (Tailscale)
+┌──────────────────────────────────────────┼──────────────────────────────────────┐
+│  ┌───────────────────────────────────────┼─────────────────────────────────┐    │
+│  │                 ┌─────────────────────┴───────────────────────┐         │    │
 │  │                 │       Tailscale Sidecar (Go tsnet)           │         │    │
-│  │                 └────────────────────┬────────────────────────┘         │    │
-│  └──────────────────────────────────────┼──────────────────────────────────┘    │
-└─────────────────────────────────────────┼───────────────────────────────────────┘
-                                          │ WireGuard Mesh (Tailscale)
-┌─────────────────────────────────────────┼───────────────────────────────────────┐
-│  ┌──────────────────────────────────────┼──────────────────────────────────┐    │
-│  │                 ┌────────────────────┴────────────────────────┐         │    │
-│  │                 │       Tailscale Sidecar (Go tsnet)           │         │    │
-│  │                 └──────┬─────────────────────────────┬────────┘         │    │
-│  │                        ▼                             ▼                  │    │
-│  │  ┌──────────────────────────────┐  ┌────────────────────────────────┐   │    │
-│  │  │     Edge Replayer            │  │   Port Forward Manager         │   │    │
-│  │  │  (TIME_CRITICAL thread,      │  │  (inbound TCP/UDP -> LAN)      │   │    │
-│  │  │   jitter buffer, anchor)     │  │                                │   │    │
-│  │  └────────────┬─────────────────┘  └──────────────┬─────────────────┘   │    │
-│  │               ▼                                   ▼                     │    │
-│  │  ┌────────────────────────┐         ┌──────────────────────────┐        │    │
-│  │  │   Keying Output        │         │  Station LAN Devices     │        │    │
-│  │  │   (Serial DTR/RTS)     │         │  (Radio, RRC, etc.)      │        │    │
-│  │  └────────────┬───────────┘         └──────────────────────────┘        │    │
+│  │                 └──────┬──────────────────────────────┬───────┘         │    │
+│  │                        ▼                              ▼                 │    │
+│  │  ┌──────────────────────────────┐  ┌──────────────────────────────────┐ │    │
+│  │  │     Edge Replayer            │  │   Port Forward Manager           │ │    │
+│  │  │  (TIME_CRITICAL thread,      │  │  (inbound TCP/UDP -> LAN)        │ │    │
+│  │  │   jitter buffer, anchor)     │  │                                  │ │    │
+│  │  └────────────┬─────────────────┘  └──────────────┬───────────────────┘ │    │
+│  │               │                                   │                     │    │
+│  │  ┌────────────▼────────────────┐    ┌─────────────▼────────────────┐    │    │
+│  │  │   Keying + PTT Output      │    │  Station LAN Devices         │    │    │
+│  │  │   (Serial DTR/RTS)         │    │  (Radio, RRC, Rotator, etc.) │    │    │
+│  │  └────────────┬───────────────┘    └──────────────────────────────┘    │    │
 │  │               │              RWK Station Application                    │    │
 │  └───────────────┼────────────────────────────────────────────────────────┘    │
 │                  ▼              REMOTE STATION                                  │
@@ -163,13 +323,28 @@ The catalog lives in `Wizard\radios.json` -- community contributions welcome via
 
 ---
 
+## Three Independent Features
+
+### 1. Remote WinKeyer (CW Remoting)
+Sends hand-generated Morse code from a paddle, keyboard, macros, or type-ahead to a radio at a remote station. Requires pairing. This is the timing-critical path with fail-safe protection.
+
+### 2. Port Forwarding (TCP/UDP Tunneling)
+Tunnels arbitrary TCP and UDP traffic between Client and Station LANs. Supports both directions. Used for CAT control, audio streaming, RemoteRig connections, rotator control, and more. Does not require pairing.
+
+### 3. FlexRadio Discovery Relay (No SmartLink Required)
+Discovers FlexRadio 6000/8000 series radios on the Station's LAN and makes them appear local -- without SmartLink, without a public IP, without Flex's cloud. Enabling the checkbox auto-creates required port forward rules.
+
+Use any feature alone or in combination.
+
+---
+
 ## Core Technology: Timing-Accurate CW Remoting
 
 At 25 WPM, a dit is 48ms. At 35 WPM, 34ms. Internet jitter is typically 20-100ms. RWK separates the **timing decision** from the **physical keying:**
 
 1. **Client:** Paddle polled at 1ms on a dedicated thread. QPC-timestamped edges generated by the soft keyer on a `THREAD_PRIORITY_HIGHEST` thread.
 2. **Network:** Edges packed into UDP datagrams (RWK-PADDLE frames) with sequence numbers and relative timestamps. True UDP over WireGuard mesh.
-3. **Station:** `THREAD_PRIORITY_TIME_CRITICAL` replay thread. Adaptive jitter buffer. Anchor system resets after idle. Result: **+/-2ms accuracy at 35 WPM.**
+3. **Station:** `THREAD_PRIORITY_TIME_CRITICAL` replay thread. Adaptive jitter buffer (Direct band 30-300ms, DERP band 100-500ms). Anchor system resets after idle. Result: **+/-2ms accuracy at 35 WPM.**
 
 ### Fail-Safe Protection
 
@@ -189,9 +364,9 @@ Connect a paddle to the Client's Paddle port. RWK's software keyer handles all i
 
 **Advantages:**
 - Local sidetone plays instantly (zero delay) through your sound device
-- Sidetone can **share the same sound card** as receive audio -- hear your CW mixed with the other station
+- Sidetone can **share the same sound card** as receive audio
 - Full speed range (5-60 WPM) with proper weighting
-- No additional hardware beyond a paddle and serial port
+- PageUp/PageDown adjusts speed +/-2 WPM globally
 
 ### Hardware WinKeyer (K1EL WK2/WK3)
 
@@ -199,7 +374,7 @@ Select "Hardware WinKey" mode to drive a physical K1EL chip. The chip decodes pa
 
 **Trade-offs:**
 - One-character decode delay (chip must finish the character before RWK can send it)
-- **Local sidetone is muted** -- use the WinKeyer's own sidetone (it plays in real time)
+- **Local sidetone is muted** -- use the WinKeyer's own sidetone
 - WinKeyer sidetone cannot be mixed with receive audio on the same sound card
 
 ---
@@ -210,14 +385,11 @@ Select "Hardware WinKey" mode to drive a physical K1EL chip. The chip decodes pa
 
 The paddle connects to a serial port (real or USB-to-serial adapter). RWK uses the serial port's **modem control lines** to detect paddle contact closures:
 
-- **DTR (pin 4)** is asserted by RWK software as a voltage source (~+5V to +12V depending on adapter)
+- **DTR (pin 4)** is asserted by RWK software as a voltage source
 - **Paddle common** connects to DTR
 - **Dit contact** connects DTR through to **CTS (pin 8)** when closed
 - **Dah contact** connects DTR through to **DSR (pin 6)** when closed
 - **Straight key** (optional) connects DTR through to **DCD (pin 1)** when closed
-- **GND (pin 5)** is the cable shield/ground (not connected to paddle common)
-
-When you squeeze dit, the paddle contact closes and connects DTR voltage to the CTS input pin. RWK's poller detects CTS going active and registers a dit closure. No external power supply is needed -- the serial port provides the voltage on DTR.
 
 ### Wiring Diagram
 
@@ -239,36 +411,29 @@ When you squeeze dit, the paddle contact closes and connects DTR voltage to the 
                                           └──────────────┘
 ```
 
-**Important:** The paddle COMMON terminal connects to **DTR (pin 4)**, NOT to GND (pin 5). DTR provides the voltage that the input pins (CTS, DSR, DCD) need to detect a contact closure. GND is only for the cable shield.
+**Important:** The paddle COMMON terminal connects to **DTR (pin 4)**, NOT to GND (pin 5).
 
-### What You Need
+### PTT Footswitch Wiring
 
-1. **USB-to-serial adapter** -- Any standard USB-to-RS232 adapter with a DB-9 male connector. FTDI or Prolific chipsets work well. (~$10-15 on Amazon)
+For a footswitch, wire similarly but to the **PTT In** port:
 
-2. **DB-9 screw terminal breakout board** -- A small PCB that converts DB-9 pins to labeled screw terminals. No soldering required. Search Amazon for "DB9 breakout board screw terminal" (~$5-8). Example: [DB9 Female Breakout Board](https://www.amazon.com/dp/B07DC1MGSX)
+```
+                    USB-Serial             DB-9 Breakout
+                    Adapter                Board
+                    ┌─────┐               ┌──────────────┐
+                    │     │               │              │
+   Computer USB ────┤     ├── DB-9 ───────┤ Pin 4 (DTR)  ├──── Footswitch COM
+                    │     │               │              │
+                    └─────┘               │ Pin 6 (DSR)  ├──── Footswitch NO
+                                          │              │     (if PTT PIN = DTR)
+                                          │   -- OR --   │
+                                          │ Pin 8 (CTS)  ├──── Footswitch NO
+                                          │              │     (if PTT PIN = RTS)
+                                          │ Pin 5 (GND)  ├──── Shield/ground
+                                          └──────────────┘
+```
 
-3. **Paddle cable** -- Your paddle likely has a 1/4" stereo (TRS) plug or 3.5mm stereo plug:
-   - Tip = Dit
-   - Ring = Dah
-   - Sleeve = Common
-
-   Cut an extension cable or use a breakout adapter to access the three wires.
-
-### Assembly
-
-1. Plug the DB-9 breakout board into the USB-serial adapter (or use a short DB-9 extension cable between them).
-2. Strip the paddle cable wires and connect to the screw terminals:
-   - **Common/Sleeve** wire -> terminal for **Pin 4 (DTR)**
-   - **Dit/Tip** wire -> terminal for **Pin 8 (CTS)**
-   - **Dah/Ring** wire -> terminal for **Pin 6 (DSR)**
-   - Cable shield (if separate) -> terminal for **Pin 5 (GND)**
-3. Plug the USB adapter into your computer.
-4. In RWK Client, select the COM port in the Paddle dropdown.
-5. Test: squeeze the paddle -- the Dit/Dah indicators should light up and you should hear sidetone.
-
-### Software Debounce
-
-RWK applies 5ms debounce (configurable) to the paddle contacts. This prevents false triggers from contact bounce. The poller runs at 1ms intervals on a high-priority thread for responsive feel.
+When the footswitch is pressed, it closes the contact and RWK detects the pin going active. PTT is asserted on the Station for the duration of the press.
 
 ---
 
@@ -280,19 +445,9 @@ FlexRadio's SmartLink requires a public IP, port forwarding, or cloud relay. On 
 
 ### The Solution
 
-RWK intercepts VITA-49 discovery broadcasts at the Station, rewrites the endpoint fields, and re-emits them on the Client's LAN. SmartSDR discovers the radio and connects through the forwarded ports.
+RWK intercepts VITA-49 discovery broadcasts at the Station, rewrites the endpoint fields, and re-emits them on the Client's LAN. SmartSDR discovers the radio and connects through automatically-created forwarded ports.
 
-**Technical details:**
-- VITA-49 encapsulation: 28-byte preamble, stream ID 0x800, Flex OUI class ID
-- ASCII payload with key=value pairs (model, serial, ip, port, status)
-- Rewrite preserves all fields except `ip=` and `port=`
-- Station binds with SO_REUSEADDR so local SmartSDR still works
-
-**Setup:**
-1. Port forward TCP 4992 (command) + UDP ports as needed
-2. Enable "discovery capture" on Station
-3. Enable "discovery re-emission" on Client
-4. Open SmartSDR -- radio appears in discovery list
+**In v1.0.4, it's automatic:** Check "Enable discovery re-emission" on the Client, and RWK auto-creates TCP 4992 (SmartSDR Command) and UDP 4991 (VITA-49 Stream) forward rules. The radio's actual IP is extracted from the first discovery announcement and set as the StationTargetAddress.
 
 ---
 
@@ -301,26 +456,27 @@ RWK intercepts VITA-49 discovery broadcasts at the Station, rewrites the endpoin
 ### Requirements
 
 - Windows 10/11 x64
-- Internet connectivity (any type)
+- Internet connectivity (any type -- Starlink, cellular, CGNAT all work)
 - Free [Tailscale](https://tailscale.com) account
 - Serial port for paddle and/or radio keying (USB adapters work)
 
 ### Running the Installer
 
 1. Download `RWK-Setup.exe` from [GitHub Releases](https://github.com/w1ve/rwk-router-keyer/releases)
-2. Run it -- no admin rights needed. Installs to `%LOCALAPPDATA%\RWK Router Keyer\`
-3. Previous versions are automatically uninstalled first.
-4. Choose: Client only, Station only, or both.
+2. Run it. Choose: Client only, Station only, or both.
+3. Installs to `%LOCALAPPDATA%\RWK Router Keyer\`
+4. Previous versions are automatically uninstalled first.
+5. Windows Firewall rules are created automatically for all executables.
 
 ---
 
 ## Tailscale Authentication
 
-Both Client and Station must join your Tailscale network (tailnet). This is a one-time setup per machine.
+Both Client and Station must join your Tailscale network (tailnet). The Auth Wizard handles this automatically on first launch.
 
 ### Step 0: Create a Dedicated Tailnet
 
-> **Important:** Create a **new Tailscale account** (using a new email or Google account) specifically for your RWK network. The email you use to create the tailnet becomes the **administrator**. If you join an existing tailnet where you're not an admin, your RWK nodes will require manual approval by the admin before they can connect.
+> **Important:** Create a **new Tailscale account** specifically for your RWK network. The email you use becomes the **administrator**. If you join an existing tailnet where you're not an admin, your nodes will require manual approval.
 
 1. Go to https://login.tailscale.com and sign up with a dedicated email
 2. This creates a fresh tailnet where you are the admin
@@ -328,41 +484,19 @@ Both Client and Station must join your Tailscale network (tailnet). This is a on
 
 ### Key Expiry -- Disable It
 
-By default, Tailscale keys expire after **90 days**. When a key expires, the node disconnects and requires re-authentication. For a remote station that may run unattended, this is a problem.
+By default, Tailscale keys expire after **90 days**. For a remote station, disable this:
 
-**To disable key expiry:**
 1. Go to https://login.tailscale.com/admin/machines
 2. Click the three-dot menu next to your RWK node
 3. Select **Disable key expiry**
 4. Repeat for both Client and Station nodes
 
-With key expiry disabled, your nodes stay connected indefinitely without re-authentication.
-
-### Option A: Browser Login (recommended)
-
-1. Launch RWK. A login panel appears.
-2. Click **Open Browser**. Sign in with your **dedicated RWK Tailscale account**.
-3. Authorize the device. Panel dismisses automatically.
-4. Status bar shows "Connected" with IP (100.x.x.x).
-
-Identity is persisted -- subsequent launches connect automatically.
-
-### Option B: Auth Key (headless machines)
-
-For machines without a browser (headless Station at a remote site):
-
-1. Go to https://login.tailscale.com/admin/settings/keys
-2. Generate an auth key. Check "Reusable" if desired. Copy it (`tskey-auth-...`).
-3. In RWK, click **Paste Auth Key Instead**. Paste and Submit.
-4. No browser needed.
-
 ### Troubleshooting
 
-- **Panel stays at "Waiting...":** Use Paste Auth Key instead. This bypasses the browser OAuth flow.
-- **Panel doesn't appear:** Already authenticated. Check status bar.
-- **Node shows "needs authorization":** You joined a tailnet where you're not the admin. Either have the admin approve the node, or create your own dedicated tailnet.
-- **Disconnected after 90 days:** Key expiry hit. Re-authenticate and then disable key expiry in the admin console.
-- **Reset auth:** File menu -> Delete Tailscale Authorization -> restart.
+- **Panel stays at "Waiting...":** Use Paste Auth Key instead.
+- **Node shows "needs authorization":** You joined a tailnet where you're not the admin. Create your own dedicated tailnet.
+- **Disconnected after 90 days:** Key expiry hit. Re-authenticate and disable key expiry.
+- **Reset auth:** File menu -> Delete Tailscale Authorization.
 
 ---
 
@@ -371,9 +505,9 @@ For machines without a browser (headless Station at a remote site):
 1. **Station:** File menu -> Show Pairing Key. Note the 8-character code.
 2. **Client:** Enter Station's Tailscale IP in "Station Address".
 3. **Client:** Click "Set Key", enter the pairing code.
-4. **Client:** Click "Pair". Status shows "Paired".
+4. **Client:** Click the red "Pair" button. On success, panels enable and button shows "Unpair".
 
-Pairing is only for CW keying. Port forwarding works without it.
+Pairing is only for CW keying and PTT. Port forwarding works without it.
 
 ---
 
@@ -402,6 +536,8 @@ cd src/RWK.TailscaleSidecar && go build -o rwk-tailscale-sidecar.exe .
 iscc build/installer/rwk-setup.iss
 ```
 
+Requires: .NET 9 SDK, Go 1.26+, Inno Setup 6.
+
 ---
 
 ## Acknowledgments
@@ -416,7 +552,7 @@ iscc build/installer/rwk-setup.iss
 
 Questions, bugs, feature requests, or catalog contributions:
 
-**Email:** gerry@w1ve.com  
+**Email:** gerry@w1ve.com
 **GitHub Issues:** https://github.com/w1ve/rwk-router-keyer/issues
 
 73 de W1VE

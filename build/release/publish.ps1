@@ -143,6 +143,17 @@ Assert-SingleFile $ClientPublishDir $ClientExeName
 Copy-Item (Join-Path $ClientPublishDir $ClientExeName) (Join-Path $StagingDir $ClientExeName)
 Write-Host "  -> $ClientExeName staged"
 
+# Copy the Wizard catalog (content file, placed alongside the exe by dotnet publish)
+$ClientWizardDir = Join-Path $ClientPublishDir "Wizard"
+if (Test-Path $ClientWizardDir) {
+    $StagingWizardDir = Join-Path $StagingDir "Wizard"
+    if (-not (Test-Path $StagingWizardDir)) {
+        New-Item -ItemType Directory -Path $StagingWizardDir -Force | Out-Null
+    }
+    Copy-Item (Join-Path $ClientWizardDir "radios.json") (Join-Path $StagingWizardDir "radios.json") -Force
+    Write-Host "  -> Wizard/radios.json staged"
+}
+
 # ---------------------------------------------------------------------------
 # Step 2: Publish RWK.Station (Task 31.1)
 # Requirements: 16.1, 16.3
@@ -235,7 +246,7 @@ Write-Step "Assembling release archive: $ZipFileName"
 
 # Verify staging contains exactly the expected four files
 $stagedFiles = Get-ChildItem -Path $StagingDir -File | Sort-Object Name
-$expectedFiles = @("README.md", $ClientExeName, $StationExeName, $SidecarExeName) | Sort-Object
+$expectedFiles = @("README.md", "splash.png", $ClientExeName, $StationExeName, $SidecarExeName) | Sort-Object
 
 $stagedNames = ($stagedFiles | ForEach-Object { $_.Name }) | Sort-Object
 $missingFiles = $expectedFiles | Where-Object { $_ -notin $stagedNames }

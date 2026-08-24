@@ -289,7 +289,7 @@ public sealed class WinKeyerProtocolHost : IWinKeyerProtocolHost
 
     private static void LogWk(string msg)
     {
-        try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "winkeyer.log"), $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
+        try { RotatingFileLog.Append("winkeyer.log", msg); } catch { }
     }
 
     /// <summary>

@@ -486,13 +486,7 @@ public sealed class StationLoggerHost : IDisposable
     {
         try
         {
-            string dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "RWK Router Keyer");
-            Directory.CreateDirectory(dir);
-            File.AppendAllText(
-                Path.Combine(dir, "station-logger.log"),
-                $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n");
+            RWK.Shared.IO.RotatingFileLog.Append("station-logger.log", msg);
         }
         catch { }
     }

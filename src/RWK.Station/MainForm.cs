@@ -9,6 +9,7 @@
  */
 using RWK.Shared;
 using RWK.Shared.Config;
+using RWK.Shared.IO;
 using RWK.Shared.Net;
 using RWK.Station.Controllers;
 
@@ -37,6 +38,10 @@ public partial class MainForm : Form
     private StationController? _controller;
     private System.Windows.Forms.Timer? _portPollTimer;
     private System.Windows.Forms.Timer? _keyIndicatorTimer;
+    private NotifyIcon? _trayIcon;
+
+    // "PLEASE WAIT" overlay — shown from startup until Connected or Wizard opens
+    private Panel? _waitOverlay;
     private DateTime? _sessionStartTime;
 
     public MainForm()
@@ -45,6 +50,9 @@ public partial class MainForm : Form
         Text = $"RWK Router/Keyer Station Version {AppVersion} — Any Rig, Any Internet, Anytime";
 
         _toolTip = new ToolTip { InitialDelay = 300, ReshowDelay = 200 };
+
+        // System tray icon — minimize to tray
+        InitializeTrayIcon();
 
         // Wire Re-Arm button click (13.8).
         _reArmButton.Click += OnReArmClick;
@@ -67,14 +75,7 @@ public partial class MainForm : Form
         _pttLineNone.CheckedChanged += OnKeyingConfigChanged;
         _pttInvertCheck.CheckedChanged += OnKeyingConfigChanged;
 
-        // FlexRadio discovery capture control.
-        _flexDiscoveryEnable.CheckedChanged += (_, _) =>
-        {
-            if (_flexDiscoveryEnable.Checked)
-                _controller?.StartDiscoveryCapture();
-            else
-                _controller?.StopDiscoveryCapture();
-        };
+        // FlexRadio discovery capture is auto-enabled when Client pushes [Flex] rules.
 
         // Logger Input controls.
         _loggerEnableCheck.CheckedChanged += OnLoggerEnableChanged;
@@ -90,12 +91,50 @@ public partial class MainForm : Form
         Load += OnFormLoad;
     }
 
+    private void InitializeTrayIcon()
+    {
+        _trayIcon = new NotifyIcon
+        {
+            Text = "RWK Station",
+            Visible = false
+        };
+
+        string icoPath = Path.Combine(AppContext.BaseDirectory, "rwk.ico");
+        if (File.Exists(icoPath))
+            _trayIcon.Icon = new Icon(icoPath);
+
+        _trayIcon.Click += (_, _) =>
+        {
+            Show();
+            WindowState = FormWindowState.Normal;
+            Activate();
+        };
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (WindowState == FormWindowState.Minimized)
+        {
+            Hide();
+            if (_trayIcon is not null)
+                _trayIcon.Visible = true;
+        }
+        else
+        {
+            if (_trayIcon is not null)
+                _trayIcon.Visible = false;
+        }
+    }
+
     // ────────────────────────────────────────────────────────────────
     // Controller initialization and wiring
     // ────────────────────────────────────────────────────────────────
 
     private async void OnFormLoad(object? sender, EventArgs e)
     {
+        ShowWaitOverlay();
+
         // Start polling for COM port changes (2s interval, same pattern as Client).
         _portPollTimer = new System.Windows.Forms.Timer { Interval = 2000 };
         _portPollTimer.Tick += OnPortPollTimerTick;
@@ -111,7 +150,7 @@ public partial class MainForm : Form
         {
             SetStatusText(msg);
             // Also append to a log file next to the exe for debugging.
-            try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "station.log"), $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
+            try { RotatingFileLog.Append("station.log", msg); } catch { }
         });
 
         // Subscribe to controller events.
@@ -484,9 +523,10 @@ public partial class MainForm : Form
 
         if (e.State == TailscaleState.Connected)
         {
-            _linkIndicatorStatus.Text = "● Link: Up";
+            _linkIndicatorStatus.Text = "\u25CF Link: Up";
             _linkIndicatorStatus.ForeColor = Color.LimeGreen;
             DismissLoginPanel();
+            DismissWaitOverlay();
 
             // Update Station's own Tailscale IP for display.
             UpdateSelfAddress();
@@ -495,7 +535,7 @@ public partial class MainForm : Form
         {
             // Transitioning from NeedsAuth → Connecting → Connected.
             // Dismiss the login panel early since auth succeeded.
-            _linkIndicatorStatus.Text = "● Link: Connecting...";
+            _linkIndicatorStatus.Text = "\u25CF Link: Connecting...";
             _linkIndicatorStatus.ForeColor = Color.Gold;
             DismissLoginPanel();
         }
@@ -711,13 +751,96 @@ public partial class MainForm : Form
     {
         if (InvokeRequired) { Invoke(() => OnControllerAuthUrlAvailable(sender, authUrl)); return; }
 
-        // Don't show if already dismissed (auth succeeded this session).
-        // Note: we do NOT check HasPersistedTailscaleState() here because the sidecar
-        // is actively reporting NeedsAuth — the persisted state is stale or invalid.
+        // Don't show the wizard if auth was already completed in this session.
         if (_loginDismissed) return;
 
         _pendingAuthUrl = authUrl;
-        ShowLoginPanel(authUrl);
+        _loginDismissed = true; // Prevent re-entry while wizard is open
+        ShowAuthWizard();
+    }
+
+    private void ShowAuthWizard()
+    {
+        if (_controller?.SidecarHost is null) return;
+
+        DismissWaitOverlay(); // Remove overlay before showing wizard
+
+        var provider = new RWK.Shared.Auth.SidecarAuthProvider(_controller.SidecarHost);
+        using var wizard = new Auth.TailscaleAuthWizard(provider);
+        wizard.ShowDialog(this);
+
+        if (!wizard.AuthSucceeded)
+        {
+            // User cancelled — allow re-showing if auth URL appears again
+            _loginDismissed = false;
+        }
+    }
+
+    private void ShowWaitOverlay()
+    {
+        if (_waitOverlay is not null) return;
+
+        _waitOverlay = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(220, 240, 240, 240),
+            Name = "_waitOverlay"
+        };
+
+        // White box with black border, centered on the entire window
+        var box = new Panel
+        {
+            Size = new Size(340, 80),
+            BackColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            Name = "_waitBox"
+        };
+
+        var label = new Label
+        {
+            Text = "Wait... Connecting to Tailscale",
+            Font = new Font("Segoe UI", 14f, FontStyle.Bold),
+            ForeColor = Color.Black,
+            AutoSize = true,
+            Name = "_waitLabel"
+        };
+
+        // Center label inside the box
+        box.Controls.Add(label);
+        box.Layout += (_, _) =>
+        {
+            label.Location = new Point(
+                (box.Width - label.Width) / 2,
+                (box.Height - label.Height) / 2);
+        };
+
+        // Center the box on the full window
+        _waitOverlay.Controls.Add(box);
+        _waitOverlay.Resize += (_, _) =>
+        {
+            box.Location = new Point(
+                (_waitOverlay.Width - box.Width) / 2,
+                (_waitOverlay.Height - box.Height) / 2 - 20);
+        };
+
+        Controls.Add(_waitOverlay);
+        _waitOverlay.BringToFront();
+
+        // Trigger initial centering
+        box.Location = new Point(
+            (ClientSize.Width - box.Width) / 2,
+            (ClientSize.Height - box.Height) / 2 - 20);
+        label.Location = new Point(
+            (box.Width - label.PreferredWidth) / 2,
+            (box.Height - label.PreferredHeight) / 2);
+    }
+
+    private void DismissWaitOverlay()
+    {
+        if (_waitOverlay is null) return;
+        Controls.Remove(_waitOverlay);
+        _waitOverlay.Dispose();
+        _waitOverlay = null;
     }
 
     private void ShowLoginPanel(string authUrl)
@@ -922,6 +1045,17 @@ public partial class MainForm : Form
             cell.Style.ForeColor = rule.Enabled ? Color.Green : Color.Red;
             cell.Style.Font = new Font("Segoe UI", 12F, FontStyle.Bold);
         }
+
+        // Show Flex Forwarding indicator when any [Flex] rule is enabled
+        bool flexActive = rules.Any(r =>
+            r.Name.StartsWith("[Flex]", StringComparison.OrdinalIgnoreCase) && r.Enabled);
+        _flexForwardingIndicator.Visible = flexActive;
+
+        // Auto-enable/disable discovery capture based on Flex rule presence.
+        if (flexActive)
+            _controller?.StartDiscoveryCapture();
+        else
+            _controller?.StopDiscoveryCapture();
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -948,8 +1082,8 @@ public partial class MainForm : Form
     private async void OnDeleteTailscaleAuthClick(object? sender, EventArgs e)
     {
         var result = MessageBox.Show(
-            "Do you really want to delete the Tailscale authorization?\n\n" +
-            "You will need to re-authenticate on the next connection.",
+            "This will disconnect from the Tailscale network and delete the stored authorization.\n\n" +
+            "You will be guided through re-authentication immediately.",
             "Delete Tailscale Authorization",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Warning);
@@ -958,6 +1092,8 @@ public partial class MainForm : Form
 
         try
         {
+            ShowWaitOverlay();
+
             // Stop the controller (including sidecar) so file locks are released.
             if (_controller is not null)
             {
@@ -976,15 +1112,21 @@ public partial class MainForm : Form
 
             _controller?.ClearTailscaleAuth();
 
-            MessageBox.Show(
-                "Tailscale authorization has been deleted.\n\n" +
-                "Restart the application to re-authenticate.",
-                "Authorization Deleted",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            // Restart the controller (sidecar will enter NeedsAuth)
+            if (_controller is not null)
+            {
+                await _controller.StartAsync().ConfigureAwait(true);
+            }
+
+            _loginDismissed = false;
+            await Task.Delay(1000).ConfigureAwait(true);
+
+            DismissWaitOverlay();
+            ShowAuthWizard();
         }
         catch (Exception ex)
         {
+            DismissWaitOverlay();
             MessageBox.Show($"Failed: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }

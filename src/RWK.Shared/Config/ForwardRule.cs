@@ -36,6 +36,13 @@ namespace RWK.Shared.Config;
 /// For hardware on the Station's LAN (e.g. a radio at 192.168.1.50), specify that
 /// device's IP here. The Station's sidecar dials this address for inbound forwards.
 /// </param>
+/// <param name="Direction">
+/// Direction of traffic flow through the tunnel. <see cref="ForwardDirection.ClientToStation"/>
+/// (default) means the Client binds a local listener and traffic is forwarded to the Station.
+/// <see cref="ForwardDirection.StationToClient"/> means the Station originates traffic (e.g.
+/// N1MM+ broadcasts) that is forwarded to the Client. Pre-1.0.3 rules without this field
+/// default to <see cref="ForwardDirection.ClientToStation"/> for backward compatibility.
+/// </param>
 /// <remarks>
 /// A rule created without an explicit bind address gets <see cref="LoopbackAddress"/>, and
 /// a profile whose JSON omits the field deserializes to the same value, so LAN exposure is
@@ -56,7 +63,8 @@ public record ForwardRule(
     bool Enabled,
     string BindAddress = ForwardRule.LoopbackAddress,
     ForwardRuleType RuleType = ForwardRuleType.Generic,
-    string StationTargetAddress = ForwardRule.LoopbackAddress)
+    string StationTargetAddress = ForwardRule.LoopbackAddress,
+    ForwardDirection Direction = ForwardDirection.ClientToStation)
 {
     /// <summary>
     /// The default bind address: loopback, reachable only from the Client host itself (10.12).
@@ -80,4 +88,9 @@ public record ForwardRule(
     public bool IsNonLoopbackBind
         => !System.Net.IPAddress.TryParse(BindAddress, out System.Net.IPAddress? address)
            || !System.Net.IPAddress.IsLoopback(address);
+
+    /// <summary>
+    /// Gets whether this rule is a reverse (Station → Client) forward.
+    /// </summary>
+    public bool IsReverse => Direction == ForwardDirection.StationToClient;
 }

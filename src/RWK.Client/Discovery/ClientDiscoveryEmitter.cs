@@ -126,6 +126,7 @@ public sealed class ClientDiscoveryEmitter : IDisposable
     {
         if (_broadcastSocket is not null) return;
 
+        // Use an ephemeral source port — binding to 4992 conflicts with SmartSDR.
         _broadcastSocket = new UdpClient();
         _broadcastSocket.EnableBroadcast = true;
     }

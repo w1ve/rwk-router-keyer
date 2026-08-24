@@ -146,6 +146,12 @@ public sealed class ForwardDef
     [JsonPropertyName("fixed")]
     public bool Fixed { get; set; }
 
+    /// <summary>
+    /// Direction for this forward: "ClientToStation" (default) or "StationToClient" (reverse).
+    /// </summary>
+    [JsonPropertyName("direction")]
+    public string Direction { get; set; } = "ClientToStation";
+
     [JsonPropertyName("name")]
     public string Name { get; set; } = "";
 

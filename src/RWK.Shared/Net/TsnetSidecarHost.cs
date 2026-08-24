@@ -352,14 +352,13 @@ public sealed class TsnetSidecarHost : ITsnetSidecarHost
 
     private static async Task ReadStderrContinuouslyAsync(Process process)
     {
-        string logPath = Path.Combine(AppContext.BaseDirectory, "sidecar.log");
         try
         {
             while (!process.HasExited)
             {
                 string? line = await process.StandardError.ReadLineAsync().ConfigureAwait(false);
                 if (line is null) break;
-                await File.AppendAllTextAsync(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] {line}\n").ConfigureAwait(false);
+                IO.RotatingFileLog.Append("sidecar.log", line);
             }
         }
         catch { /* process gone */ }

@@ -100,4 +100,25 @@ public record ClientConfig
     /// </para>
     /// </summary>
     public string DiscoveryBroadcastAddress { get; init; } = "255.255.255.255";
+
+    // ---- PTT Input (footswitch + hotkey) ----
+
+    /// <summary>
+    /// Serialized PTT hotkey combo (format: "KeyCode|Ctrl|Shift|Alt").
+    /// Null or empty means no hotkey configured.
+    /// </summary>
+    public string? PttHotKey { get; init; }
+
+    /// <summary>
+    /// COM port name for the PTT footswitch input, or null/empty if not used.
+    /// </summary>
+    public string? PttInputPortName { get; init; }
+
+    /// <summary>
+    /// Which serial line the footswitch asserts: "DTR" (read as DSR) or "RTS" (read as CTS).
+    /// Default "DTR".
+    /// </summary>
+    public string PttInputLine { get; init; } = "DTR";
+
+
 }

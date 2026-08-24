@@ -128,10 +128,13 @@ public sealed class PortForwardManager : IPortForwardManager
             if (_rules.Any(r => r.Id == rule.Id))
                 throw new ArgumentException($"A rule with Id '{rule.Id}' already exists.", nameof(rule));
 
-            // Check for port conflicts with existing rules (same ClientPort + Protocol + BindAddress).
+            // Check for port conflicts with existing rules (same ClientPort + Protocol + BindAddress + Direction).
+            // Rules in different directions don't conflict — ClientToStation binds locally,
+            // StationToClient does NOT bind locally (the Station side binds).
             var conflict = _rules.FirstOrDefault(r =>
                 r.ClientPort == rule.ClientPort &&
                 r.Protocol == rule.Protocol &&
+                r.Direction == rule.Direction &&
                 string.Equals(r.BindAddress, rule.BindAddress, StringComparison.OrdinalIgnoreCase));
 
             if (conflict is not null)
@@ -144,7 +147,7 @@ public sealed class PortForwardManager : IPortForwardManager
             _rules.Add(rule);
             _runtimes[rule.Id] = new RuleRuntime(rule.Id);
 
-            if (_running && rule.Enabled)
+            if (_running && rule.Enabled && !rule.IsReverse)
             {
                 StartRuleListener(rule);
             }
@@ -217,11 +220,11 @@ public sealed class PortForwardManager : IPortForwardManager
 
             if (_running)
             {
-                if (enabled)
+                if (enabled && !_rules[index].IsReverse)
                 {
                     StartRuleListener(_rules[index]);
                 }
-                else
+                else if (!enabled)
                 {
                     StopRuleListener(ruleId);
                     RaiseStatusChanged(ruleId, ForwardRuleStatus.Idle);

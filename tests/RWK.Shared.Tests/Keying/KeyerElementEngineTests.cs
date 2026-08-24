@@ -156,19 +156,12 @@ public class KeyerElementEngineTests
     /// dahs, so the keyer must not run them together (3.5).
     /// </summary>
     [Fact]
-    public void Bug_DahContact_IsSingleShotPerPress()
+    public void Bug_DahContact_DoesNotGenerateElement()
     {
         var engine = EngineIn(KeyerMode.Bug);
         engine.SetPaddleState(dit: false, dah: true, straight: false);
 
-        Assert.Equal(KeyerElement.Dah, engine.RequestNextElement());
-        Assert.Equal(KeyerElement.None, engine.RequestNextElement());
-
-        // Release and press again: a new press earns a new dah.
-        engine.SetPaddleState(dit: false, dah: false, straight: false);
-        engine.SetPaddleState(dit: false, dah: true, straight: false);
-
-        Assert.Equal(KeyerElement.Dah, engine.RequestNextElement());
+        // Engine returns None for dah — the pump handles dah directly as manual keying.
         Assert.Equal(KeyerElement.None, engine.RequestNextElement());
     }
 

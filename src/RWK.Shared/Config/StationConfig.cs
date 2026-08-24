@@ -105,6 +105,8 @@ public record StationConfig
     /// </summary>
     public TimeSpan DiscoveryExpiryInterval { get; init; } = TimeSpan.FromSeconds(10);
 
+
+
     /// <summary>
     /// Builds the keying output configuration for the Station's serial keyer from the
     /// port and line settings above. Returns <see langword="null"/> while no keying port

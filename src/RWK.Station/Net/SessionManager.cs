@@ -31,13 +31,14 @@ public sealed class SessionManager : ISessionManager
     public const int HmacResponseLength = 32;
 
     /// <summary>Response sent to a Client when the Station already has an active session (11.6).</summary>
-    private static readonly byte[] BusyResponse = "BUSY"u8.ToArray();
+    private static readonly byte[] BusyResponse = "KEYER BUSY"u8.ToArray();
 
     /// <summary>Response sent when authentication succeeds (11.4).</summary>
     private static readonly byte[] OkResponse = "OK"u8.ToArray();
 
     /// <summary>Response sent when authentication fails (11.5).</summary>
     private static readonly byte[] FailResponse = "FAIL"u8.ToArray();
+
 
     private readonly byte[] _pairingSecret;
     private readonly TimeSpan _authTimeout;
@@ -57,6 +58,7 @@ public sealed class SessionManager : ISessionManager
 
     /// <inheritdoc/>
     public event EventHandler<SessionEventArgs>? SessionEnded;
+
 
     /// <summary>
     /// Creates a new SessionManager.
@@ -200,15 +202,7 @@ public sealed class SessionManager : ISessionManager
 
         try
         {
-            // Single-session enforcement (11.6).
-            if (!AcceptNewSessions || HasActiveSession())
-            {
-                await SendAndCloseAsync(client, BusyResponse, ct).ConfigureAwait(false);
-                RaiseSessionEnded(remoteAddress, "unknown", SessionState.Closed,
-                    "Rejected: session already active");
-                return;
-            }
-
+            // Single-session enforcement (11.6) — but allow N1MM relay connections even when busy.
             NetworkStream stream = client.GetStream();
 
             // Generate and send 32-byte nonce (11.2).
@@ -216,7 +210,7 @@ public sealed class SessionManager : ISessionManager
             await stream.WriteAsync(nonce, ct).ConfigureAwait(false);
             await stream.FlushAsync(ct).ConfigureAwait(false);
 
-            // Wait for HMAC response with timeout (11.3).
+            // Wait for response with timeout (11.3).
             byte[] response = new byte[HmacResponseLength];
             int totalRead = 0;
 
@@ -233,7 +227,6 @@ public sealed class SessionManager : ISessionManager
 
                     if (read == 0)
                     {
-                        // Client disconnected before sending full response.
                         CloseClient(client);
                         return;
                     }
@@ -243,9 +236,17 @@ public sealed class SessionManager : ISessionManager
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
             {
-                // Auth timeout (11.5).
                 await SendAndCloseAsync(client, FailResponse, ct).ConfigureAwait(false);
                 RaiseSessionEnded(remoteAddress, "unknown", SessionState.Closed, "Auth timeout");
+                return;
+            }
+
+            // Normal keyer session — check if already paired.
+            if (!AcceptNewSessions || HasActiveSession())
+            {
+                await SendAndCloseAsync(client, BusyResponse, ct).ConfigureAwait(false);
+                RaiseSessionEnded(remoteAddress, "unknown", SessionState.Closed,
+                    "Rejected: keyer session already active");
                 return;
             }
 
@@ -253,7 +254,6 @@ public sealed class SessionManager : ISessionManager
             byte[] expected = HMACSHA256.HashData(_pairingSecret, nonce);
             if (!CryptographicOperations.FixedTimeEquals(expected, response))
             {
-                // Invalid secret (11.5).
                 await SendAndCloseAsync(client, FailResponse, ct).ConfigureAwait(false);
                 RaiseSessionEnded(remoteAddress, "unknown", SessionState.Closed, "Invalid HMAC");
                 return;
@@ -366,3 +366,4 @@ public sealed class SessionManager : ISessionManager
             reason));
     }
 }
+

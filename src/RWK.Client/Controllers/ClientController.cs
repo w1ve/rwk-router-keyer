@@ -96,7 +96,9 @@ public sealed class ClientController : IDisposable
     private int _reconnectAttempts;
     private System.Threading.Timer? _reconnectTimer;
     private volatile bool _suppressEdgeSend;
+    private volatile bool _suppressRulePush;
     private volatile bool _loopbackTestActive;
+    private bool _hiAnnounced;
     private volatile bool _stationArmed = true;
     private TailscaleState _lastLoggedTailscaleState;
     private ClientDiscoveryEmitter? _discoveryEmitter;
@@ -152,6 +154,9 @@ public sealed class ClientController : IDisposable
     /// <summary>The current auth URL if the sidecar is waiting for interactive login, or null.</summary>
     public string? AuthUrl => _sidecarHost.AuthUrl;
 
+    /// <summary>The sidecar host instance, exposed for the auth wizard provider adapter.</summary>
+    public ITsnetSidecarHost SidecarHost => _sidecarHost;
+
     /// <summary>Current Tailscale connection state.</summary>
     public TailscaleState TailscaleState => _tailscaleNode.State;
 
@@ -174,6 +179,10 @@ public sealed class ClientController : IDisposable
     /// <summary>Raised when a paddle state transition occurs (for indicator lights).</summary>
     public event EventHandler<PaddleStateChangedEventArgs>? PaddleStateChanged;
 
+    /// <summary>Raised when the Station reports KEYER BUSY (another client has the keyer).</summary>
+    public event EventHandler? KeyerBusy;
+
+
     /// <summary>Raised on every key edge (for key-state indicator).</summary>
     public event EventHandler<EdgeEvent>? EdgeGenerated;
 
@@ -182,6 +191,9 @@ public sealed class ClientController : IDisposable
 
     /// <summary>Raised when a forward rule's status changes.</summary>
     public event EventHandler<ForwardRuleStatusChangedEventArgs>? ForwardRuleStatusChanged;
+
+    /// <summary>Raised when the forward rule list changes (rules added/removed programmatically).</summary>
+    public event EventHandler? ForwardRulesChanged;
 
     /// <summary>
     /// Raised when the sidecar requires interactive browser login. The string argument
@@ -223,6 +235,9 @@ public sealed class ClientController : IDisposable
         // Start local practice components (always succeed)
         StartLocalComponents();
         _log?.Info("Local components started (keyer, sidetone, paddle).");
+
+        // Ensure Windows Firewall allows inbound traffic for this exe
+        FirewallHelper.EnsureAppAllowed("RWK Client", msg => _log?.Info(msg));
 
         // Start Tailscale (may fail — sidecar missing, etc.)
         _log?.Info("Connecting to Tailnet...");
@@ -295,6 +310,76 @@ public sealed class ClientController : IDisposable
 
         _keyer.EnqueueText(text);
     }
+
+    /// <summary>
+    /// Sends CW text through the keyer (same as SendTestMessage).
+    /// Used by the macro buttons and type-ahead input.
+    /// </summary>
+    public void SendCwText(string text) => SendTestMessage(text);
+
+    /// <summary>
+    /// Applies a mutation to the config and persists it.
+    /// </summary>
+    public void UpdateConfig(Func<ClientConfig, ClientConfig> mutator)
+    {
+        _config = mutator(_config);
+        _configStore.TrySave(_config);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────────
+    //  PTT Control (SSB / footswitch / hotkey)
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    private volatile bool _pttAsserted;
+
+    /// <summary>Whether PTT is currently asserted by the Client.</summary>
+    public bool IsPttAsserted => _pttAsserted;
+
+    /// <summary>
+    /// Asserts PTT on the Station (transmit enabled). Sends a control message over the
+    /// existing TCP control channel. Idempotent — multiple calls while already asserted are no-ops.
+    /// </summary>
+    public void AssertPtt()
+    {
+        if (_pttAsserted) return;
+        if (!_sessionActive || _controlStream is null) return;
+        _pttAsserted = true;
+        _ = SendPttControlMessageAsync("ptt_assert");
+        _log?.Info("PTT asserted (Client → Station).");
+    }
+
+    /// <summary>
+    /// De-asserts PTT on the Station (transmit disabled). Sends a control message over the
+    /// existing TCP control channel.
+    /// </summary>
+    public void DeassertPtt()
+    {
+        if (!_pttAsserted) return;
+        _pttAsserted = false;
+        _ = SendPttControlMessageAsync("ptt_deassert");
+        _log?.Info("PTT de-asserted (Client → Station).");
+    }
+
+    private async Task SendPttControlMessageAsync(string type)
+    {
+        if (_controlStream is null) return;
+        try
+        {
+            string json = System.Text.Json.JsonSerializer.Serialize(new { type });
+            byte[] body = System.Text.Encoding.UTF8.GetBytes(json);
+            byte[] lengthPrefix = BitConverter.GetBytes(System.Net.IPAddress.HostToNetworkOrder(body.Length));
+
+            await _controlStream.WriteAsync(lengthPrefix).ConfigureAwait(false);
+            await _controlStream.WriteAsync(body).ConfigureAwait(false);
+            await _controlStream.FlushAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _log?.Info($"Failed to send {type}: {ex.Message}");
+        }
+    }
+
+
 
     /// <summary>
     /// Connects (or reconnects) the WinKeyer protocol host to the specified COM port.
@@ -584,8 +669,8 @@ public sealed class ClientController : IDisposable
         _configStore.TrySave(_config);
         _log?.Info($"Forward rule added: {rule.Name} ({rule.Protocol} {rule.ClientPort}→{rule.StationPort} @ {rule.StationTargetAddress})");
 
-        // Push to Station if connected
-        if (_sessionActive)
+        // Push to Station if connected (unless batch operation is suppressing individual pushes)
+        if (_sessionActive && !_suppressRulePush)
             _ = PushForwardRulesToStationAsync();
     }
 
@@ -602,8 +687,8 @@ public sealed class ClientController : IDisposable
         _config = _config with { ForwardRules = _config.ForwardRules.RemoveAll(r => r.Id == ruleId) };
         _configStore.TrySave(_config);
 
-        // Push to Station if connected
-        if (_sessionActive)
+        // Push to Station if connected (unless batch operation is suppressing individual pushes)
+        if (_sessionActive && !_suppressRulePush)
             _ = PushForwardRulesToStationAsync();
     }
 
@@ -680,6 +765,16 @@ public sealed class ClientController : IDisposable
     // ──────────────────────────────────────────────────────────────────────────────
 
     private void OnPaddleStateChanged(object? sender, PaddleStateChangedEventArgs e)
+    {
+        _keyer.SetPaddleState(e.DitPressed, e.DahPressed, e.StraightKeyPressed, e.QpcTimestamp);
+        PaddleStateChanged?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Injects paddle state from an external source (e.g. keyboard paddle).
+    /// Same path as the serial paddle poller — feeds into the keyer engine.
+    /// </summary>
+    public void InjectPaddleState(PaddleStateChangedEventArgs e)
     {
         _keyer.SetPaddleState(e.DitPressed, e.DahPressed, e.StraightKeyPressed, e.QpcTimestamp);
         PaddleStateChanged?.Invoke(this, e);
@@ -864,6 +959,15 @@ public sealed class ClientController : IDisposable
         {
             StartPortForwarding();
 
+            // First time the tailnet comes up, play "HI" via sidetone only (no TX).
+            if (!_hiAnnounced)
+            {
+                _hiAnnounced = true;
+                _suppressEdgeSend = true;
+                _keyer.EnqueueText("HI");
+                _ = ClearSuppressAfterTextAsync();
+            }
+
             // If we lost a session and just reconnected, try to re-establish.
             if (_sessionActive && _controlStream is null && !string.IsNullOrEmpty(_lastStationAddress))
             {
@@ -881,8 +985,10 @@ public sealed class ClientController : IDisposable
                 _controlStream?.Dispose();
                 _controlStream = null;
 
-                // Play prosign AS (dit-dah dit-dit-dit) via sidetone to indicate standby.
+                // Play prosign AS (dit-dah dit-dit-dit) via sidetone only — no TX.
+                _suppressEdgeSend = true;
                 _keyer.EnqueueText("AS");
+                _ = ClearSuppressAfterTextAsync();
                 SessionStatusChanged?.Invoke(this, "Network lost — standby (AS)");
 
                 // Schedule reconnect attempt after a short delay.
@@ -907,6 +1013,11 @@ public sealed class ClientController : IDisposable
         if (_reconnectAttempts >= MaxReconnectAttempts)
         {
             _sessionActive = false;
+
+            // Remove Flex forward rules (they're only meaningful while paired).
+            _suppressRulePush = true;
+            try { RemoveFlexForwardRules(); } finally { _suppressRulePush = false; }
+
             SessionStatusChanged?.Invoke(this, "Reconnect failed — session ended.");
             return;
         }
@@ -979,6 +1090,24 @@ public sealed class ClientController : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         await StopTailscaleAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Restarts the sidecar after an authorization delete. Launches a fresh sidecar
+    /// without an auth key so it enters NeedsAuth state and emits an auth URL.
+    /// </summary>
+    public async Task RestartSidecarAsync()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        try
+        {
+            await _sidecarHost.StartAsync(authKey: null).ConfigureAwait(false);
+            _log?.Info("Sidecar restarted (NeedsAuth expected).");
+        }
+        catch (Exception ex)
+        {
+            _log?.Info($"Sidecar restart failed: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -1060,8 +1189,8 @@ public sealed class ClientController : IDisposable
         await _controlStream.WriteAsync(hmac).ConfigureAwait(false);
         await _controlStream.FlushAsync().ConfigureAwait(false);
 
-        // 4. Read response: "OK" (2 bytes) or "FAIL"/"BUSY" (4 bytes).
-        byte[] responseBuf = new byte[4];
+        // 4. Read response: "OK" (2+ bytes), "KEYER BUSY" (10 bytes), or "FAIL" (4 bytes).
+        byte[] responseBuf = new byte[16];
         int respRead = await _controlStream.ReadAsync(responseBuf).ConfigureAwait(false);
         string response = System.Text.Encoding.UTF8.GetString(responseBuf, 0, respRead);
 
@@ -1108,11 +1237,20 @@ public sealed class ClientController : IDisposable
             // Watch the control stream for EOF — means Station unpaired us.
             _ = WatchControlStreamAsync();
         }
-        else if (response.StartsWith("BUSY"))
+        else if (response.StartsWith("KEYER BUSY") || response.StartsWith("BUSY"))
         {
             _controlStream.Dispose();
             _controlStream = null;
-            throw new InvalidOperationException("Station is busy with another session.");
+
+            // Play "KEYER BUSY" via sidetone only (suppress network sending)
+            _suppressEdgeSend = true;
+            _keyer.EnqueueText("KEYER BUSY");
+            _ = ClearSuppressAfterTextAsync();
+
+            // Raise event so the UI can show the red indicator
+            KeyerBusy?.Invoke(this, EventArgs.Empty);
+
+            _log?.Info("Station keyer is busy (another client is paired).");
         }
         else
         {
@@ -1322,12 +1460,13 @@ public sealed class ClientController : IDisposable
         _hardwareWinKeyerHost?.Dispose();
         _winKeyerHost.Dispose();
         _paddlePoller.Dispose();
+        _discoveryEmitter?.Dispose();
     }
 
     private void LogDebug(string msg)
     {
         _log?.Debug(msg);
-        try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "client-debug.log"), $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
+        try { RotatingFileLog.Append("client-debug.log", msg); } catch { }
     }
 
     private async Task ClearSuppressAfterTextAsync()
@@ -1387,6 +1526,11 @@ public sealed class ClientController : IDisposable
         _controlStream?.Dispose();
         _controlStream = null;
 
+        // Remove Flex forward rules (they're only meaningful while paired).
+        // The checked state persists — rules will be re-created on next pair.
+        _suppressRulePush = true;
+        try { RemoveFlexForwardRules(); } finally { _suppressRulePush = false; }
+
         // Play "AS Unpaired" via sidetone only (suppress network sending).
         _suppressEdgeSend = true;
         _keyer.EnqueueText("AS UNPAIRED");
@@ -1402,17 +1546,20 @@ public sealed class ClientController : IDisposable
     /// </summary>
     private async Task PushForwardRulesToStationAsync()
     {
-        if (_controlStream is null) return;
+        if (_controlStream is null)
+        {
+            _log?.Info("PushForwardRules: control stream is null, skipping.");
+            return;
+        }
 
         var rules = _config.ForwardRules;
-        if (rules.Count == 0) return;
 
         try
         {
             // Simple length-prefixed JSON message: 4-byte big-endian length + UTF-8 JSON body.
             // Message format: { "type": "forward_rules", "rules": [ { "port": N, "protocol": "tcp"|"udp", "targetAddress": "...", "enabled": bool }, ... ] }
             var ruleList = rules
-                .Select(r => new { port = r.StationPort, clientPort = r.ClientPort, protocol = r.Protocol.ToString().ToLowerInvariant(), targetAddress = r.StationTargetAddress, enabled = r.Enabled, name = r.Name })
+                .Select(r => new { port = r.StationPort, clientPort = r.ClientPort, protocol = r.Protocol.ToString().ToLowerInvariant(), targetAddress = r.StationTargetAddress, enabled = r.Enabled, name = r.Name, direction = r.Direction.ToString() })
                 .ToArray();
 
             string json = System.Text.Json.JsonSerializer.Serialize(new
@@ -1428,11 +1575,11 @@ public sealed class ClientController : IDisposable
             await _controlStream.WriteAsync(body).ConfigureAwait(false);
             await _controlStream.FlushAsync().ConfigureAwait(false);
 
-            LogDebug($"Pushed {ruleList.Length} forward rules to Station.");
+            _log?.Info($"Pushed {ruleList.Length} forward rules to Station.");
         }
         catch (Exception ex)
         {
-            LogDebug($"Failed to push forward rules: {ex.Message}");
+            _log?.Info($"Failed to push forward rules: {ex.Message}");
         }
     }
 
@@ -1440,10 +1587,18 @@ public sealed class ClientController : IDisposable
     //  FlexRadio Discovery
     // ──────────────────────────────────────────────────────────────────────────────
 
+    // ──────────────────────────────────────────────────────────────────────────────
+    //  FlexRadio Discovery — auto port forward management
+    // ──────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Well-known name prefix for auto-created FlexRadio forward rules.</summary>
+    private const string FlexAutoRulePrefix = "[Flex] ";
+
     /// <summary>
     /// Enables or disables the FlexRadio discovery re-emission on the Client.
-    /// When enabled, discovery announcements from the Station are rewritten and broadcast
-    /// on the Client's local network.
+    /// When enabled, automatically creates the required port forward rules
+    /// (TCP 4992 command, UDP 4991 VITA-49) and sets the discovery local endpoint.
+    /// When disabled, removes the auto-created rules.
     /// </summary>
     public void SetDiscoveryEmitEnabled(bool enabled)
     {
@@ -1460,6 +1615,150 @@ public sealed class ClientController : IDisposable
         _config = _config with { DiscoveryEmitEnabled = enabled };
         _configStore.TrySave(_config);
         _log?.Info($"FlexRadio discovery re-emission {(enabled ? "enabled" : "disabled")}.");
+
+        // Suppress individual pushes during batch add/remove — we'll push once at the end.
+        _suppressRulePush = true;
+        try
+        {
+            if (enabled)
+                EnsureFlexForwardRules();
+            else
+                RemoveFlexForwardRules();
+        }
+        finally
+        {
+            _suppressRulePush = false;
+        }
+
+        // Single push with the final state of all rules.
+        if (_sessionActive)
+            _ = PushForwardRulesToStationAsync();
+    }
+
+    /// <summary>
+    /// Creates the FlexRadio forward rules (TCP 4992 + UDP 4991) if they don't already exist.
+    /// Sets the discovery emitter local endpoint to 127.0.0.1:4992 (the command rule).
+    /// </summary>
+    private void EnsureFlexForwardRules()
+    {
+        bool added = false;
+
+        try
+        {
+            // TCP 4992 — SmartSDR command channel
+            if (!_config.ForwardRules.Any(r => r.RuleType == ForwardRuleType.FlexDiscovery
+                                               && r.Protocol == ForwardProtocol.Tcp))
+            {
+                var commandRule = new ForwardRule(
+                    Id: Guid.NewGuid(),
+                    Name: $"{FlexAutoRulePrefix}SmartSDR Command",
+                    Protocol: ForwardProtocol.Tcp,
+                    ClientPort: FlexVitaDiscoveryCodec.DiscoveryPort, // 4992
+                    StationPort: FlexVitaDiscoveryCodec.DiscoveryPort,
+                    Enabled: true,
+                    RuleType: ForwardRuleType.FlexDiscovery);
+                AddForwardRule(commandRule);
+                added = true;
+                _log?.Info("Auto-created FlexRadio TCP 4992 forward rule.");
+            }
+
+            // UDP 4991 — VITA-49 IQ/audio streaming
+            if (!_config.ForwardRules.Any(r => r.RuleType == ForwardRuleType.FlexDiscovery
+                                               && r.Protocol == ForwardProtocol.Udp))
+            {
+                var vitaRule = new ForwardRule(
+                    Id: Guid.NewGuid(),
+                    Name: $"{FlexAutoRulePrefix}VITA-49 Stream",
+                    Protocol: ForwardProtocol.Udp,
+                    ClientPort: 4991,
+                    StationPort: 4991,
+                    Enabled: true,
+                    RuleType: ForwardRuleType.FlexDiscovery);
+                AddForwardRule(vitaRule);
+                added = true;
+                _log?.Info("Auto-created FlexRadio UDP 4991 forward rule.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _log?.Info($"EnsureFlexForwardRules error: {ex.Message}");
+        }
+
+        // Wire the discovery emitter to the command rule's local endpoint (127.0.0.1:4992).
+        SetDiscoveryLocalEndpoint(new IPEndPoint(
+            IPAddress.Loopback, FlexVitaDiscoveryCodec.DiscoveryPort));
+
+        // Always notify UI so the grid refreshes (rules may have existed from config).
+        ForwardRulesChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Removes all auto-created FlexRadio forward rules.
+    /// </summary>
+    private void RemoveFlexForwardRules()
+    {
+        var flexRules = _config.ForwardRules
+            .Where(r => r.RuleType == ForwardRuleType.FlexDiscovery
+                        || r.Name.StartsWith(FlexAutoRulePrefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (flexRules.Count == 0)
+        {
+            _log?.Info("RemoveFlexForwardRules: no FlexDiscovery rules found in config.");
+            return;
+        }
+
+        _log?.Info($"RemoveFlexForwardRules: removing {flexRules.Count} rules.");
+        foreach (var rule in flexRules)
+        {
+            try
+            {
+                RemoveForwardRule(rule.Id);
+                _log?.Info($"Removed: {rule.Name} ({rule.Protocol} {rule.ClientPort})");
+            }
+            catch (Exception ex)
+            {
+                _log?.Info($"Failed to remove rule {rule.Name}: {ex.Message}");
+            }
+        }
+
+        ForwardRulesChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Updates the StationTargetAddress on all FlexDiscovery rules to match the
+    /// radio's actual IP discovered from VITA-49 announcements.
+    /// </summary>
+    private void UpdateFlexRulesStationTarget(IPAddress radioAddress)
+    {
+        string target = radioAddress.ToString();
+        bool changed = false;
+
+        foreach (var rule in _config.ForwardRules.Where(r => r.RuleType == ForwardRuleType.FlexDiscovery))
+        {
+            if (rule.StationTargetAddress == target) continue;
+
+            var updated = rule with { StationTargetAddress = target };
+            _portForwardManager.RemoveRule(rule.Id);
+            _portForwardManager.AddRule(updated);
+            _config = _config with
+            {
+                ForwardRules = _config.ForwardRules.Replace(rule, updated)
+            };
+            changed = true;
+        }
+
+        if (changed)
+        {
+            _configStore.TrySave(_config);
+            _log?.Info($"FlexRadio forward rules updated: StationTargetAddress → {target}");
+
+            // Push to Station if connected
+            if (_sessionActive)
+                _ = PushForwardRulesToStationAsync();
+
+            ForwardRulesChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     /// <summary>
@@ -1471,6 +1770,8 @@ public sealed class ClientController : IDisposable
         if (_discoveryEmitter is not null)
             _discoveryEmitter.LocalEndpoint = endpoint;
     }
+
+
 
     private void ProcessStationMessage(string json)
     {
@@ -1488,13 +1789,27 @@ public sealed class ClientController : IDisposable
                 if (!string.IsNullOrEmpty(base64))
                 {
                     byte[] payload = Convert.FromBase64String(base64);
+                    _log?.Info($"Discovery announce received from Station ({payload.Length} bytes).");
+
+                    // Extract the radio's actual IP from the announcement and update
+                    // the FlexDiscovery forward rules' StationTargetAddress automatically.
+                    var codec = new FlexVitaDiscoveryCodec();
+                    if (codec.TryParse(payload, out DiscoveredRadio radio, out _))
+                    {
+                        UpdateFlexRulesStationTarget(radio.StationAddress);
+                    }
+
                     _discoveryEmitter?.OnDiscoveryAnnounce(payload);
                 }
+            }
+            else
+            {
+                _log?.Info($"Station message received: type={msgType}");
             }
         }
         catch (Exception ex)
         {
-            LogDebug($"ProcessStationMessage error: {ex.Message}");
+            _log?.Info($"ProcessStationMessage error: {ex.Message}");
         }
     }
 }

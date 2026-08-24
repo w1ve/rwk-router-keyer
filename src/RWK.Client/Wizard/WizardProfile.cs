@@ -34,6 +34,9 @@ public sealed class WizardProfile
 
     [JsonPropertyName("forwards")]
     public List<ProfileForwardRule> Forwards { get; set; } = new();
+
+    [JsonPropertyName("serialBridge")]
+    public SerialBridgeInfo? SerialBridge { get; set; }
 }
 
 /// <summary>
@@ -70,6 +73,46 @@ public sealed class SetupNotes
 }
 
 /// <summary>
+/// Serial bridge configuration metadata, included in the profile when the
+/// generic serial bridge entry is used.
+/// </summary>
+public sealed class SerialBridgeInfo
+{
+    [JsonPropertyName("deviceName")]
+    public string DeviceName { get; set; } = "";
+
+    [JsonPropertyName("tcpPort")]
+    public int TcpPort { get; set; }
+
+    [JsonPropertyName("clientComPort")]
+    public int ClientComPort { get; set; }
+
+    [JsonPropertyName("stationComPort")]
+    public string StationComPort { get; set; } = "";
+
+    [JsonPropertyName("baudRate")]
+    public int BaudRate { get; set; } = 9600;
+
+    [JsonPropertyName("dataBits")]
+    public int DataBits { get; set; } = 8;
+
+    [JsonPropertyName("parity")]
+    public string Parity { get; set; } = "None";
+
+    [JsonPropertyName("stopBits")]
+    public int StopBits { get; set; } = 1;
+
+    [JsonPropertyName("dtrControl")]
+    public string DtrControl { get; set; } = "Off";
+
+    [JsonPropertyName("rtsControl")]
+    public string RtsControl { get; set; } = "Off";
+
+    [JsonPropertyName("presetName")]
+    public string PresetName { get; set; } = "Generic";
+}
+
+/// <summary>
 /// A single forward rule in the profile output (§4.1 field mapping).
 /// </summary>
 public sealed class ProfileForwardRule
@@ -100,6 +143,9 @@ public sealed class ProfileForwardRule
 
     [JsonPropertyName("role")]
     public string Role { get; set; } = "generic";
+
+    [JsonPropertyName("direction")]
+    public string Direction { get; set; } = "ClientToStation";
 
     [JsonPropertyName("notes")]
     public string? Notes { get; set; }

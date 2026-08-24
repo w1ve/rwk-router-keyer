@@ -138,6 +138,95 @@ public static class ReadmeGenerator
             AppendLine(sb, "");
         }
 
+        // SERIAL BRIDGE CONFIGURATION (if applicable)
+        if (profile.SerialBridge is not null)
+        {
+            var br = profile.SerialBridge;
+            AppendLine(sb, "SERIAL BRIDGE CONFIGURATION");
+            AppendLine(sb, SubSeparator);
+            AppendLine(sb, "");
+            AppendLine(sb, $"   Device:          {Ascii(br.DeviceName)}");
+            AppendLine(sb, $"   Preset:          {Ascii(br.PresetName)}");
+            AppendLine(sb, $"   TCP port:        {br.TcpPort}");
+            AppendLine(sb, $"   Client COM port: COM{br.ClientComPort} (virtual)");
+            AppendLine(sb, $"   Station COM port: {br.StationComPort} (real, connected to radio)");
+            AppendLine(sb, "");
+            AppendLine(sb, "   Serial parameters:");
+            AppendLine(sb, $"     Baud rate:  {br.BaudRate}");
+            AppendLine(sb, $"     Data bits:  {br.DataBits}");
+            AppendLine(sb, $"     Parity:     {br.Parity}");
+            AppendLine(sb, $"     Stop bits:  {br.StopBits}");
+            AppendLine(sb, $"     DTR:        {br.DtrControl}");
+            AppendLine(sb, $"     RTS:        {br.RtsControl}");
+            AppendLine(sb, "");
+
+            // DTR/RTS warning
+            if (br.DtrControl == "Off" && br.RtsControl == "Off")
+            {
+                AppendLine(sb, "   IMPORTANT -- DTR/RTS and PTT:");
+                AppendWrapped(sb,
+                    "   A TCP serial bridge carries DATA ONLY. It does NOT carry " +
+                    "DTR, RTS, CTS, or DSR modem control lines. If your logger " +
+                    "uses RTS or DTR for PTT, that will NOT work through this " +
+                    "bridge.", 3);
+                AppendLine(sb, "");
+                AppendLine(sb, "   Alternatives for PTT over the bridge:");
+                AppendLine(sb, "     - Use CAT PTT commands (TX;/RX; for Kenwood/Yaesu,");
+                AppendLine(sb, "       FEFE...1C00.../1C0001 for Icom CI-V)");
+                AppendLine(sb, "     - Use RWK's own keyer output for CW PTT");
+                AppendLine(sb, "     - Use VOX on the radio");
+                AppendLine(sb, "");
+            }
+
+            // COM port conflict guidance
+            AppendLine(sb, "   COM PORT SELECTION:");
+            AppendWrapped(sb,
+                $"   COM{br.ClientComPort} was chosen as the client virtual port. " +
+                "If this conflicts with an existing port, change the number in " +
+                "VSPE to any unused COMxx above COM19. High-numbered ports " +
+                "(COM20-COM99) are virtually never physical hardware.", 3);
+            AppendLine(sb, "");
+            AppendWrapped(sb,
+                $"   {br.StationComPort} is the real port on the Station PC. Verify " +
+                "this is the correct port by checking Device Manager on the " +
+                "Station. If the radio is connected via USB, note that the COM " +
+                "port number can change if you plug into a different USB port.", 3);
+            AppendLine(sb, "");
+
+            // VSPE file locations
+            if (profile.SetupNotes.VirtualSerial.Count > 0)
+            {
+                AppendLine(sb, "   GENERATED FILES:");
+                foreach (var note in profile.SetupNotes.VirtualSerial)
+                    AppendLine(sb, $"     {Ascii(note)}");
+                AppendLine(sb, "");
+                AppendWrapped(sb,
+                    "   Double-click the .vspe files to load them into VSPE. " +
+                    "The Station file goes on the Station PC, the Client file " +
+                    "goes on this PC. Alternatively, use the com2tcp.cmd script " +
+                    "with com0com (free/open-source alternative to VSPE).", 3);
+                AppendLine(sb, "");
+                AppendWrapped(sb,
+                    "   NOTE: VSPE's 64-bit driver requires a paid licence. The " +
+                    "free alternative is com0com (virtual port pairs) plus " +
+                    "com2tcp, which ships with it. The .cmd file has the exact " +
+                    "commands for both sides.", 3);
+                AppendLine(sb, "");
+            }
+
+            // Latency guidance
+            AppendLine(sb, "   LATENCY GUIDANCE:");
+            AppendWrapped(sb,
+                "   CAT polling that is comfortable on a local USB cable can " +
+                "misbehave across a tunnel. Recommendations:", 3);
+            AppendLine(sb, "     - Raise the logger's CAT poll interval to 500ms or more");
+            AppendLine(sb, "     - Disable 'verify every command' / read-back options");
+            AppendLine(sb, "     - For Icom CI-V: disable transceive mode if the logger");
+            AppendLine(sb, "       supports polling instead");
+            AppendLine(sb, "     - Expect 1-5ms added latency on Direct, 20-50ms on DERP");
+            AppendLine(sb, "");
+        }
+
         // WARNINGS FROM SETUP
         var warnings = conflicts?.Where(c => c.Severity == ConflictSeverity.Warning).ToList();
         if (warnings is { Count: > 0 })

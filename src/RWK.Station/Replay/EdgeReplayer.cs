@@ -842,6 +842,6 @@ public sealed class EdgeReplayer : IEdgeReplayer
 
     private static void LogReplay(string msg)
     {
-        try { System.IO.File.AppendAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "replayer.log"), $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n"); } catch { }
+        try { RWK.Shared.IO.RotatingFileLog.Append("replayer.log", msg); } catch { }
     }
 }

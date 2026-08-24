@@ -199,15 +199,11 @@ public sealed class KeyerElementEngine
                 return KeyerElement.None;
 
             case KeyerMode.Bug:
-                // Bug: dit paddle auto-repeats while held, dah is single-shot per press.
+                // Bug: dit paddle auto-repeats while held (automatic timing).
+                // Dah is handled as direct keying by the pump (manual, like a straight key) —
+                // the engine does NOT generate dah elements in Bug mode.
                 if (_ditPressed)
                     return KeyerElement.Dit;
-                if (_dahMemory)
-                {
-                    // Single dah per press - clear memory immediately.
-                    _dahMemory = false;
-                    return KeyerElement.Dah;
-                }
                 return KeyerElement.None;
         }
 

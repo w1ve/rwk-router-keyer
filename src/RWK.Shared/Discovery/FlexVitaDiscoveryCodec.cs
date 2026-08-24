@@ -45,8 +45,14 @@ public sealed class FlexVitaDiscoveryCodec : IDiscoveryPayloadCodec
     /// <summary>Class ID high word (Flex OUI 0x001C2D + 0x53).</summary>
     private const uint ClassIdHigh = 0x001C2D53;
 
+    /// <summary>Class ID high word (alternate format used by SmartUnlink/newer firmware).</summary>
+    private const uint ClassIdHighAlt = 0x00001C2D;
+
     /// <summary>Class ID low word.</summary>
     private const uint ClassIdLow = 0x4CFFFF00;
+
+    /// <summary>Class ID low word (alternate format).</summary>
+    private const uint ClassIdLowAlt = 0x534CFFFF;
 
     /// <summary>UDP port for discovery broadcasts.</summary>
     public const int DiscoveryPort = 4992;
@@ -71,12 +77,14 @@ public sealed class FlexVitaDiscoveryCodec : IDiscoveryPayloadCodec
             return false;
         }
 
-        // Verify class ID (words 2-3, offsets 8 and 12)
+        // Verify class ID (words 2-3, offsets 8 and 12) — accept both known formats
         uint classHigh = ReadUInt32BE(payload, 8);
         uint classLow = ReadUInt32BE(payload, 12);
-        if (classHigh != ClassIdHigh || classLow != ClassIdLow)
+        bool classMatch = (classHigh == ClassIdHigh && classLow == ClassIdLow)
+                       || (classHigh == ClassIdHighAlt && classLow == ClassIdLowAlt);
+        if (!classMatch)
         {
-            failureReason = $"Class ID mismatch: expected {ClassIdHigh:X8}:{ClassIdLow:X8}, got {classHigh:X8}:{classLow:X8}.";
+            failureReason = $"Class ID mismatch: got {classHigh:X8}:{classLow:X8}.";
             return false;
         }
 

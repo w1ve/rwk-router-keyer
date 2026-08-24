@@ -205,41 +205,6 @@
       ]
     },
     {
-      "id": "flex.smartsdr",
-      "vendor": "FlexRadio",
-      "displayName": "SmartSDR (6000/8000 series)",
-      "models": ["FLEX-6300", "FLEX-6400", "FLEX-6400M", "FLEX-6600", "FLEX-6600M", "FLEX-6700", "FLEX-8400", "FLEX-8600"],
-      "software": "SmartSDR",
-      "endpointLocation": "lan",
-      "confidence": "verified",
-      "source": null,
-      "requiresDiscoveryRelay": true,
-      "forwards": [
-        { "proto": "TCP", "port": 4992, "role": "control", "portIdentity": "floating", "fixed": false, "name": "Flex-Command", "notes": "SmartSDR command channel" },
-        { "proto": "UDP", "port": 4991, "role": "audio", "portIdentity": "floating", "fixed": false, "name": "Flex-VITA49", "notes": "VITA-49 IQ/audio streaming" }
-      ],
-      "prompts": {
-        "stationTarget": {
-          "label": "FlexRadio IP address on the Station's LAN",
-          "why": "SmartSDR connects to the radio's command port. The discovery relay handles finding the radio, but the forward rule still needs the radio's address.",
-          "howToFind": "Check SmartSDR on the Station PC, or look at the radio's front panel under Network settings.",
-          "ifWrong": "SmartSDR will discover the radio (via the relay) but fail to connect to it."
-        }
-      },
-      "clientNotes": [
-        "IMPORTANT: Enable 'discovery re-emission' on the Client (FlexRadio Discovery panel)",
-        "SmartSDR will discover the radio automatically once the relay and forwards are active",
-        "No SmartLink account is needed"
-      ],
-      "stationNotes": [
-        "IMPORTANT: Enable 'discovery capture' on the Station",
-        "The Station captures VITA-49 discovery broadcasts and relays them to the Client"
-      ],
-      "radioNotes": [
-        "Set a static IP address on the radio"
-      ]
-    },
-    {
       "id": "elecraft.k4.remote",
       "vendor": "Elecraft",
       "displayName": "K4 / K4D Remote (peer-to-peer)",
@@ -448,6 +413,442 @@
       "radioNotes": []
     },
     {
+      "id": "svc.4o3a.antenna-genius",
+      "vendor": "4O3A",
+      "displayName": "Antenna Genius (TCP/IP antenna switch)",
+      "models": ["Antenna Genius 8x2", "Antenna Genius 8x2 Plus"],
+      "software": "Antenna Genius App / N4PY",
+      "endpointLocation": "lan",
+      "confidence": "verified",
+      "source": "https://www.4o3a.com",
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 9007, "role": "control", "portIdentity": "floating", "fixed": false, "name": "AG-Control", "notes": "4O3A Antenna Genius TCP control", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Antenna Genius IP address on the Station's LAN",
+          "why": "The Antenna Genius has its own Ethernet port with a static IP on your Station LAN.",
+          "howToFind": "Check the AG's display or use the Antenna Genius App to view its IP address. Set a static IP in the AG's network settings.",
+          "ifWrong": "The Antenna Genius App will fail to connect. The AG's front panel still works locally."
+        }
+      },
+      "clientNotes": [
+        "Antenna Genius App -> Settings -> IP Address: 127.0.0.1, Port: 9007",
+        "N4PY: set Antenna Genius address to 127.0.0.1:9007"
+      ],
+      "stationNotes": [
+        "Antenna Genius must have a static IP on the Station LAN",
+        "Connect AG to your Station LAN switch via Ethernet cable"
+      ],
+      "radioNotes": [
+        "Physical: Connect Antenna Genius to LAN switch with standard Ethernet cable",
+        "Physical: Connect antenna coax cables to the AG's SO-239 ports",
+        "Physical: Power the AG with the included 12V power supply"
+      ]
+    },
+    {
+      "id": "svc.4o3a.rotator-genius",
+      "vendor": "4O3A",
+      "displayName": "Rotator Genius (TCP/IP rotator controller)",
+      "models": ["Rotator Genius"],
+      "software": "Rotator Genius App",
+      "endpointLocation": "lan",
+      "confidence": "verified",
+      "source": "https://www.4o3a.com",
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 9006, "role": "rotator", "portIdentity": "floating", "fixed": false, "name": "RG-Control", "notes": "4O3A Rotator Genius TCP control", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Rotator Genius IP address on the Station's LAN",
+          "why": "The Rotator Genius has its own Ethernet port with a static IP.",
+          "howToFind": "Check the Rotator Genius display or app. Set a static IP in its network settings.",
+          "ifWrong": "The Rotator Genius App will fail to connect."
+        }
+      },
+      "clientNotes": [
+        "Rotator Genius App -> Settings -> IP Address: 127.0.0.1, Port: 9006"
+      ],
+      "stationNotes": [
+        "Rotator Genius must have a static IP on the Station LAN"
+      ],
+      "radioNotes": [
+        "Physical: Connect Rotator Genius to LAN switch via Ethernet cable",
+        "Physical: Connect rotator motor cable to the Rotator Genius motor output",
+        "Physical: Connect rotator position feedback cable to the RG's sensor input"
+      ]
+    },
+    {
+      "id": "svc.4o3a.cat2lan",
+      "vendor": "4O3A",
+      "displayName": "CAT2LAN (serial-to-Ethernet bridge)",
+      "models": ["CAT2LAN"],
+      "software": "CAT2LAN Config / Logger software",
+      "endpointLocation": "lan",
+      "confidence": "community",
+      "source": "https://www.4o3a.com/cat2lan-interface",
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4001, "role": "cat", "portIdentity": "floating", "fixed": false, "name": "CAT2LAN", "notes": "4O3A CAT2LAN serial-over-TCP", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "CAT2LAN IP address on the Station's LAN",
+          "why": "The CAT2LAN bridges RS-232/CI-V serial to Ethernet. It has its own IP on your LAN.",
+          "howToFind": "Use the CAT2LAN configuration software to view/set its IP address.",
+          "ifWrong": "CAT commands will time out. Verify the CAT2LAN's IP hasn't changed (use static IP)."
+        }
+      },
+      "clientNotes": [
+        "Configure your logging software to connect to 127.0.0.1:4001 for CAT control",
+        "The CAT2LAN appears as a TCP serial port -- your software connects over TCP instead of a COM port"
+      ],
+      "stationNotes": [
+        "CAT2LAN must have a static IP on the Station LAN",
+        "Configure the CAT2LAN's serial parameters to match your radio (baud, CI-V address, etc.)"
+      ],
+      "radioNotes": [
+        "Physical: Connect CAT2LAN to radio via RS-232 or CI-V cable",
+        "Physical: Connect CAT2LAN to Station LAN switch via Ethernet cable",
+        "Physical: Power via USB or included power adapter"
+      ]
+    },
+    {
+      "id": "svc.microham.arco",
+      "vendor": "microHAM",
+      "displayName": "ARCO rotator controller (VNC over Ethernet)",
+      "models": ["ARCO", "ARCO Junior"],
+      "software": "VNC Viewer (any)",
+      "endpointLocation": "lan",
+      "confidence": "verified",
+      "source": "https://www.microham.com",
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 5900, "role": "remote-desktop", "portIdentity": "floating", "fixed": false, "name": "ARCO-VNC", "notes": "microHAM ARCO built-in VNC server", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "ARCO IP address on the Station's LAN",
+          "why": "The ARCO has a built-in Ethernet port and VNC server. You control it via a VNC viewer.",
+          "howToFind": "Check ARCO's LAN settings menu on its touch screen, or use your router's DHCP client list.",
+          "ifWrong": "VNC viewer will fail to connect. The ARCO's touch screen still works locally."
+        }
+      },
+      "clientNotes": [
+        "Open any VNC Viewer (TightVNC, RealVNC, etc.) and connect to 127.0.0.1:5900",
+        "You will see an exact replica of the ARCO's touch screen display",
+        "Full control of rotator, presets, relay modules, and settings via VNC"
+      ],
+      "stationNotes": [
+        "ARCO must have a static IP on the Station LAN (set via its Settings -> LAN menu)"
+      ],
+      "radioNotes": [
+        "Physical: Connect ARCO to LAN switch via Ethernet cable (100-BaseTX)",
+        "Physical: Connect rotator motor cable to ARCO's motor output terminals",
+        "Physical: Connect rotator feedback potentiometer to ARCO's sensor input",
+        "Physical: Power ARCO with the 48V switching power supply (motor) and 13.5V (logic)"
+      ]
+    },
+    {
+      "id": "svc.elecraft.kpa1500",
+      "vendor": "Elecraft",
+      "displayName": "KPA1500 amplifier (Ethernet remote)",
+      "models": ["KPA1500"],
+      "software": "Elecraft KPA Remote Software",
+      "endpointLocation": "lan",
+      "confidence": "verified",
+      "source": "https://elecraft.com/pages/kpa1500-kpa500-kat500-remote-software",
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4626, "role": "control", "portIdentity": "floating", "fixed": false, "name": "KPA1500-Remote", "notes": "Elecraft KPA1500 Ethernet remote control", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "KPA1500 IP address on the Station's LAN",
+          "why": "The KPA1500 has a built-in Ethernet port. The Elecraft remote software connects to it directly.",
+          "howToFind": "Check the KPA1500's UTIL menu -> ENET -> IP ADDR. Set a static IP.",
+          "ifWrong": "Elecraft remote software will fail to connect. The amp's front panel still works."
+        }
+      },
+      "clientNotes": [
+        "Elecraft KPA Remote Software -> Connection -> IP: 127.0.0.1, Port: 4626",
+        "You get full amplifier control: power, band, tune, fault monitoring"
+      ],
+      "stationNotes": [
+        "KPA1500 must have a static IP on the Station LAN",
+        "Enable the Ethernet interface in UTIL -> ENET menu"
+      ],
+      "radioNotes": [
+        "Physical: Connect KPA1500 to LAN switch via Ethernet cable (rear panel RJ-45)",
+        "Physical: Standard RF connections to transceiver (ANT IN) and antenna (ANT OUT)",
+        "Physical: KEY/ALC/INHIBIT connections as per normal amplifier installation"
+      ]
+    },
+    {
+      "id": "svc.elecraft.kpa500",
+      "vendor": "Elecraft",
+      "displayName": "KPA500 amplifier (serial remote)",
+      "models": ["KPA500"],
+      "software": "Elecraft KPA Remote Software / Logger",
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": "https://elecraft.com",
+      "isService": true,
+      "isGenericSerial": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4001, "role": "control", "portIdentity": "floating", "fixed": false, "name": "KPA500-Serial", "notes": "KPA500 serial control via TCP bridge", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Serial bridge target address",
+          "why": "The KPA500 connects via USB (virtual COM port) to the Station PC. VSPE bridges it to TCP.",
+          "howToFind": "127.0.0.1 -- the serial bridge runs on the Station PC.",
+          "ifWrong": "The serial bridge will fail to connect to the amplifier."
+        }
+      },
+      "clientNotes": [
+        "Elecraft KPA Remote Software connects to a virtual COM port (created by VSPE TcpClient)",
+        "Alternatively, some software can connect directly to TCP (127.0.0.1:<port>)"
+      ],
+      "stationNotes": [
+        "Install VSPE on the Station PC",
+        "Create a TcpServer device bridging the KPA500's USB COM port to TCP",
+        "Baud rate: 38400, 8N1 (KPA500 default)"
+      ],
+      "radioNotes": [
+        "Physical: Connect KPA500 to Station PC via USB cable (rear panel USB-B port)",
+        "Physical: The KPA500 appears as a virtual COM port (e.g. COM5) on the Station PC",
+        "Physical: Standard RF connections (ANT IN from transceiver, ANT OUT to antenna)"
+      ]
+    },
+    {
+      "id": "svc.spe.expert.lan",
+      "vendor": "SPE",
+      "displayName": "SPE Expert amplifier (with LAN-UNIT)",
+      "models": ["Expert 1K-FA", "Expert 1.3K-FA", "Expert 1.5K-FA", "Expert 2K-FA"],
+      "software": "SPE Remote Control / Term_2K",
+      "endpointLocation": "lan",
+      "confidence": "community",
+      "source": null,
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 8888, "role": "control", "portIdentity": "floating", "fixed": false, "name": "SPE-Remote", "notes": "SPE Expert amplifier remote control (via LAN-UNIT)", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "SPE LAN-UNIT IP address",
+          "why": "The SPE LAN-UNIT is an Ethernet adapter that plugs into the amplifier's RS-232 port and provides TCP/IP access.",
+          "howToFind": "Check the LAN-UNIT's configuration (default IP may be DHCP -- set a static IP).",
+          "ifWrong": "SPE remote software will fail to connect."
+        }
+      },
+      "clientNotes": [
+        "SPE Remote Control software -> Connect to: 127.0.0.1, Port: 8888",
+        "Term_2K application also works via this TCP connection"
+      ],
+      "stationNotes": [
+        "SPE LAN-UNIT must be installed on the amplifier and connected to the Station LAN",
+        "Set a static IP address on the LAN-UNIT"
+      ],
+      "radioNotes": [
+        "Physical: Plug SPE LAN-UNIT into the amplifier's rear RS-232 port",
+        "Physical: Connect LAN-UNIT to Station LAN switch via Ethernet cable",
+        "Physical: Standard amplifier RF and control connections"
+      ]
+    },
+    {
+      "id": "svc.spe.expert.serial",
+      "vendor": "SPE",
+      "displayName": "SPE Expert amplifier (serial, no LAN-UNIT)",
+      "models": ["Expert 1K-FA", "Expert 1.3K-FA", "Expert 1.5K-FA", "Expert 2K-FA"],
+      "software": "SPE Remote Control / Term_2K",
+      "endpointLocation": "station-pc",
+      "confidence": "community",
+      "source": null,
+      "isService": true,
+      "isGenericSerial": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4002, "role": "control", "portIdentity": "floating", "fixed": false, "name": "SPE-Serial", "notes": "SPE Expert serial control via TCP bridge", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Serial bridge target address",
+          "why": "The SPE amplifier connects via RS-232 serial to the Station PC. VSPE bridges it to TCP.",
+          "howToFind": "127.0.0.1 -- the serial bridge runs on the Station PC.",
+          "ifWrong": "The bridge will fail to reach the amplifier."
+        }
+      },
+      "clientNotes": [
+        "SPE Remote Control / Term_2K connects to a virtual COM port (VSPE TcpClient) or directly via TCP"
+      ],
+      "stationNotes": [
+        "Connect amplifier's RS-232 port to Station PC via serial cable (or USB-serial adapter)",
+        "Create VSPE TcpServer bridging that COM port to TCP",
+        "Baud rate: 9600, 8N1 (SPE default)"
+      ],
+      "radioNotes": [
+        "Physical: Connect SPE amplifier rear RS-232 port to Station PC via DB-9 serial cable",
+        "Physical: If Station PC has no serial port, use a USB-to-RS232 adapter",
+        "Physical: Standard amplifier RF and control connections (PTT, ALC, RF)"
+      ]
+    },
+    {
+      "id": "svc.greenheron.rt21",
+      "vendor": "Green Heron",
+      "displayName": "RT-21 rotator controller (serial)",
+      "models": ["RT-21", "RT-21 Az/El"],
+      "software": "GHTracker / PstRotator / N1MM Rotor",
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": "https://www.greenheronengineering.com",
+      "isService": true,
+      "isGenericSerial": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4003, "role": "rotator", "portIdentity": "floating", "fixed": false, "name": "GH-RT21", "notes": "Green Heron RT-21 serial (GS-232A protocol)", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Serial bridge target address",
+          "why": "The RT-21 connects via RS-232 to the Station PC. VSPE bridges it to TCP.",
+          "howToFind": "127.0.0.1 -- the serial bridge runs on the Station PC.",
+          "ifWrong": "Rotator commands will time out."
+        }
+      },
+      "clientNotes": [
+        "Configure your rotator control software (PstRotator, N1MM, GHTracker) to use the virtual COM port",
+        "Protocol: GS-232A compatible (or use greenctld for hamlib compatibility)",
+        "Alternative: run greenctld on Station PC and forward its TCP port (4533) instead of raw serial"
+      ],
+      "stationNotes": [
+        "Connect RT-21's RS-232 port to Station PC via serial cable",
+        "VSPE TcpServer bridges the COM port to TCP",
+        "Baud rate: 4800, 8N1 (RT-21 default -- verify in RT-21 settings)"
+      ],
+      "radioNotes": [
+        "Physical: Connect RT-21 to Station PC via DB-9 RS-232 cable (rear panel 'COMPUTER' port)",
+        "Physical: RT-21 control cable to rotator motor/brake",
+        "Physical: Rotator feedback cable to RT-21 sensor input",
+        "Note: The RT-21 uses 4800 baud by default but this is configurable in its setup menu"
+      ]
+    },
+    {
+      "id": "svc.steppir.optimizir",
+      "vendor": "SteppIR",
+      "displayName": "OptimizIR 2.0 antenna controller (serial)",
+      "models": ["OptimizIR 2.0", "SDA-100"],
+      "software": "SteppIR Controller / OptimizIR Remote Terminal",
+      "endpointLocation": "station-pc",
+      "confidence": "community",
+      "source": "https://consumer.steppir.com",
+      "isService": true,
+      "isGenericSerial": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4004, "role": "control", "portIdentity": "floating", "fixed": false, "name": "SteppIR-Ctrl", "notes": "SteppIR OptimizIR serial control", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Serial bridge target address",
+          "why": "The OptimizIR connects via USB to the Station PC. VSPE bridges the virtual COM port to TCP.",
+          "howToFind": "127.0.0.1 -- the serial bridge runs on the Station PC.",
+          "ifWrong": "SteppIR commands will time out."
+        }
+      },
+      "clientNotes": [
+        "Use the OptimizIR 'Remote Terminal' feature pointed at the virtual COM port",
+        "Or use custom software via the serial-over-TCP bridge"
+      ],
+      "stationNotes": [
+        "Connect OptimizIR to Station PC via USB cable",
+        "Note the COM port number assigned (Device Manager -> Ports)",
+        "VSPE TcpServer bridges that COM port to TCP",
+        "Baud rate: 9600, 8N1"
+      ],
+      "radioNotes": [
+        "Physical: Connect OptimizIR controller to Station PC via USB cable",
+        "Physical: Control cable from OptimizIR to antenna elements (as per SteppIR installation guide)",
+        "Physical: The OptimizIR requires 12V DC power"
+      ]
+    },
+    {
+      "id": "svc.alpha.87a",
+      "vendor": "Alpha/ETO",
+      "displayName": "Alpha 87A amplifier (serial control)",
+      "models": ["Alpha 87A"],
+      "software": "Alpha Monitor / Logger amplifier control",
+      "endpointLocation": "station-pc",
+      "confidence": "community",
+      "source": null,
+      "isService": true,
+      "isGenericSerial": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4005, "role": "control", "portIdentity": "floating", "fixed": false, "name": "Alpha87A-Serial", "notes": "Alpha 87A RS-232 control via TCP bridge", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Serial bridge target address",
+          "why": "The Alpha 87A has an RS-232 port (DB-25) for computer control. VSPE bridges it to TCP.",
+          "howToFind": "127.0.0.1 -- the serial bridge runs on the Station PC.",
+          "ifWrong": "Amplifier monitoring will not connect."
+        }
+      },
+      "clientNotes": [
+        "Configure your amplifier monitoring software to use the virtual COM port",
+        "N1MM+ and Logger32 can read Alpha 87A status via this connection"
+      ],
+      "stationNotes": [
+        "Connect Alpha 87A RS-232 port to Station PC via DB-25 to DB-9 serial cable",
+        "The 87A talks whenever plugged into mains power (even when off)",
+        "VSPE TcpServer bridges the COM port to TCP",
+        "Baud rate: 9600, 8N1 (set by jumpers on the 87A's DB-25 connector)"
+      ],
+      "radioNotes": [
+        "Physical: Connect Alpha 87A rear DB-25 RS-232 port to Station PC",
+        "Physical: You will need a DB-25 to DB-9 null-modem cable (or DB-25 to USB-serial adapter)",
+        "Physical: Baud rate is set by jumpering pins on the DB-25 connector (see Alpha 87A manual)",
+        "Physical: Default is 9600 baud -- verify jumper settings match"
+      ]
+    },
+    {
+      "id": "svc.acom.2000a",
+      "vendor": "ACOM",
+      "displayName": "ACOM 2000A amplifier (serial control)",
+      "models": ["ACOM 2000A"],
+      "software": "ACOM Remote / Logger amplifier control",
+      "endpointLocation": "station-pc",
+      "confidence": "community",
+      "source": null,
+      "isService": true,
+      "isGenericSerial": true,
+      "forwards": [
+        { "proto": "TCP", "port": 4006, "role": "control", "portIdentity": "floating", "fixed": false, "name": "ACOM2000A-Serial", "notes": "ACOM 2000A serial control via TCP bridge", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Serial bridge target address",
+          "why": "The ACOM 2000A has an RS-232 serial interface for computer control. VSPE bridges it to TCP.",
+          "howToFind": "127.0.0.1 -- the serial bridge runs on the Station PC.",
+          "ifWrong": "Amplifier control/monitoring will not connect."
+        }
+      },
+      "clientNotes": [
+        "Configure your amplifier control software to use the virtual COM port",
+        "The ACOM 2000A uses CI-V style protocol at 1200 baud"
+      ],
+      "stationNotes": [
+        "Connect ACOM 2000A RS-232 port to Station PC",
+        "VSPE TcpServer bridges the COM port to TCP",
+        "Baud rate: 1200, 8N1 (ACOM 2000A default -- very slow, do not change)"
+      ],
+      "radioNotes": [
+        "Physical: Connect ACOM 2000A rear RS-232 (DB-9) port to Station PC via serial cable",
+        "Physical: If Station PC has no serial port, use a USB-to-RS232 adapter",
+        "Physical: Baud rate is fixed at 1200 baud -- ensure VSPE is configured to match",
+        "Note: The official ACOM eBox (Ethernet adapter) is an alternative if you prefer no VSPE setup"
+      ]
+    },
+    {
       "id": "generic.serial-bridge",
       "vendor": "Generic",
       "displayName": "Generic RS-232 serial bridge (TCP tunnel)",
@@ -489,7 +890,7 @@
     {
       "id": "generic.tcp-service",
       "vendor": "Generic",
-      "displayName": "Generic TCP/UDP service",
+      "displayName": "Generic TCP service (Client -> Station)",
       "models": [],
       "software": null,
       "endpointLocation": "station-pc",
@@ -497,7 +898,7 @@
       "source": null,
       "isGenericService": true,
       "forwards": [
-        { "proto": "TCP", "port": 8080, "role": "generic", "portIdentity": "floating", "fixed": false, "name": "Custom-Service", "notes": "User-defined TCP/UDP forward" }
+        { "proto": "TCP", "port": 8080, "role": "generic", "portIdentity": "floating", "fixed": false, "name": "Custom-TCP", "notes": "User-defined TCP forward (Client -> Station)", "direction": "ClientToStation" }
       ],
       "prompts": {
         "stationTarget": {
@@ -512,6 +913,95 @@
       ],
       "stationNotes": [
         "Ensure the target service is running and accessible"
+      ],
+      "radioNotes": []
+    },
+    {
+      "id": "generic.udp-service",
+      "vendor": "Generic",
+      "displayName": "Generic UDP service (Client -> Station)",
+      "models": [],
+      "software": null,
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": null,
+      "isGenericService": true,
+      "forwards": [
+        { "proto": "UDP", "port": 7000, "role": "generic", "portIdentity": "floating", "fixed": false, "name": "Custom-UDP", "notes": "User-defined UDP forward (Client -> Station)", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Service target address",
+          "why": "Where does this service listen on the Station's network?",
+          "howToFind": "127.0.0.1 if it's on the Station PC. Otherwise, the device's LAN IP.",
+          "ifWrong": "Datagrams will be sent but never arrive."
+        }
+      },
+      "clientNotes": [
+        "Send UDP datagrams to 127.0.0.1:<port>"
+      ],
+      "stationNotes": [
+        "Ensure the target service is listening on the specified port"
+      ],
+      "radioNotes": []
+    },
+    {
+      "id": "generic.reverse-tcp",
+      "vendor": "Generic",
+      "displayName": "Generic reverse TCP service (Station -> Client)",
+      "models": [],
+      "software": null,
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": null,
+      "isGenericService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 8080, "role": "generic", "portIdentity": "floating", "fixed": false, "name": "Reverse-TCP", "notes": "User-defined reverse TCP forward (Station -> Client)", "direction": "StationToClient" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Source address on the Station",
+          "why": "Where does the Station-side application connect FROM? This is the address it will reach the tunnel on. Usually 127.0.0.1.",
+          "howToFind": "127.0.0.1 if the Station application connects to localhost.",
+          "ifWrong": "The Station application won't reach the tunnel endpoint."
+        }
+      },
+      "clientNotes": [
+        "The Station-side service will appear on this PC at 127.0.0.1:<port>",
+        "Configure your Client-side software to listen on or connect to that address"
+      ],
+      "stationNotes": [
+        "The Station-side application connects to 127.0.0.1:<port> -- traffic is tunneled to the Client"
+      ],
+      "radioNotes": []
+    },
+    {
+      "id": "generic.reverse-udp",
+      "vendor": "Generic",
+      "displayName": "Generic reverse UDP service (Station -> Client)",
+      "models": [],
+      "software": null,
+      "endpointLocation": "station-pc",
+      "confidence": "verified",
+      "source": null,
+      "isGenericService": true,
+      "forwards": [
+        { "proto": "UDP", "port": 7000, "role": "generic", "portIdentity": "floating", "fixed": false, "name": "Reverse-UDP", "notes": "User-defined reverse UDP forward (Station -> Client)", "direction": "StationToClient" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Source address on the Station",
+          "why": "Where does the Station-side application send UDP datagrams FROM? Usually 127.0.0.1.",
+          "howToFind": "127.0.0.1 if the application runs on the Station PC itself.",
+          "ifWrong": "Datagrams from the Station won't reach the tunnel."
+        }
+      },
+      "clientNotes": [
+        "UDP datagrams from the Station will arrive at 127.0.0.1:<port> on this PC",
+        "Configure your Client-side software to listen on that port"
+      ],
+      "stationNotes": [
+        "The Station-side application sends UDP to 127.0.0.1:<port> -- traffic is tunneled to the Client"
       ],
       "radioNotes": []
     }

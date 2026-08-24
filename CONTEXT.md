@@ -6,6 +6,7 @@ RWK v2.0 is a Client/Station CW (Morse code) remoting and port forwarding system
 
 **Repository**: https://github.com/w1ve/rwk-router-keyer
 **Release**: https://github.com/w1ve/rwk-router-keyer/releases/tag/v1.0.0
+**Current Version**: 1.0.4
 **Spec location**: `.kiro/specs/rwk-v2/` (requirements.md, design.md, tasks.md)
 
 ## Three Independent Features
@@ -115,6 +116,7 @@ RWK v2.0 is a Client/Station CW (Morse code) remoting and port forwarding system
 
 - **.NET 9.0**, Windows x64, WinForms
 - **Go 1.26.5** toolchain at E:\go for sidecar
+- **Inno Setup 6** at `C:\Users\gerry\AppData\Local\Programs\Inno Setup 6\ISCC.exe` — per-user install, build with `/O<dir> /FRWK-Setup` flags
 - **Single-file publish** (self-contained, no .NET runtime needed on target)
 - **Tailscale via tsnet** (userspace, no system Tailscale install required)
 - **True UDP datagrams** for edge data and port forwarding
@@ -147,15 +149,20 @@ RWK v2.0 is a Client/Station CW (Morse code) remoting and port forwarding system
 
 ## Files to Read on Resume
 
-- `e:\AI\RWK\src\RWK.Client\MainForm.Designer.cs` — Client UI layout (TabControl, forward grid, sidetone, discovery)
+- `e:\AI\RWK\src\RWK.Client\MainForm.Designer.cs` — Client UI layout (3-tab: Keyer | Ham Router | Log)
 - `e:\AI\RWK\src\RWK.Client\MainForm.cs` — Client code-behind (all event handlers)
 - `e:\AI\RWK\src\RWK.Client\Controllers\ClientController.cs` — Client orchestration (pairing, forwarding, discovery, ARM, loopback test)
+- `e:\AI\RWK\src\RWK.Client\Auth\TailscaleAuthWizard.cs` — 5-step Tailscale Auth Wizard UI
+- `e:\AI\RWK\src\RWK.Shared\Auth\AuthWizardState.cs` — Auth Wizard state machine (testable without WinForms)
+- `e:\AI\RWK\src\RWK.Client\IO\KeyboardPaddleInput.cs` — Global key hook keyboard paddle (7 presets)
+- `e:\AI\RWK\src\RWK.Client\Wizard\VspeGenerator.cs` — VSPE XML generation for serial bridge
+- `e:\AI\RWK\src\RWK.Client\Wizard\SerialPresets.cs` — 9 radio-type serial bridge presets
 - `e:\AI\RWK\src\RWK.Client\LogService.cs` — Thread-safe visual log
 - `e:\AI\RWK\src\RWK.Client\IO\HardwareWinKeyerHost.cs` — Hardware WinKeyer driver
 - `e:\AI\RWK\src\RWK.Client\Discovery\ClientDiscoveryEmitter.cs` — FlexRadio rewrite + broadcast
 - `e:\AI\RWK\src\RWK.Shared\Net\PortForwardManager.cs` — Port forward lifecycle, validation, tunnel delegates
 - `e:\AI\RWK\src\RWK.Shared\Net\TsnetSidecarHost.cs` — Sidecar IPC (TCP + UDP outbound/inbound forwards)
-- `e:\AI\RWK\src\RWK.Shared\Config\ForwardRule.cs` — Rule model with StationTargetAddress
+- `e:\AI\RWK\src\RWK.Shared\Config\ForwardRule.cs` — Rule model with Direction + StationTargetAddress
 - `e:\AI\RWK\src\RWK.Shared\Discovery\FlexVitaDiscoveryCodec.cs` — VITA-49 parser + endpoint rewriter
 - `e:\AI\RWK\src\RWK.TailscaleSidecar\forward.go` — Go sidecar TCP + UDP forwarding (out/in/out-udp/in-udp)
 - `e:\AI\RWK\src\RWK.Station\MainForm.cs` — Station code-behind (session, keying config, discovery)
@@ -201,13 +208,119 @@ Files changed:
 - `tests/RWK.Station.Tests/Replay/JitterBufferTests.cs` — updated clamp expectation
 - `tests/RWK.Station.Tests/Replay/JitterBufferAdaptiveTests.cs` — updated max band assertions
 
+### v1.0.4 Changes — FlexRadio Discovery Auto-Forwarding (August 2026)
+
+Major improvement to the FlexRadio discovery relay: the Client's "Enable discovery re-emission" checkbox now automatically creates and manages all required port forward rules. No wizard step needed for Flex radios.
+
+**Features:**
+1. **Auto port forward creation** — Checking the Client's "Enable discovery re-emission" box auto-creates TCP 4992 (SmartSDR Command) and UDP 4991 (VITA-49 Stream) forward rules with `RuleType = FlexDiscovery`. Unchecking removes them.
+2. **Auto StationTargetAddress** — When the first `discovery_announce` arrives from Station, the radio's actual IP is extracted from the VITA-49 payload and set as `StationTargetAddress` on both rules automatically.
+3. **Station auto-enables discovery capture** — When Station receives `[Flex]`-prefixed rules from Client, it automatically starts the `StationDiscoveryListener` (UDP 4992). No separate checkbox needed on Station.
+4. **Session lifecycle** — Rules are removed on unpair, re-created on next pair if checkbox is still checked. Checkbox state persists across restarts.
+5. **Flex Forwarding indicator** — Station shows "Flex Forwarding ✓" (red checkmark) next to Unpair button when Flex rules are active.
+6. **Removed FlexRadio from Wizard** — The `flex.smartsdr` entry removed from `radios.json` since it's now automatic.
+7. **Client button renamed** — "Pair Keyer with Station" → "Pair with Station"
+8. **Checkbox disabled until paired** — Prevents confusion; enables after successful pairing.
+
+**Bug Fixes (discovery relay):**
+- Fixed concurrent TCP control stream writes corrupting length-prefixed framing (added `_suppressRulePush` flag for batch operations)
+- Fixed empty rule push not reaching Station (`PushForwardRulesToStationAsync` had early-return on zero rules)
+- Fixed `FlexVitaDiscoveryCodec` to accept both class ID formats: original (`0x001C2D53:0x4CFFFF00`) and SmartUnlink/newer firmware (`0x00001C2D:0x534CFFFF`)
+- Client discovery emitter now broadcasts on subnet broadcast addresses (not just 255.255.255.255)
+
+**Infrastructure:**
+- **Windows Firewall rules** — Both apps call `FirewallHelper.EnsureAppAllowed()` at startup. Installer (now `PrivilegesRequired=admin`) creates inbound allow rules for RWKClient.exe, RWKStation.exe, and rwk-tailscale-sidecar.exe via `netsh advfirewall`. Rules cleaned up on uninstall.
+- **Inno Setup path**: `C:\Users\gerry\AppData\Local\Programs\Inno Setup 6\ISCC.exe`
+- **Installer requires elevation** for firewall rules (was per-user/lowest, now admin with dialog override)
+- **publish.ps1** updated to copy `Wizard/radios.json` to staging, splash.png in expected files list
+
+**New Tool:**
+- `tools/FakeFlex/` — Console VITA-49 discovery emulator. Broadcasts packets matching SmartUnlink's proven format (header `0x38500000`, class ID `0x00001C2D:0x534CFFFF`). Used to test the full discovery relay chain without a physical FlexRadio. Single-file self-contained exe at `artifacts/release/staging/tools/FakeFlex.exe`.
+
+Files changed:
+- `src/RWK.Client/Controllers/ClientController.cs` — SetDiscoveryEmitEnabled auto-creates/removes rules, _suppressRulePush, ForwardRulesChanged event, PushForwardRulesToStationAsync logging
+- `src/RWK.Client/MainForm.cs` — checkbox disabled until paired, _suppressFlexCheckEvent, OnForwardRulesChanged handler
+- `src/RWK.Client/MainForm.Designer.cs` — "Pair with Station" button text, checkbox starts disabled
+- `src/RWK.Client/Discovery/ClientDiscoveryEmitter.cs` — ephemeral source port for broadcast socket
+- `src/RWK.Client/Wizard/radios.json` — removed flex.smartsdr entry
+- `src/RWK.Shared/Discovery/FlexVitaDiscoveryCodec.cs` — dual class ID acceptance
+- `src/RWK.Shared/Net/FirewallHelper.cs` — NEW: netsh advfirewall rule management
+- `src/RWK.Station/MainForm.cs` — auto start/stop discovery capture from Flex rules
+- `src/RWK.Station/MainForm.Designer.cs` — removed hidden _flexDiscoveryGroup, added Flex Forwarding indicator
+- `src/RWK.Station/Controllers/StationController.cs` — discovery capture/announce logging, firewall call
+- `build/installer/rwk-setup.iss` — admin privileges, firewall rule creation/cleanup
+- `build/release/publish.ps1` — Wizard folder copy, splash.png in expected files
+
+## v1.0.3 Completed Work (Ham Router Architecture)
+
+### UI Restructure
+- 3-tab Client UI: **Keyer | Ham Router | Log** — port forwarding grid gets full form height
+- Keyer tab: dit/dah LEDs integrated into keyer group (no separate Paddle group)
+- 4 CW macro buttons (F1–F4) with Edit dialog and persistence
+- Type-ahead CW input box
+- Keyboard paddle with global key hook (7 presets), PageUp/PageDn speed ±2 WPM
+- Sidetone layout fixed: absolute positioning, value labels centered above sliders
+- Network section renamed "Pair with Station" with validation (Pair button greyed until valid IP + key set, red ✓ indicator)
+- Form centered on active screen
+
+### ForwardDirection & Reverse Forwards
+- `ForwardDirection` enum: `ClientToStation`, `StationToClient` with `Direction` field on `ForwardRule`
+- Reverse port forwards: Station→Client direction supported
+- Direction column (→/←) in the port forwarding grid
+- Forward rule dedup on Station (prevents duplicate sidecar registrations, detects conflicts)
+- Port conflict check includes direction (same port, different directions = no conflict)
+- `StationToClient` rules do NOT bind locally — they're pushed to Station for outbound forwarding
+- Reverse rules skip `StartRuleListener` (no local socket bind)
+
+### Keyer Bug Fixes
+- Bug mode fixed: dah is manual keying (held = keyed), dits are automatic
+- Straight mode fixed: dit contact works as straight key
+- Keyer mode combo wiring fixed (was never connected to UI event)
+
+### Tailscale Auth Wizard
+- 5-step wizard: Welcome → Browser OAuth → Verify → Authorization Required → Success (+ key expiry warning)
+- Auth Wizard state machine in `RWK.Shared.Auth` (testable without WinForms), UI per-app
+- `SidecarAuthProvider` heuristic: NeedsAuth + no AuthUrl = Connecting (bridges timing gap)
+- Wizard poll interval: 1.5s for snappy auth detection
+- PLEASE WAIT overlay on startup until connected or wizard shown
+- Delete Tailscale Auth: stop sidecar, delete state, restart, show wizard immediately (no app restart)
+- Go sidecar: clear authURL on any state != NeedsLogin/NeedsMachineAuth
+
+### Port Forward Wizard & Serial Bridge
+- Serial bridge sub-flow with radio-type presets (9 types)
+- VSPE XML generation, com2tcp command generation, enhanced readme
+- Serial bridge VSPE generation: matching TCP port in rule + client .vspe + station .vspe + com2tcp.cmd
+- Wizard catalog: **31 entries** (Icom, Kenwood, Yaesu, Flex, Elecraft, RemoteRig, 4O3A, Green Heron, SPE, SteppIR, Alpha, ACOM, generic forward/reverse TCP/UDP)
+
+### System Tray & Multi-Client
+- System tray icon: minimize to tray, click to restore (both Client and Station)
+- KEYER BUSY: if second client tries to pair, plays "KEYER BUSY" in CW sidetone, shows red indicator
+
+### Removed (Attempted but Deferred)
+- **N1MM+ discovery relay**: Attempted symmetric relay (Client captures local N1MM broadcasts via raw socket, forwards to Station, Station re-emits with IP=127.0.0.1 and vice versa). Removed because:
+  - N1MM holds port 2237 with `SO_EXCLUSIVEADDRUSE` (raw socket required elevation)
+  - The sidecar can't have both inbound and outbound forwards on the same UDP port simultaneously
+  - The architecture required too many workarounds
+  - **Recommendation**: N1MM multi-op networking should use system Tailscale installed on both PCs — N1MM already supports Tailscale natively when installed
+- `N1mmDiscoveryCodec` kept in `RWK.Shared/Discovery` for potential future use
+
+### Key Technical Decisions (v1.0.3)
+- `ForwardDirection.StationToClient` rules do NOT bind locally — pushed to Station for outbound forwarding
+- Port conflict check includes direction (same port, different directions = no conflict)
+- Reverse rules skip `StartRuleListener` (no local socket bind)
+- Auth Wizard state machine is in `RWK.Shared.Auth` (testable without WinForms), UI is per-app
+- `SidecarAuthProvider` heuristic: NeedsAuth + no AuthUrl = Connecting (bridges timing gap)
+- Wizard poll interval: 1.5s for snappy auth detection
+- Serial bridge VSPE generation: matching TCP port in rule + client .vspe + station .vspe + com2tcp.cmd
+
 ## Next Steps
 
-1. **Test FlexRadio relay** with a physical Flex 6000-series radio
-2. **Write remaining PBT tests** (optional but valuable for correctness confidence)
-3. ~~**Live network tests** (33.x) when separate machines + auth key available~~ ✓ Verified on Starlink from Malawi
-4. **Consider** adding the discovered radio list to the Client UI (currently just logs)
-5. **Consider** Station-side allow/deny override per pushed rule
+1. **v1.0.4 — Opus Audio**: Low-latency audio streaming for radio monitoring/operating
+2. **Linux/Pi Station**: Port RWK.Station to run on Raspberry Pi / Linux (headless, no WinForms)
+3. **Test FlexRadio relay** with a physical Flex 6000-series radio
+4. **Write remaining PBT tests** (optional but valuable for correctness confidence)
+5. **Consider** adding the discovered radio list to the Client UI (currently just logs)
+6. **Consider** Station-side allow/deny override per pushed rule
 
 ## Planned Work — Station Logger WinKeyer Input
 
@@ -232,9 +345,11 @@ Hams running their logging program over Remote Desktop on the Station PC want to
 - New file: `src/RWK.Station/IO/StationSoftKeyer.cs` — local CW generation (or reuse `SoftWinKeyerCore` from Client)
 - `src/RWK.Shared/Config/StationConfig.cs` — add logger port config fields
 
-## Planned Work — v1.0.3: Ham Router Architecture
+## Historical — v1.0.3 Plan (Ham Router Architecture) — COMPLETED
 
-### Branch: `v1.0.3-ham-router` (from main)
+> This section preserved for reference. See "v1.0.3 Completed Work" above for final state.
+
+### Branch: `v1.0.3-ham-router` (merged to main)
 
 ### Major Changes
 
