@@ -121,6 +121,7 @@ type Node struct {
 	authURL     string
 
 	selfV4  netip.Addr
+	selfV6  netip.Addr
 	selfDNS string
 
 	peerSpec     string
@@ -252,7 +253,7 @@ func (n *Node) bringUp(authKey string) {
 		return
 	}
 
-	ip4, _ := srv.TailscaleIPs()
+	ip4, ip6 := srv.TailscaleIPs()
 	if !ip4.IsValid() {
 		fail("tailscale address", errors.New("no IPv4 address assigned"))
 		return
@@ -295,6 +296,7 @@ func (n *Node) bringUp(authKey string) {
 	n.everRunning = true
 	n.backend = "Running"
 	n.selfV4 = ip4
+	n.selfV6 = ip6
 	n.selfDNS = selfDNS
 	n.socks = socks
 	n.localAPI = lapi
@@ -724,6 +726,18 @@ func (n *Node) PeerHost() string {
 		return n.peerAddr.String()
 	}
 	return n.peerSpec
+}
+
+func (n *Node) TailnetAddrs() (ipv4, ipv6 string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.selfV4.IsValid() {
+		ipv4 = n.selfV4.String()
+	}
+	if n.selfV6.IsValid() {
+		ipv6 = n.selfV6.String()
+	}
+	return
 }
 
 func portOf(a net.Addr) int {
