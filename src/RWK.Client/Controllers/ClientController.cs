@@ -98,7 +98,6 @@ public sealed class ClientController : IDisposable
     private volatile bool _suppressEdgeSend;
     private volatile bool _suppressRulePush;
     private volatile bool _loopbackTestActive;
-    private bool _hiAnnounced;
     private volatile bool _stationArmed = true;
     private TailscaleState _lastLoggedTailscaleState;
     private ClientDiscoveryEmitter? _discoveryEmitter;
@@ -959,15 +958,6 @@ public sealed class ClientController : IDisposable
         {
             StartPortForwarding();
 
-            // First time the tailnet comes up, play "HI" via sidetone only (no TX).
-            if (!_hiAnnounced)
-            {
-                _hiAnnounced = true;
-                _suppressEdgeSend = true;
-                _keyer.EnqueueText("HI");
-                _ = ClearSuppressAfterTextAsync();
-            }
-
             // If we lost a session and just reconnected, try to re-establish.
             if (_sessionActive && _controlStream is null && !string.IsNullOrEmpty(_lastStationAddress))
             {
@@ -1471,7 +1461,7 @@ public sealed class ClientController : IDisposable
 
     private async Task ClearSuppressAfterTextAsync()
     {
-        // Wait a few seconds for "OK READY" to finish playing via sidetone.
+        // Wait a few seconds for the announcement to finish playing via sidetone.
         await Task.Delay(3000).ConfigureAwait(false);
         // Only resume edge sending if the station is armed.
         _suppressEdgeSend = !_stationArmed;

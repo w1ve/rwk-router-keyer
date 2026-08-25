@@ -1577,6 +1577,7 @@ public partial class MainForm : Form
             _connectButton.ForeColor = Color.White;
             _connectButton.FlatStyle = FlatStyle.Flat;
             _connectButton.Enabled = true;
+            _keySetIndicator.ForeColor = Color.FromArgb(200, 0, 0);
             _flexEnableCheck.Enabled = false;
             _keyerGroup.Enabled = false;
             _portsGroup.Enabled = false;
@@ -2051,6 +2052,12 @@ public partial class MainForm : Form
             _connectButton.ForeColor = SystemColors.ControlText;
             _connectButton.FlatStyle = FlatStyle.Standard;
 
+            // Key indicator turns green when paired and armed
+            _keySetIndicator.ForeColor = _stationArmToggle.Checked ? Color.Green : Color.FromArgb(200, 0, 0);
+
+            // Hide KEYER BUSY label if it was shown from a previous attempt
+            if (_keyerBusyLabel is not null) _keyerBusyLabel.Visible = false;
+
             // Enable Keyer and Inputs panels now that we're paired.
             _keyerGroup.Enabled = true;
             _portsGroup.Enabled = true;
@@ -2091,6 +2098,12 @@ public partial class MainForm : Form
     {
         if (_controller is null) return;
         _controller.SetStationArmed(_stationArmToggle.Checked);
+
+        // Update indicator color: green when armed+paired, red when not armed
+        if (_connectButton.Text == "Unpair") // We're paired
+        {
+            _keySetIndicator.ForeColor = _stationArmToggle.Checked ? Color.Green : Color.FromArgb(200, 0, 0);
+        }
     }
 
     private void OnSetStationKeyClick(object? sender, EventArgs e)

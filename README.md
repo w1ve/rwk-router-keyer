@@ -47,8 +47,7 @@ Version 1.0.4 is a major usability release focused on **preventing operators fro
 - **Keyboard Paddle** -- Global key hook with 7 presets (Left/Right Ctrl, Shift, Z/X, comma/period, F/J, A/L, brackets). Combo disabled when unchecked.
 - **Log Rotation** -- All file logs rotate at 10KB (up to 5 rotated files per log).
 - **Delete Debugging Logs** -- File menu item on both Client and Station deletes all log files.
-- **CW Announcements Sidetone-Only** -- "HI", "OK READY", "AS", "KEYER BUSY" announcements play through sidetone without keying the transmitter.
-- **"HI" on Connect** -- Client plays "HI" via sidetone when Tailscale first connects.
+- **CW Announcements Sidetone-Only** -- "OK READY", "AS", "KEYER BUSY" announcements play through sidetone without keying the transmitter.
 - **Windows Firewall Rules** -- Installer creates inbound allow rules for all three executables.
 
 ### Bug Fixes
