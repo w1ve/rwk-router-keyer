@@ -1046,15 +1046,15 @@ public partial class MainForm : Form
 
     private void EvaluateBindWarning()
     {
-        bool hasNonLoopback = false;
+        var maxExposure = AddressExposure.Loopback;
         bool hasRemoteRig = false;
 
         foreach (DataGridViewRow row in _forwardGrid.Rows)
         {
             if (row.IsNewRow) continue;
             var bind = row.Cells["BindAddress"]?.Value?.ToString() ?? "127.0.0.1";
-            if (bind != "127.0.0.1")
-                hasNonLoopback = true;
+            var exposure = AddressExposureClassifier.Classify(bind);
+            if (exposure > maxExposure) maxExposure = exposure;
 
             var name = row.Cells["RuleName"]?.Value?.ToString() ?? "";
             if (name.Contains("RemoteRig", StringComparison.OrdinalIgnoreCase) ||
@@ -1062,8 +1062,24 @@ public partial class MainForm : Form
                 hasRemoteRig = true;
         }
 
-        // Exposure warning (10.14, 13.15)
-        _bindWarningLabel.Visible = hasNonLoopback;
+        // Exposure warning (10.14, 10.28, 13.15) — differentiated by severity.
+        if (maxExposure == AddressExposure.GlobalUnicast)
+        {
+            _bindWarningLabel.Text = "\u26A0 GLOBAL address detected: this is a globally routable address " +
+                "with no NAT in front of it \u2014 this tunnel path may be reachable from the public internet, " +
+                "not just your LAN, with no authentication of its own.";
+            _bindWarningLabel.Visible = true;
+        }
+        else if (maxExposure == AddressExposure.PrivateOrLinkLocal)
+        {
+            _bindWarningLabel.Text = "\u26A0 Non-loopback bind detected: this exposes an unauthenticated " +
+                "tunnel path into the Station's network to every host on your local network.";
+            _bindWarningLabel.Visible = true;
+        }
+        else
+        {
+            _bindWarningLabel.Visible = false;
+        }
 
         // RemoteRig unverified label (10.18)
         _remoteRigWarningLabel.Visible = hasRemoteRig;
