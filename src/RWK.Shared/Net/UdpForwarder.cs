@@ -132,6 +132,11 @@ public sealed class UdpForwarder : IDisposable
     private UdpSession CreateSession(IPEndPoint sender, CancellationToken ct)
     {
         // Create a new UdpClient for this session. Bind to any available port.
+        // The session socket's address family must match the destination (which is always
+        // the loopback address handed back by the sidecar's outbound-UDP forward). Since
+        // the sidecar IPC hop is always IPv4 loopback (see forward.go), this is correct
+        // as-is. An IPv6 client-side listener still relays correctly because the
+        // sidecar hop to the actual tailnet peer is a separate socket inside the Go process.
         var socket = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
         var session = new UdpSession(sender, socket);
 

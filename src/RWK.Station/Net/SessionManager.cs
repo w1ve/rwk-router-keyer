@@ -120,6 +120,10 @@ public sealed class SessionManager : ISessionManager
                 throw new InvalidOperationException("SessionManager is already started.");
 
             _cts = new CancellationTokenSource();
+            // Loopback-only IPC: the Go sidecar's forwardInbound accepts on the tailnet
+            // side and dials this port over loopback. IPv4 Any is correct here because
+            // the .NET ↔ sidecar IPC always uses IPv4 loopback (127.0.0.1). This listener
+            // never sees non-loopback traffic directly.
             _listener = new TcpListener(IPAddress.Any, controlPort);
             _listener.Start();
             _acceptLoopTask = AcceptLoopAsync(_cts.Token);

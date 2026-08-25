@@ -72,9 +72,19 @@ public record ForwardRule(
     public const string LoopbackAddress = "127.0.0.1";
 
     /// <summary>
-    /// The any-address, which binds every local interface (10.13).
+    /// IPv6 loopback address, reachable only from the Client host itself.
+    /// </summary>
+    public const string LoopbackAddressV6 = "::1";
+
+    /// <summary>
+    /// The any-address, which binds every local IPv4 interface (10.13).
     /// </summary>
     public const string AnyAddress = "0.0.0.0";
+
+    /// <summary>
+    /// The IPv6 any-address, which binds every local IPv6 interface.
+    /// </summary>
+    public const string AnyAddressV6 = "::";
 
     /// <summary>
     /// Gets whether this rule's listener is reachable from hosts other than the Client
@@ -86,8 +96,14 @@ public record ForwardRule(
     /// separate question answered at bind time (10.15).
     /// </remarks>
     public bool IsNonLoopbackBind
-        => !System.Net.IPAddress.TryParse(BindAddress, out System.Net.IPAddress? address)
-           || !System.Net.IPAddress.IsLoopback(address);
+        => BindExposure is not AddressExposure.Loopback;
+
+    /// <summary>
+    /// Classifies the <see cref="BindAddress"/> into its network exposure level.
+    /// Used by the UI to differentiate warning severity (10.14, 10.28).
+    /// </summary>
+    public AddressExposure BindExposure
+        => AddressExposureClassifier.Classify(BindAddress);
 
     /// <summary>
     /// Gets whether this rule is a reverse (Station → Client) forward.
