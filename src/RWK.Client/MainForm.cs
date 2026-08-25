@@ -133,8 +133,8 @@ public partial class MainForm : Form
         _toneLevelSlider.Value = 70;
         _toneLevelValueLabel.Text = "70%";
 
-        // Bind address defaults for forwards
-        _bindAddressColumn.Items.AddRange("127.0.0.1", "0.0.0.0");
+        // Bind address defaults for forwards (IPv4 + IPv6)
+        _bindAddressColumn.Items.AddRange("127.0.0.1", "0.0.0.0", "::1", "::");
 
         // Status strip defaults
         _linkIndicator.Text = "●";
@@ -463,26 +463,10 @@ public partial class MainForm : Form
             }
         }
 
-        // PTT footswitch COM port: populate and wire
-        _pttPortCombo.Items.Clear();
-        _pttPortCombo.Items.Add("(None)");
-        foreach (string port in System.IO.Ports.SerialPort.GetPortNames().OrderBy(p => p.Length).ThenBy(p => p))
-            _pttPortCombo.Items.Add(port);
-        _pttPortCombo.SelectedIndex = 0;
-
-        // Restore persisted PTT port selection
+        // DCD = PTT checkbox: uses DCD pin on the paddle serial port for footswitch
+        _pttDcdCheck.CheckedChanged += OnPttDcdCheckChanged;
         if (config is not null && !string.IsNullOrEmpty(config.PttInputPortName))
-        {
-            int idx = _pttPortCombo.Items.IndexOf(config.PttInputPortName);
-            if (idx >= 0) _pttPortCombo.SelectedIndex = idx;
-        }
-
-        // Restore persisted PTT line selection
-        if (config is not null && config.PttInputLine == "RTS")
-            _pttLineCombo.SelectedIndex = 1; // RTS
-
-        _pttPortCombo.SelectedIndexChanged += OnPttPortChanged;
-        _pttLineCombo.SelectedIndexChanged += OnPttLineChanged;
+            _pttDcdCheck.Checked = true; // Restore persisted state
     }
 
     private void OnPttButtonMouseDown(object? sender, MouseEventArgs e)
@@ -556,32 +540,19 @@ public partial class MainForm : Form
         }
     }
 
-    private void OnPttPortChanged(object? sender, EventArgs e)
+    private void OnPttDcdCheckChanged(object? sender, EventArgs e)
     {
-        string? selected = _pttPortCombo.SelectedItem?.ToString();
-        StopPttFootswitch();
-
-        if (selected is null or "(None)")
+        if (_pttDcdCheck.Checked)
         {
-            _controller?.UpdateConfig(c => c with { PttInputPortName = null });
-            return;
+            // Use DCD pin on the paddle serial port
+            _controller?.UpdateConfig(c => c with { PttInputPortName = "DCD" });
+            _logService.Info("PTT via DCD pin enabled (uses paddle port).");
         }
-
-        _controller?.UpdateConfig(c => c with { PttInputPortName = selected });
-        StartPttFootswitchIfPaired(selected);
-    }
-
-    private void OnPttLineChanged(object? sender, EventArgs e)
-    {
-        string line = _pttLineCombo.SelectedItem?.ToString() ?? "DTR";
-        _controller?.UpdateConfig(c => c with { PttInputLine = line });
-
-        // Restart footswitch with new line setting
-        string? port = _pttPortCombo.SelectedItem?.ToString();
-        if (port is not null and not "(None)")
+        else
         {
             StopPttFootswitch();
-            StartPttFootswitchIfPaired(port);
+            _controller?.UpdateConfig(c => c with { PttInputPortName = null });
+            _logService.Info("PTT via DCD pin disabled.");
         }
     }
 
@@ -589,16 +560,14 @@ public partial class MainForm : Form
     {
         if (!_pttHookEnabledForSession) return; // Only active while paired
 
-        var line = (_pttLineCombo.SelectedItem?.ToString() ?? "DTR") == "RTS"
-            ? IO.PttFootswitchPoller.PttInputLine.CTS
-            : IO.PttFootswitchPoller.PttInputLine.DSR;
-
-        _pttFootswitch = new IO.PttFootswitchPoller(line);
+        // DCD pin is read via DsrHolding on a port where we monitor DCD.
+        // Use DSR line (which reads DCD on many USB-serial adapters).
+        _pttFootswitch = new IO.PttFootswitchPoller(IO.PttFootswitchPoller.PttInputLine.DSR);
         _pttFootswitch.PttStateChanged += OnPttFootswitchStateChanged;
         try
         {
             _pttFootswitch.Start(portName);
-            _logService.Info($"PTT footswitch started on {portName} ({_pttLineCombo.SelectedItem}).");
+            _logService.Info($"PTT footswitch (DCD) started on {portName}.");
         }
         catch (Exception ex)
         {
@@ -645,10 +614,13 @@ public partial class MainForm : Form
         if (_pttHotKeyHook?.HasHotKey == true && !_pttHotKeyHook.IsRunning)
             _pttHotKeyHook.Start();
 
-        // Start footswitch if a port is configured
-        string? port = _pttPortCombo.SelectedItem?.ToString();
-        if (port is not null and not "(None)")
-            StartPttFootswitchIfPaired(port);
+        // Start DCD footswitch on paddle port if enabled
+        if (_pttDcdCheck.Checked)
+        {
+            string? paddlePort = _paddlePortCombo.SelectedItem?.ToString();
+            if (paddlePort is not null and not "(None)")
+                StartPttFootswitchIfPaired(paddlePort);
+        }
     }
 
     /// <summary>

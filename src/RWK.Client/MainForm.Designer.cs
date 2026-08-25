@@ -88,6 +88,7 @@ partial class MainForm
     private ComboBox _pttPortCombo = null!;
     private Label _pttLineCaptionLabel = null!;
     private ComboBox _pttLineCombo = null!;
+    private CheckBox _pttDcdCheck = null!;
 
     // === Port Forwarding (13.12, 13.14, 13.15) ===
     private GroupBox _forwardGroup = null!;
@@ -473,17 +474,16 @@ partial class MainForm
 
         var portsInnerLayout = new TableLayoutPanel();
         portsInnerLayout.Dock = DockStyle.Top;
-        portsInnerLayout.Height = 172;
+        portsInnerLayout.Height = 142;
         portsInnerLayout.ColumnCount = 2;
-        portsInnerLayout.RowCount = 6;
+        portsInnerLayout.RowCount = 5;
         portsInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72F));
         portsInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // Paddle port
         portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // WinKeyer port
         portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));  // WK mode radios
         portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // Loopback test button
-        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // PTT COM port
-        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // PTT PIN (DTR/RTS)
+        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // DCD = PTT checkbox
         portsInnerLayout.Name = "portsInnerLayout";
 
         _paddlePortCaptionLabel.Text = "Paddle:";
@@ -545,28 +545,17 @@ partial class MainForm
         _wkDahDot = new Label { Visible = false, Name = "_wkDahDot" };
         _wkSkDot = new Label { Visible = false, Name = "_wkSkDot" };
 
-        // PTT footswitch COM port
-        _pttPortCaptionLabel.Text = "PTT In:";
-        _pttPortCaptionLabel.AutoSize = true;
-        _pttPortCaptionLabel.Dock = DockStyle.Fill;
-        _pttPortCaptionLabel.TextAlign = ContentAlignment.MiddleLeft;
-        _pttPortCaptionLabel.Name = "_pttPortCaptionLabel";
+        // PTT via DCD pin on paddle port
+        _pttPortCaptionLabel = new Label { Visible = false, Name = "_pttPortCaptionLabel" };
+        _pttPortCombo = new ComboBox { Visible = false, Name = "_pttPortCombo" };
+        _pttLineCaptionLabel = new Label { Visible = false, Name = "_pttLineCaptionLabel" };
+        _pttLineCombo = new ComboBox { Visible = false, Name = "_pttLineCombo" };
 
-        _pttPortCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _pttPortCombo.Dock = DockStyle.Fill;
-        _pttPortCombo.Name = "_pttPortCombo";
-
-        _pttLineCaptionLabel.Text = "PTT PIN:";
-        _pttLineCaptionLabel.AutoSize = true;
-        _pttLineCaptionLabel.Dock = DockStyle.Fill;
-        _pttLineCaptionLabel.TextAlign = ContentAlignment.TopLeft;
-        _pttLineCaptionLabel.Name = "_pttLineCaptionLabel";
-
-        _pttLineCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _pttLineCombo.Dock = DockStyle.Fill;
-        _pttLineCombo.Items.AddRange(new object[] { "DTR", "RTS" });
-        _pttLineCombo.SelectedIndex = 0;
-        _pttLineCombo.Name = "_pttLineCombo";
+        _pttDcdCheck = new CheckBox();
+        _pttDcdCheck.Text = "DCD = PTT (footswitch)";
+        _pttDcdCheck.AutoSize = true;
+        _pttDcdCheck.Dock = DockStyle.Fill;
+        _pttDcdCheck.Name = "_pttDcdCheck";
 
         portsInnerLayout.Controls.Add(_paddlePortCaptionLabel, 0, 0);
         portsInnerLayout.Controls.Add(_paddlePortCombo, 1, 0);
@@ -576,10 +565,8 @@ partial class MainForm
         portsInnerLayout.Controls.Add(wkModePanel, 0, 2);
         portsInnerLayout.SetColumnSpan(_wkLoopbackTestBtn, 2);
         portsInnerLayout.Controls.Add(_wkLoopbackTestBtn, 0, 3);
-        portsInnerLayout.Controls.Add(_pttPortCaptionLabel, 0, 4);
-        portsInnerLayout.Controls.Add(_pttPortCombo, 1, 4);
-        portsInnerLayout.Controls.Add(_pttLineCaptionLabel, 0, 5);
-        portsInnerLayout.Controls.Add(_pttLineCombo, 1, 5);
+        portsInnerLayout.SetColumnSpan(_pttDcdCheck, 2);
+        portsInnerLayout.Controls.Add(_pttDcdCheck, 0, 4);
 
         // PTT momentary button (big, bold) — below the table layout
         _pttButton = new Button();
@@ -1114,7 +1101,7 @@ partial class MainForm
         Name = "MainForm";
         StartPosition = FormStartPosition.CenterScreen;
         Text = "RWK Client";
-        MinimumSize = new Size(700, 400);
+        MinimumSize = new Size(800, 500);
         WindowState = FormWindowState.Normal;
 
         // Form icon
