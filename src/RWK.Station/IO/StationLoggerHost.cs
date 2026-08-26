@@ -242,6 +242,15 @@ public sealed class StationLoggerHost : IDisposable
         // Status 0xC4 = bits 7:6 set (status marker) + bit 2 (buffer sending).
         WriteToPort(new[] { (byte)0xC4 });
 
+        // Drain the protocol's TextBuffer immediately — we use the pump's own queue
+        // for actual CW generation. Keeping TextBuffer populated causes GetStatusByte()
+        // to permanently report "buffer has data" which hangs N1MM on status polls.
+        if (_protocol is not null)
+        {
+            while (_protocol.State.TextBuffer.Count > 0)
+                _protocol.State.TextBuffer.Dequeue();
+        }
+
         // Signal sending started on first character.
         if (!_sending)
         {
@@ -327,9 +336,26 @@ public sealed class StationLoggerHost : IDisposable
     {
         if (!_running) return;
 
-        // Character finished keying. Send "idle" status so N1MM knows the buffer
-        // has space (this is what allows the next character to be sent).
-        WriteToPort(new[] { (byte)0xC0 });
+        // Character finished keying. Check if there's more text pending.
+        if (_pump.HasPendingText)
+        {
+            // More text queued — send per-character "idle" status (0xC0) to indicate
+            // space in the buffer, but the keyer is still working.
+            WriteToPort(new[] { (byte)0xC0 });
+        }
+        else
+        {
+            // All text has been sent. Transition protocol buffer state to Idle
+            // so that ReqStatusCmd (0x15) polls return "buffer empty".
+            if (_protocol is not null)
+                _protocol.State.BufferState = WinKeyerEmulator.Core.Protocol.BufferState.Idle;
+
+            // Send definitive "buffer empty, keyer idle" status (0xC0).
+            // This is the signal N1MM waits for before sending the next message.
+            WriteToPort(new[] { (byte)0xC0 });
+
+            LogStation("BUFFER EMPTY — all text sent, idle status sent to logger.");
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -382,9 +408,10 @@ public sealed class StationLoggerHost : IDisposable
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Keyer thread died — ensure key is up.
+            // Keyer thread died — log the error and ensure key is up.
+            LogStation($"KEYER THREAD EXCEPTION: {ex.Message}\n{ex.StackTrace}");
         }
         finally
         {
