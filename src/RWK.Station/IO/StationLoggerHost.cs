@@ -373,13 +373,25 @@ public sealed class StationLoggerHost : IDisposable
         if (!_running) return;
 
         // If we're not actively keying and the pump has nothing queued, we're done.
-        if (!_keying && _sending)
+        if (!_keying && !_pump.HasPendingText)
         {
-            // Drop PTT after tail time.
-            _pttOutput?.PttUp();
+            // Safety net: always send a definitive "buffer empty, idle" status (0xC0)
+            // to N1MM and reset the protocol buffer state. This guarantees N1MM is
+            // never left waiting for a status byte, even if a per-character status
+            // was lost or the CharacterCompleted event didn't fire for the last char.
+            if (_protocol is not null)
+                _protocol.State.BufferState = WinKeyerEmulator.Core.Protocol.BufferState.Idle;
+            WriteToPort(new[] { (byte)0xC0 });
 
-            _sending = false;
-            SendingCompleted?.Invoke(this, EventArgs.Empty);
+            if (_sending)
+            {
+                // Drop PTT after tail time.
+                _pttOutput?.PttUp();
+
+                _sending = false;
+                SendingCompleted?.Invoke(this, EventArgs.Empty);
+                LogStation("IDLE TIMEOUT — safety idle status sent to logger.");
+            }
         }
     }
 
@@ -492,20 +504,29 @@ public sealed class StationLoggerHost : IDisposable
         _pttOutput?.PttUp();
     }
 
+    private readonly object _writeLock = new();
+
     private void WriteToPort(byte[] data)
     {
-        try
+        // Serialize writes: the reader thread (echo + busy status) and the keyer
+        // thread (per-character idle status) both write to this port. Concurrent
+        // port.Write() calls interleave bytes and corrupt the WK2 status stream,
+        // which hangs N1MM (it waits for a status byte that never arrives cleanly).
+        lock (_writeLock)
         {
-            var port = _port;
-            if (port is not null && port.IsOpen)
+            try
             {
-                port.Write(data, 0, data.Length);
+                var port = _port;
+                if (port is not null && port.IsOpen)
+                {
+                    port.Write(data, 0, data.Length);
+                }
             }
-        }
-        catch (Exception ex)
-        {
-            // Best effort — don't let a write failure crash the host.
-            LogStation($"Write error: {ex.Message}");
+            catch (Exception ex)
+            {
+                // Best effort — don't let a write failure crash the host.
+                LogStation($"Write error: {ex.Message}");
+            }
         }
     }
 
