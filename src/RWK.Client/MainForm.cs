@@ -133,8 +133,7 @@ public partial class MainForm : Form
         _toneLevelSlider.Value = 70;
         _toneLevelValueLabel.Text = "70%";
 
-        // Bind address defaults for forwards (IPv4 + IPv6)
-        _bindAddressColumn.Items.AddRange("127.0.0.1", "0.0.0.0", "::1", "::");
+        // Bind address presets are built into the DataGridViewIpAddressColumn
 
         // Status strip defaults
         _linkIndicator.Text = "●";
@@ -148,7 +147,7 @@ public partial class MainForm : Form
         _connectButton.Click += OnConnectClick;
 
         // Pair button validation: enable only when IP is valid-looking and key is set
-        _stationAddressTextBox.TextChanged += (_, _) => ValidatePairButton();
+        _stationAddressTextBox.ValidationChanged += (_, _) => ValidatePairButton();
 
         // Station ARM toggle
         _stationArmToggle.CheckedChanged += OnStationArmToggleChanged;
@@ -2122,9 +2121,8 @@ public partial class MainForm : Form
 
     private void ValidatePairButton()
     {
-        string addr = _stationAddressTextBox.Text.Trim();
         bool hasKey = _keySetIndicator.Visible;
-        bool validIp = !string.IsNullOrEmpty(addr) && System.Net.IPAddress.TryParse(addr, out _);
+        bool validIp = _stationAddressTextBox.IsValid;
         _connectButton.Enabled = validIp && hasKey;
     }
 

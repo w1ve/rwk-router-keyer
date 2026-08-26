@@ -1,4 +1,45 @@
-# RWK Changelog — cloudflare-relay Branch
+# RWK Changelog
+
+---
+
+## v1.0.5 — IPv6 Dual-Stack Support
+
+### Features
+- **IPv6 port forwarding** — Forward rules now accept IPv6 bind addresses and Station targets
+- **Go sidecar dual-listener** — Inbound UDP binds on both IPv4 and IPv6 tailnet addresses
+- **AddressExposure classifier** — New enum (Loopback, PrivateOrLinkLocal, GlobalUnicast, Invalid) for address risk assessment
+- **Two-tier security warning** — LAN exposure vs global-unicast exposure (stronger wording for internet-reachable IPv6 binds)
+- **IpAddressTextBox control** — Custom WinForms control with v4/v6 mode toggle and live validation
+- **DataGridViewIpAddressColumn** — Grid column with red-background-on-invalid validation
+- **PTT DCD checkbox** — Replaces separate PTT COM port; monitors DCD pin on paddle serial port
+- **Auth Wizard stale-URL fix** — Wizard advances after ~18s if sidecar lags behind Tailscale control plane
+
+### Bug Fixes
+- Tailscale Auth Wizard stuck on "Waiting for browser login..." when sidecar reports stale authUrl
+- `::1` (IPv6 loopback) no longer falsely triggers the bind exposure warning
+- Go sidecar: `ResolveUDPAddr("udp4", ...)` rejected IPv6 targets — now family-aware
+- Go sidecar: `udpForward.Close()` could hang 15s waiting for scavenger tick — added done channel
+- DPI clipping: form MinimumSize increased to 800x500
+
+### Documentation
+- ADR 0002: IPv6 dual-stack decision and boundaries
+- ForwardRule: added `AnyAddressV6`, `LoopbackAddressV6` constants, `BindExposure` property
+
+### Tests
+- 12 new Go forward tests (TCP+UDP, IPv4+IPv6, mixed-family)
+- 44 new AddressExposure tests
+- 28 new IpAddressValidator tests
+- Integration test verifying tsnet dual-stack behavior (build tag `integration`)
+
+---
+
+## v1.0.4 — SSB PTT, CW Macros, Wizards, UI Safety
+
+See [GitHub Release v1.0.4](https://github.com/w1ve/rwk-router-keyer/releases/tag/v1.0.4) for full notes.
+
+---
+
+## Prior History (cloudflare-relay Branch)
 
 All changes and improvements since the original `main` branch (UDP-only release).
 

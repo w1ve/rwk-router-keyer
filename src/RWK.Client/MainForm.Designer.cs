@@ -99,7 +99,7 @@ partial class MainForm
     private DataGridViewComboBoxColumn _protocolColumn = null!;
     private DataGridViewTextBoxColumn _clientPortColumn = null!;
     private DataGridViewTextBoxColumn _stationPortColumn = null!;
-    private DataGridViewComboBoxColumn _bindAddressColumn = null!;
+    private Controls.DataGridViewIpAddressColumn _bindAddressColumn = null!;
     private DataGridViewTextBoxColumn _stationTargetColumn = null!;
     private DataGridViewTextBoxColumn _statusColumn = null!;
     private Button _addRuleBtn = null!;
@@ -134,7 +134,7 @@ partial class MainForm
     private ComboBox _logLevelCombo = null!;
     private TextBox _logTextBox = null!;
     private Label _stationAddressCaptionLabel = null!;
-    private TextBox _stationAddressTextBox = null!;
+    private Controls.IpAddressTextBox _stationAddressTextBox = null!;
     private Button _connectButton = null!;
     private CheckBox _stationArmToggle = null!;
     private Button _setStationKeyBtn = null!;
@@ -611,7 +611,7 @@ partial class MainForm
         _protocolColumn = new DataGridViewComboBoxColumn();
         _clientPortColumn = new DataGridViewTextBoxColumn();
         _stationPortColumn = new DataGridViewTextBoxColumn();
-        _bindAddressColumn = new DataGridViewComboBoxColumn();
+        _bindAddressColumn = new Controls.DataGridViewIpAddressColumn();
         _statusColumn = new DataGridViewTextBoxColumn();
         _addRuleBtn = new Button();
         _removeRuleBtn = new Button();
@@ -886,11 +886,11 @@ partial class MainForm
             Name = "_stationAddressCaptionLabel"
         };
 
-        _stationAddressTextBox = new TextBox
+        _stationAddressTextBox = new Controls.IpAddressTextBox
         {
             Location = new Point(185, 4),
-            Size = new Size(160, 23),
-            PlaceholderText = "100.x.x.x",
+            Size = new Size(200, 23),
+            PlaceholderText = "100.x.x.x or fd7a:...",
             Name = "_stationAddressTextBox"
         };
 

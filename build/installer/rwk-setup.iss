@@ -3,7 +3,7 @@
 ; Per-user install to {localappdata} — no admin rights required.
 
 #define MyAppName "RWK Router/Keyer"
-#define MyAppVersion "1.0.4"
+#define MyAppVersion "1.0.5"
 #define MyAppPublisher "Gerry Hull, W1VE"
 #define MyAppURL "https://github.com/w1ve/rwk-router-keyer"
 
@@ -15,7 +15,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppCopyright=Copyright (c) 2026 Gerry Hull, W1VE. MIT License.
-VersionInfoVersion=1.0.4.0
+VersionInfoVersion=1.0.5.0
 VersionInfoCompany=W1VE
 VersionInfoCopyright=Copyright (c) 2026 Gerry Hull, W1VE
 VersionInfoProductName=RWK Router/Keyer
