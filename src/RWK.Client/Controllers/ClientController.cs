@@ -1123,6 +1123,23 @@ public sealed class ClientController : IDisposable
     }
 
     /// <summary>
+    /// Disconnects the current session (if any). Closes the control stream so the
+    /// Station detects EOF and cleans up. The session-ended event fires normally.
+    /// </summary>
+    public void Disconnect()
+    {
+        if (!_sessionActive) return;
+        _sessionActive = false;
+        StopHeartbeat();
+        _reconnectTimer?.Dispose();
+        _reconnectTimer = null;
+        _controlStream?.Dispose();
+        _controlStream = null;
+        _log?.Info("Disconnected by user (station selection changed).");
+        SessionStatusChanged?.Invoke(this, "Disconnected.");
+    }
+
+    /// <summary>
     /// Initiates a control-channel connection to the Station at the given Tailscale address.
     /// Performs the HMAC challenge/response handshake (11.2-11.4).
     /// Persists the address in config for reconnection on next launch.

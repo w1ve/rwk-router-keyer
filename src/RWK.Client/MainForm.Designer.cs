@@ -895,7 +895,7 @@ partial class MainForm
         };
         _stationCombo.Items.Add("(None)");
         _stationCombo.SelectedIndex = 0;
-        _stationCombo.SelectedIndexChanged += (_, _) => ValidatePairButton();
+        _stationCombo.SelectedIndexChanged += OnStationComboChanged;
 
         _importStationBtn = new Button
         {

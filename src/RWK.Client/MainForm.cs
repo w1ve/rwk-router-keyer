@@ -2157,6 +2157,26 @@ public partial class MainForm : Form
         _keySetIndicator.Visible = stationSelected;
     }
 
+    private void OnStationComboChanged(object? sender, EventArgs e)
+    {
+        // If currently paired and the user changes the station selection, unpair first.
+        if (_connectButton.Text == "Unpair" && _controller is not null)
+        {
+            _controller.Disconnect();
+            _connectButton.Text = "Pair with Station";
+            _connectButton.BackColor = Color.FromArgb(200, 40, 40);
+            _connectButton.ForeColor = Color.White;
+            _connectButton.FlatStyle = FlatStyle.Flat;
+            _keySetIndicator.ForeColor = Color.FromArgb(200, 0, 0);
+            _keyerGroup.Enabled = false;
+            _portsGroup.Enabled = false;
+            _flexEnableCheck.Enabled = false;
+            DisablePttForSession();
+            _logService.Info("Unpaired (station selection changed).");
+        }
+        ValidatePairButton();
+    }
+
     private static string? ShowInputDialog(string prompt, string title, string defaultValue)
     {
         var form = new Form
