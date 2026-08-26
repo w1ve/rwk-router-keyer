@@ -80,6 +80,7 @@ partial class MainForm
     private RadioButton _wkModeLoggerRadio = null!;
     private RadioButton _wkModeHardwareRadio = null!;
     private Label _wkHardwareStatus = null!;
+    private Label _wkModeMuteIcon = null!;
     private Button _wkLoopbackTestBtn = null!;
     private Label _wkDitDot = null!;
     private Label _wkDahDot = null!;
@@ -522,6 +523,18 @@ partial class MainForm
         _wkModeHardwareRadio.Location = new Point(95, 2);
         _wkModeHardwareRadio.Name = "_wkModeHardwareRadio";
 
+        // Muted speaker icon shown next to Hardware WinKey when that mode is active
+        // (the hardware chip provides its own sidetone, so the local one is muted).
+        _wkModeMuteIcon = new Label();
+        _wkModeMuteIcon.Text = "\U0001F507"; // muted speaker
+        _wkModeMuteIcon.Font = new Font("Segoe UI Emoji", 9F);
+        _wkModeMuteIcon.AutoSize = true;
+        _wkModeMuteIcon.Location = new Point(205, 3);
+        _wkModeMuteIcon.Name = "_wkModeMuteIcon";
+        _wkModeMuteIcon.Visible = false;
+        var muteTooltip = new ToolTip();
+        muteTooltip.SetToolTip(_wkModeMuteIcon, "Local sidetone muted — the hardware WinKeyer provides its own sidetone.");
+
         _wkHardwareStatus = new Label();
         _wkHardwareStatus.Text = "";
         _wkHardwareStatus.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
@@ -531,7 +544,7 @@ partial class MainForm
         _wkHardwareStatus.Name = "_wkHardwareStatus";
         _wkHardwareStatus.Visible = false;
 
-        wkModePanel.Controls.AddRange(new Control[] { _wkModeLoggerRadio, _wkModeHardwareRadio, _wkHardwareStatus });
+        wkModePanel.Controls.AddRange(new Control[] { _wkModeLoggerRadio, _wkModeHardwareRadio, _wkModeMuteIcon, _wkHardwareStatus });
 
         // Loopback test button
         _wkLoopbackTestBtn.Text = "WinKeyer Loopback Test";

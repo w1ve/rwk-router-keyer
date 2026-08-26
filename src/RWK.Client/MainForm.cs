@@ -190,9 +190,8 @@ public partial class MainForm : Form
         // PTT button, hotkey, footswitch
         WirePttControls();
 
-        // Keyer and Inputs panels disabled until paired
-        _keyerGroup.Enabled = false;
-        _portsGroup.Enabled = false;
+        // Keyer and Inputs panels stay enabled so the operator can test the keyer
+        // locally (sidetone only) even before pairing with a Station.
 
         // PageUp/PageDn speed adjustment (global within the app)
         KeyPreview = true;
@@ -1346,7 +1345,7 @@ public partial class MainForm : Form
             {
                 _wkModeHardwareRadio.Checked = true;
                 _controller.SetWinKeyerMode(RWK.Shared.IO.WinKeyerMode.HardwareWinKey);
-                _sidetoneMuteLabel.Visible = true;
+                _wkModeMuteIcon.Visible = true;
             }
             else
             {
@@ -1612,8 +1611,6 @@ public partial class MainForm : Form
             _connectButton.Enabled = true;
             _keySetIndicator.ForeColor = Color.FromArgb(200, 0, 0);
             _flexEnableCheck.Enabled = false;
-            _keyerGroup.Enabled = false;
-            _portsGroup.Enabled = false;
             DisablePttForSession();
         }
     }
@@ -2094,9 +2091,7 @@ public partial class MainForm : Form
             // Hide KEYER BUSY label if it was shown from a previous attempt
             if (_keyerBusyLabel is not null) _keyerBusyLabel.Visible = false;
 
-            // Enable Keyer and Inputs panels now that we're paired.
-            _keyerGroup.Enabled = true;
-            _portsGroup.Enabled = true;
+            // (Keyer and Inputs panels stay enabled at all times for local testing.)
 
             // Enable FlexRadio discovery checkbox now that session is active.
             _flexEnableCheck.Enabled = true;
@@ -2204,8 +2199,6 @@ public partial class MainForm : Form
             _connectButton.ForeColor = Color.White;
             _connectButton.FlatStyle = FlatStyle.Flat;
             _keySetIndicator.ForeColor = Color.FromArgb(200, 0, 0);
-            _keyerGroup.Enabled = false;
-            _portsGroup.Enabled = false;
             _flexEnableCheck.Enabled = false;
             DisablePttForSession();
             _logService.Info("Unpaired (station selection changed).");
@@ -2375,9 +2368,10 @@ public partial class MainForm : Form
         _wkHardwareStatus.Visible = false;
         _wkHardwareStatus.Text = "";
 
-        // Show/hide sidetone mute indicator.
+        // Show/hide sidetone mute indicator — compact icon next to the radio button.
         bool isHardwareMode = _wkModeHardwareRadio.Checked;
-        _sidetoneMuteLabel.Visible = isHardwareMode;
+        _wkModeMuteIcon.Visible = isHardwareMode;
+        _sidetoneMuteLabel.Visible = false; // superseded by the inline icon
 
         var mode = isHardwareMode ? RWK.Shared.IO.WinKeyerMode.HardwareWinKey : RWK.Shared.IO.WinKeyerMode.LoggerApp;
         _controller.SetWinKeyerMode(mode);
