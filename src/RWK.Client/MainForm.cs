@@ -132,6 +132,7 @@ public partial class MainForm : Form
         _toneFreqValueLabel.Text = "600 Hz";
         _toneLevelSlider.Value = 70;
         _toneLevelValueLabel.Text = "70%";
+        _audioDeviceCombo.SelectedIndexChanged += OnAudioDeviceComboChanged;
 
         // Bind address presets are built into the DataGridViewIpAddressColumn
 
@@ -660,6 +661,41 @@ public partial class MainForm : Form
     {
         _toneFreqValueLabel.Text = $"{_toneFreqSlider.Value} Hz";
         _controller?.SetToneFrequency(_toneFreqSlider.Value);
+    }
+
+    private void OnAudioDeviceComboChanged(object? sender, EventArgs e)
+    {
+        if (_controller is null) return;
+        string? selected = _audioDeviceCombo.SelectedItem?.ToString();
+        if (selected is null or "(Default Output)") 
+        {
+            _controller.SetSidetoneDevice(null);
+            _logService.Info("Sidetone device: (Default Output)");
+            return;
+        }
+
+        // Look up the MMDevice ID from the friendly name
+        try
+        {
+            using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+            var devices = enumerator.EnumerateAudioEndPoints(
+                NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.DeviceState.Active);
+            var match = devices.FirstOrDefault(d => d.FriendlyName == selected);
+            if (match is not null)
+            {
+                _controller.SetSidetoneDevice(match.ID);
+                _logService.Info($"Sidetone device changed: {selected}");
+            }
+            else
+            {
+                _controller.SetSidetoneDevice(null);
+                _logService.Info($"Sidetone device '{selected}' not found, using default.");
+            }
+        }
+        catch
+        {
+            _controller.SetSidetoneDevice(null);
+        }
     }
 
     private void OnToneLevelSliderScroll(object? sender, EventArgs e)

@@ -408,14 +408,14 @@ partial class MainForm
         _toneLevelCaptionLabel.Text = "Volume";
         _toneLevelCaptionLabel.Font = new Font("Segoe UI", 8.5F);
         _toneLevelCaptionLabel.AutoSize = true;
-        _toneLevelCaptionLabel.Location = new Point(8, 124);
+        _toneLevelCaptionLabel.Location = new Point(8, 132);
         _toneLevelCaptionLabel.Name = "_toneLevelCaptionLabel";
 
         _toneLevelValueLabel.Text = "70%";
         _toneLevelValueLabel.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
         _toneLevelValueLabel.AutoSize = false;
         _toneLevelValueLabel.Size = new Size(180, 20);
-        _toneLevelValueLabel.Location = new Point(30, 140);
+        _toneLevelValueLabel.Location = new Point(30, 148);
         _toneLevelValueLabel.TextAlign = ContentAlignment.MiddleCenter;
         _toneLevelValueLabel.Name = "_toneLevelValueLabel";
 

@@ -633,6 +633,14 @@ public sealed class ClientController : IDisposable
         _configStore.TrySave(_config);
     }
 
+    /// <summary>Updates the sidetone audio device. Re-initializes the engine on the new device.</summary>
+    public void SetSidetoneDevice(string? deviceId)
+    {
+        _config = _config with { Sidetone = _config.Sidetone with { DeviceId = deviceId } };
+        _sidetone.Initialize(deviceId);
+        _configStore.TrySave(_config);
+    }
+
     /// <summary>
     /// Sets the Station armed state from the Client side. When disarmed, edge frames
     /// are suppressed so the Station does not key the transmitter. This allows the
