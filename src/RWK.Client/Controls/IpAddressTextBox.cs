@@ -9,23 +9,24 @@
  */
 using System.ComponentModel;
 using System.Net;
+using System.Net.Sockets;
 
 namespace RWK.Client.Controls;
 
 /// <summary>
-/// A TextBox that live-validates IPv4 and IPv6 address input with a v4/v6 mode toggle.
-/// Shows invalid state visually (red background + tooltip with reason).
-/// Exposes <see cref="IsValid"/> and <see cref="TryGetAddress"/> for callers.
+/// A structured IP address input control with dotted-octet notation for IPv4
+/// (four octet fields separated by dots) and colon-notation for IPv6 (eight
+/// hextet fields separated by colons, with :: shorthand support).
+/// A dropdown on the right selects between v4/v6/both modes.
 /// </summary>
-/// <remarks>
-/// The toggle switch on the right side of the control selects between IPv4-only, IPv6-only,
-/// or Both modes. When in a restricted mode, addresses of the wrong family are rejected with
-/// a clear error message.
-/// </remarks>
 public sealed class IpAddressTextBox : UserControl
 {
-    private readonly TextBox _textBox;
+    private readonly TextBox[] _v4Octets = new TextBox[4];
+    private readonly Label[] _v4Dots = new Label[3];
+    private readonly TextBox _v6TextBox;
     private readonly ComboBox _modeCombo;
+    private readonly Panel _v4Panel;
+    private readonly Panel _v6Panel;
     private readonly ToolTip _toolTip;
 
     private static readonly Color ErrorBackColor = Color.FromArgb(255, 230, 230);
@@ -34,12 +35,12 @@ public sealed class IpAddressTextBox : UserControl
     private IpAddressMode _mode = IpAddressMode.Both;
     private IPAddress? _parsedAddress;
     private bool _isValid;
-    private string? _errorMessage;
+    private bool _suppressEvents;
 
-    /// <summary>Fired when the validation state changes.</summary>
+    /// <summary>Fired when the validation state or address changes.</summary>
     public event EventHandler? ValidationChanged;
 
-    /// <summary>Whether the current text is a valid IP address for the selected mode.</summary>
+    /// <summary>Whether the current input is a valid IP address for the selected mode.</summary>
     [Browsable(false)]
     public bool IsValid => _isValid;
 
@@ -56,31 +57,28 @@ public sealed class IpAddressTextBox : UserControl
         {
             _mode = value;
             _modeCombo.SelectedIndex = (int)value;
+            UpdatePanelVisibility();
             Revalidate();
         }
     }
 
-    /// <summary>Gets or sets the IP address text.</summary>
+    /// <summary>Gets or sets the IP address text (canonical form).</summary>
     [Browsable(true)]
     public override string Text
     {
-        get => _textBox.Text;
-        set => _textBox.Text = value;
+        get => GetAddressString();
+        set => SetAddressString(value);
     }
 
-    /// <summary>Gets or sets placeholder text shown when the control is empty.</summary>
+    /// <summary>Gets or sets placeholder text (only applies to the v6 free-form box).</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string PlaceholderText
     {
-        get => _textBox.PlaceholderText;
-        set => _textBox.PlaceholderText = value;
+        get => _v6TextBox.PlaceholderText;
+        set => _v6TextBox.PlaceholderText = value;
     }
 
-    /// <summary>
-    /// Attempts to get the parsed IP address.
-    /// </summary>
-    /// <param name="address">The parsed address if valid.</param>
-    /// <returns>True if valid.</returns>
+    /// <summary>Attempts to get the parsed IP address.</summary>
     public bool TryGetAddress(out IPAddress? address)
     {
         address = _parsedAddress;
@@ -91,91 +89,274 @@ public sealed class IpAddressTextBox : UserControl
     {
         _toolTip = new ToolTip { InitialDelay = 200, ReshowDelay = 100 };
 
+        // Mode dropdown
         _modeCombo = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
             Items = { "v4/v6", "v4", "v6" },
             SelectedIndex = 0,
-            Width = 48,
+            Width = 50,
             Dock = DockStyle.Right,
             Font = new Font("Segoe UI", 7.5F),
         };
         _modeCombo.SelectedIndexChanged += (_, _) =>
         {
             _mode = (IpAddressMode)_modeCombo.SelectedIndex;
+            UpdatePanelVisibility();
             Revalidate();
         };
 
-        _textBox = new TextBox
+        // IPv4 panel: 4 octet text boxes with dots between them
+        _v4Panel = new Panel { Dock = DockStyle.Fill, BackColor = NormalBackColor };
+        for (int i = 0; i < 4; i++)
+        {
+            _v4Octets[i] = new TextBox
+            {
+                Width = 36,
+                MaxLength = 3,
+                TextAlign = HorizontalAlignment.Center,
+                BorderStyle = BorderStyle.None,
+                Font = new Font("Consolas", 9F),
+                Name = $"_octet{i}"
+            };
+            _v4Octets[i].TextChanged += (_, _) => Revalidate();
+            _v4Octets[i].KeyPress += OnOctetKeyPress;
+            _v4Octets[i].KeyDown += OnOctetKeyDown;
+
+            if (i < 3)
+            {
+                _v4Dots[i] = new Label
+                {
+                    Text = ".",
+                    AutoSize = false,
+                    Width = 8,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    Font = new Font("Consolas", 9F, FontStyle.Bold),
+                };
+            }
+        }
+
+        // Layout the IPv4 panel
+        int x = 2;
+        for (int i = 0; i < 4; i++)
+        {
+            _v4Octets[i].Location = new Point(x, 2);
+            _v4Panel.Controls.Add(_v4Octets[i]);
+            x += _v4Octets[i].Width;
+            if (i < 3)
+            {
+                _v4Dots[i].Location = new Point(x, 2);
+                _v4Dots[i].Height = _v4Octets[i].Height;
+                _v4Panel.Controls.Add(_v4Dots[i]);
+                x += _v4Dots[i].Width;
+            }
+        }
+
+        // IPv6 panel: free-form text box with colon notation (too many fields for individual boxes)
+        _v6Panel = new Panel { Dock = DockStyle.Fill, BackColor = NormalBackColor, Visible = false };
+        _v6TextBox = new TextBox
         {
             Dock = DockStyle.Fill,
             BorderStyle = BorderStyle.None,
+            Font = new Font("Consolas", 9F),
+            PlaceholderText = "e.g. fd7a:115c:a1e0::1",
         };
-        _textBox.TextChanged += (_, _) => Revalidate();
+        _v6TextBox.TextChanged += (_, _) => Revalidate();
+        _v6Panel.Controls.Add(_v6TextBox);
 
-        // Layout: textbox fills space, mode combo on the right
+        // Assemble
         BorderStyle = BorderStyle.FixedSingle;
         BackColor = NormalBackColor;
-        Height = _textBox.PreferredHeight + 2;
-        Controls.Add(_textBox);
+        Height = 23;
+        Controls.Add(_v4Panel);
+        Controls.Add(_v6Panel);
         Controls.Add(_modeCombo);
 
-        // Propagate focus
-        GotFocus += (_, _) => _textBox.Focus();
+        GotFocus += (_, _) =>
+        {
+            if (_v4Panel.Visible) _v4Octets[0].Focus();
+            else _v6TextBox.Focus();
+        };
     }
 
-    /// <summary>
-    /// Sets the text without triggering validation events (for initialization).
-    /// </summary>
-    public void SetTextQuiet(string text)
+    private void UpdatePanelVisibility()
     {
-        _textBox.TextChanged -= OnTextChanged;
-        _textBox.Text = text;
-        _textBox.TextChanged += OnTextChanged;
-        Revalidate();
+        switch (_mode)
+        {
+            case IpAddressMode.IPv4Only:
+                _v4Panel.Visible = true;
+                _v6Panel.Visible = false;
+                break;
+            case IpAddressMode.IPv6Only:
+                _v4Panel.Visible = false;
+                _v6Panel.Visible = true;
+                break;
+            case IpAddressMode.Both:
+            default:
+                // Show v4 panel by default; if current text looks like IPv6, show v6
+                if (_parsedAddress?.AddressFamily == AddressFamily.InterNetworkV6)
+                {
+                    _v4Panel.Visible = false;
+                    _v6Panel.Visible = true;
+                }
+                else
+                {
+                    _v4Panel.Visible = true;
+                    _v6Panel.Visible = false;
+                }
+                break;
+        }
     }
 
-    private void OnTextChanged(object? sender, EventArgs e) => Revalidate();
+    private void OnOctetKeyPress(object? sender, KeyPressEventArgs e)
+    {
+        // Only allow digits and control characters in octet fields
+        if (!char.IsDigit(e.KeyChar) && !char.IsControl(e.KeyChar) && e.KeyChar != '.')
+        {
+            e.Handled = true;
+            return;
+        }
+
+        // Period advances to next octet
+        if (e.KeyChar == '.')
+        {
+            e.Handled = true;
+            int idx = Array.IndexOf(_v4Octets, sender);
+            if (idx >= 0 && idx < 3)
+                _v4Octets[idx + 1].Focus();
+        }
+    }
+
+    private void OnOctetKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (sender is not TextBox tb) return;
+        int idx = Array.IndexOf(_v4Octets, sender);
+
+        // Right arrow at end of field → next octet
+        if (e.KeyCode == Keys.Right && tb.SelectionStart == tb.Text.Length && idx < 3)
+        {
+            _v4Octets[idx + 1].Focus();
+            _v4Octets[idx + 1].SelectionStart = 0;
+            e.Handled = true;
+        }
+        // Left arrow at start of field → previous octet
+        else if (e.KeyCode == Keys.Left && tb.SelectionStart == 0 && idx > 0)
+        {
+            _v4Octets[idx - 1].Focus();
+            _v4Octets[idx - 1].SelectionStart = _v4Octets[idx - 1].Text.Length;
+            e.Handled = true;
+        }
+        // Tab to next field within the control before leaving
+        else if (e.KeyCode == Keys.Tab && !e.Shift && idx < 3)
+        {
+            _v4Octets[idx + 1].Focus();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        }
+    }
+
+    private string GetAddressString()
+    {
+        if (_v4Panel.Visible)
+        {
+            string[] parts = _v4Octets.Select(o => o.Text.Trim()).ToArray();
+            if (parts.All(p => p.Length > 0))
+                return string.Join(".", parts);
+            return string.Join(".", parts); // partial
+        }
+        return _v6TextBox.Text.Trim();
+    }
+
+    private void SetAddressString(string? value)
+    {
+        _suppressEvents = true;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                foreach (var o in _v4Octets) o.Text = "";
+                _v6TextBox.Text = "";
+                return;
+            }
+
+            if (IPAddress.TryParse(value, out IPAddress? addr))
+            {
+                if (addr.AddressFamily == AddressFamily.InterNetwork)
+                {
+                    byte[] bytes = addr.GetAddressBytes();
+                    for (int i = 0; i < 4; i++)
+                        _v4Octets[i].Text = bytes[i].ToString();
+                    _v4Panel.Visible = true;
+                    _v6Panel.Visible = false;
+                }
+                else
+                {
+                    _v6TextBox.Text = addr.ToString();
+                    _v4Panel.Visible = false;
+                    _v6Panel.Visible = true;
+                }
+            }
+            else
+            {
+                // Best effort — put in whichever panel is visible
+                if (value.Contains(':'))
+                {
+                    _v6TextBox.Text = value;
+                    _v4Panel.Visible = false;
+                    _v6Panel.Visible = true;
+                }
+                else
+                {
+                    var parts = value.Split('.');
+                    for (int i = 0; i < Math.Min(4, parts.Length); i++)
+                        _v4Octets[i].Text = parts[i];
+                    _v4Panel.Visible = true;
+                    _v6Panel.Visible = false;
+                }
+            }
+        }
+        finally
+        {
+            _suppressEvents = false;
+            Revalidate();
+        }
+    }
 
     private void Revalidate()
     {
-        var result = IpAddressValidator.Validate(_textBox.Text, _mode);
+        if (_suppressEvents) return;
+
+        string text = GetAddressString();
+        var result = IpAddressValidator.Validate(text, _mode);
         bool wasValid = _isValid;
         _isValid = result.IsValid;
         _parsedAddress = result.Address;
-        _errorMessage = result.ErrorMessage;
 
         // Visual feedback
-        if (string.IsNullOrWhiteSpace(_textBox.Text))
-        {
-            // Empty = neutral (no error shown)
-            _textBox.BackColor = NormalBackColor;
-            BackColor = NormalBackColor;
-            _toolTip.SetToolTip(_textBox, "");
-        }
-        else if (_isValid)
-        {
-            _textBox.BackColor = NormalBackColor;
-            BackColor = NormalBackColor;
-            _toolTip.SetToolTip(_textBox, IpAddressValidator.Describe(result.Address!));
-        }
-        else
-        {
-            _textBox.BackColor = ErrorBackColor;
-            BackColor = ErrorBackColor;
-            _toolTip.SetToolTip(_textBox, _errorMessage ?? "Invalid address");
-        }
+        Color bg = string.IsNullOrWhiteSpace(text) ? NormalBackColor
+                 : _isValid ? NormalBackColor
+                 : ErrorBackColor;
 
-        if (wasValid != _isValid)
+        BackColor = bg;
+        _v4Panel.BackColor = bg;
+        _v6Panel.BackColor = bg;
+        foreach (var o in _v4Octets) o.BackColor = bg;
+        _v6TextBox.BackColor = bg;
+
+        if (_isValid && result.Address != null)
+            _toolTip.SetToolTip(this, IpAddressValidator.Describe(result.Address));
+        else if (!string.IsNullOrWhiteSpace(text))
+            _toolTip.SetToolTip(this, result.ErrorMessage ?? "Invalid");
+        else
+            _toolTip.SetToolTip(this, "");
+
+        if (wasValid != _isValid || _isValid)
             ValidationChanged?.Invoke(this, EventArgs.Empty);
     }
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
-        {
-            _toolTip.Dispose();
-        }
+        if (disposing) _toolTip.Dispose();
         base.Dispose(disposing);
     }
 }
