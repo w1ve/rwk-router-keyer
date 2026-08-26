@@ -1062,21 +1062,26 @@ public partial class MainForm : Form
     // Menu handlers
     // ────────────────────────────────────────────────────────────────
 
-    private void OnShowPairingKeyClick(object? sender, EventArgs e)
+    private void OnCopyStationInfoClick(object? sender, EventArgs e)
     {
-        string key = _controller?.PairingKey ?? "(not available)";
+        string key = _controller?.PairingKey ?? "";
+        string ip = _controller?.SidecarHost?.SelfAddress ?? "";
 
-        var result = MessageBox.Show(
-            $"Station Pairing Key:\n\n{key}\n\nCopy to clipboard?",
-            "Pairing Key",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Information);
-
-        if (result == DialogResult.Yes)
+        if (string.IsNullOrEmpty(ip))
         {
-            Clipboard.SetText(key);
-            _toolTip.Show("Copied!", this, Width / 2, Height / 2, 1500);
+            MessageBox.Show("Station is not connected to Tailscale yet.\nWait for the tailnet to connect, then try again.",
+                "Not Ready", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
         }
+
+        string stationInfo = $"{ip}|{key}";
+        Clipboard.SetText(stationInfo);
+
+        MessageBox.Show(
+            $"Station Info copied to clipboard:\n\n{stationInfo}\n\nPaste this into the Client's Import Station dialog.",
+            "Copied",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
     }
 
     private async void OnDeleteTailscaleAuthClick(object? sender, EventArgs e)

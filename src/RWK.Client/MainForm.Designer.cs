@@ -134,10 +134,10 @@ partial class MainForm
     private ComboBox _logLevelCombo = null!;
     private TextBox _logTextBox = null!;
     private Label _stationAddressCaptionLabel = null!;
-    private Controls.IpAddressTextBox _stationAddressTextBox = null!;
+    private ComboBox _stationCombo = null!;
+    private Button _importStationBtn = null!;
     private Button _connectButton = null!;
     private CheckBox _stationArmToggle = null!;
-    private Button _setStationKeyBtn = null!;
     private Label _keySetIndicator = null!;
 
     protected override void Dispose(bool disposing)
@@ -872,7 +872,7 @@ partial class MainForm
         _networkControlGroup.Name = "_networkControlGroup";
         _networkControlGroup.Padding = new Padding(8, 4, 8, 4);
 
-        // Connection row: Station Tailscale IP + Pair button + Set Key
+        // Connection row: Station dropdown + Import + Pair
         var connectionPanel = new Panel();
         connectionPanel.Dock = DockStyle.Top;
         connectionPanel.Height = 72;
@@ -880,29 +880,32 @@ partial class MainForm
 
         _stationAddressCaptionLabel = new Label
         {
-            Text = "Station Tailscale IP Address:",
+            Text = "Station:",
             AutoSize = true,
             Location = new Point(0, 7),
             Name = "_stationAddressCaptionLabel"
         };
 
-        _stationAddressTextBox = new Controls.IpAddressTextBox
+        _stationCombo = new ComboBox
         {
-            Location = new Point(185, 4),
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Location = new Point(55, 4),
             Size = new Size(200, 23),
-            PlaceholderText = "100.x.x.x or fd7a:...",
-            Name = "_stationAddressTextBox"
+            Name = "_stationCombo"
         };
+        _stationCombo.Items.Add("(None)");
+        _stationCombo.SelectedIndex = 0;
+        _stationCombo.SelectedIndexChanged += (_, _) => ValidatePairButton();
 
-        _setStationKeyBtn = new Button
+        _importStationBtn = new Button
         {
-            Text = "Set Key",
+            Text = "Import...",
             Size = new Size(70, 25),
-            Location = new Point(355, 3),
+            Location = new Point(262, 3),
             UseVisualStyleBackColor = true,
-            Name = "_setStationKeyBtn"
+            Name = "_importStationBtn"
         };
-        _setStationKeyBtn.Click += OnSetStationKeyClick;
+        _importStationBtn.Click += OnImportStationClick;
 
         _keySetIndicator = new Label
         {
@@ -910,7 +913,7 @@ partial class MainForm
             Font = new Font("Segoe UI", 12F, FontStyle.Bold),
             ForeColor = Color.FromArgb(200, 0, 0),
             AutoSize = true,
-            Location = new Point(430, 4),
+            Location = new Point(338, 4),
             Visible = false,
             Name = "_keySetIndicator"
         };
@@ -918,7 +921,7 @@ partial class MainForm
         _connectButton = new Button
         {
             Text = "Pair with Station",
-            Location = new Point(460, 3),
+            Location = new Point(360, 3),
             Size = new Size(150, 25),
             BackColor = Color.FromArgb(200, 40, 40),
             ForeColor = Color.White,
@@ -938,8 +941,7 @@ partial class MainForm
 
         var pairingHelpLabel = new Label
         {
-            Text = "Enter the Station's Tailscale IP (from the Station app status bar) and the shared pairing key. " +
-                   "Multiple Client/Station pairs can share the same Tailnet — each pair uses its own pairing key.",
+            Text = "Import a Station (from Station menu \u2192 Copy Station Info), then select it and click Pair.",
             Font = new Font("Segoe UI", 8F),
             ForeColor = SystemColors.GrayText,
             Location = new Point(0, 54),
@@ -949,7 +951,7 @@ partial class MainForm
         };
 
         connectionPanel.Controls.AddRange(new Control[] {
-            _stationAddressCaptionLabel, _stationAddressTextBox, _setStationKeyBtn,
+            _stationAddressCaptionLabel, _stationCombo, _importStationBtn,
             _keySetIndicator, _connectButton, _stationArmToggle, pairingHelpLabel
         });
 

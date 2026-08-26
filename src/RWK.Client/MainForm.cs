@@ -146,8 +146,8 @@ public partial class MainForm : Form
         // Connect button wiring
         _connectButton.Click += OnConnectClick;
 
-        // Pair button validation: enable only when IP is valid-looking and key is set
-        _stationAddressTextBox.ValidationChanged += (_, _) => ValidatePairButton();
+        // Pair button validation: enable only when a station is selected
+        // (combo wired in Designer via SelectedIndexChanged)
 
         // Station ARM toggle
         _stationArmToggle.CheckedChanged += OnStationArmToggleChanged;
@@ -1283,12 +1283,22 @@ public partial class MainForm : Form
             await _controller.StartAsync().ConfigureAwait(true);
 
             // Load persisted station address
-            if (!string.IsNullOrEmpty(_controller.Config.Tailscale.StationAddress))
-                _stationAddressTextBox.Text = _controller.Config.Tailscale.StationAddress;
-
-            // Show key-set indicator if a pairing secret is already saved
-            if (!string.IsNullOrEmpty(_controller.Config.Tailscale.PairingSecret))
-                _keySetIndicator.Visible = true;
+            // Load persisted station list and select previously used station
+            RefreshStationDropdown();
+            // Try to auto-select a station matching the persisted address
+            string? lastAddr = _controller.Config.Tailscale.StationAddress;
+            if (!string.IsNullOrEmpty(lastAddr))
+            {
+                for (int i = 1; i < _stationCombo.Items.Count; i++)
+                {
+                    if (_stationCombo.Items[i] is RWK.Shared.Config.StationEntry se &&
+                        se.TailscaleIp == lastAddr)
+                    {
+                        _stationCombo.SelectedIndex = i;
+                        break;
+                    }
+                }
+            }
             ValidatePairButton();
 
             // Load persisted port selections
@@ -2009,12 +2019,14 @@ public partial class MainForm : Form
 
     private async void OnConnectClick(object? sender, EventArgs e)
     {
-        string address = _stationAddressTextBox.Text.Trim();
-        if (string.IsNullOrEmpty(address))
+        // Get the selected station entry from the dropdown
+        if (_stationCombo.SelectedItem is not RWK.Shared.Config.StationEntry entry)
         {
-            _pathLabel.Text = "Enter Station Address first.";
+            _pathLabel.Text = "Select a Station first.";
             return;
         }
+
+        string address = entry.TailscaleIp;
 
         if (_controller is null || !_controller.IsRunning)
         {
@@ -2022,7 +2034,8 @@ public partial class MainForm : Form
             return;
         }
 
-        // Save the address immediately so reconnect attempts use the new value
+        // Set the pairing key and address from the station entry
+        _controller.SetPairingSecret(entry.PairingKey);
         _controller.SetStationAddress(address);
 
         try
@@ -2093,37 +2106,55 @@ public partial class MainForm : Form
         }
     }
 
-    private void OnSetStationKeyClick(object? sender, EventArgs e)
+    private void OnImportStationClick(object? sender, EventArgs e)
     {
-        string currentKey = _controller?.Config.Tailscale.PairingSecret ?? "";
-
-        string? input = ShowInputDialog(
-            "Enter the Station Pairing Key",
-            "Set Station Key",
-            currentKey);
-
-        if (input is null) return; // User cancelled
-
-        input = input.Trim().ToUpperInvariant();
-        if (string.IsNullOrEmpty(input))
-        {
-            MessageBox.Show("Key cannot be empty.", "Invalid Key", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        using var dlg = new RWK.Client.Controls.ImportStationDialog();
+        if (dlg.ShowDialog(this) != DialogResult.OK || dlg.Result is null)
             return;
+
+        var entry = dlg.Result;
+
+        // Add to persisted list
+        var stations = RWK.Client.Controls.StationListStore.Load();
+        // Replace if same name exists
+        stations.RemoveAll(s => s.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+        stations.Add(entry);
+        RWK.Client.Controls.StationListStore.Save(stations);
+
+        // Add to dropdown (or update)
+        RefreshStationDropdown(stations, entry.Name);
+
+        _logService.Info($"Station imported: {entry.Name} → {entry.TailscaleIp}");
+    }
+
+    private void RefreshStationDropdown(List<RWK.Shared.Config.StationEntry>? stations = null, string? selectName = null)
+    {
+        stations ??= RWK.Client.Controls.StationListStore.Load();
+        _stationCombo.Items.Clear();
+        _stationCombo.Items.Add("(None)");
+        foreach (var s in stations)
+            _stationCombo.Items.Add(s);
+
+        if (selectName is not null)
+        {
+            for (int i = 1; i < _stationCombo.Items.Count; i++)
+            {
+                if (_stationCombo.Items[i] is RWK.Shared.Config.StationEntry se &&
+                    se.Name.Equals(selectName, StringComparison.OrdinalIgnoreCase))
+                {
+                    _stationCombo.SelectedIndex = i;
+                    return;
+                }
+            }
         }
-
-        _controller?.SetPairingSecret(input);
-        _logService.Info($"Station pairing key set: {input}");
-
-        // Show the red check indicator and re-validate Pair button
-        _keySetIndicator.Visible = true;
-        ValidatePairButton();
+        _stationCombo.SelectedIndex = 0;
     }
 
     private void ValidatePairButton()
     {
-        bool hasKey = _keySetIndicator.Visible;
-        bool validIp = _stationAddressTextBox.IsValid;
-        _connectButton.Enabled = validIp && hasKey;
+        bool stationSelected = _stationCombo.SelectedIndex > 0; // index 0 = "(None)"
+        _connectButton.Enabled = stationSelected;
+        _keySetIndicator.Visible = stationSelected;
     }
 
     private static string? ShowInputDialog(string prompt, string title, string defaultValue)

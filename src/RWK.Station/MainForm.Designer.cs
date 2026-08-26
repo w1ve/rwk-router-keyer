@@ -434,8 +434,8 @@ partial class MainForm
         var rwkMenuItem = new ToolStripMenuItem("&File");
         var aboutMenuItem = new ToolStripMenuItem("About RWK");
         aboutMenuItem.Click += (_, _) => { using var dlg = new AboutDialog(); dlg.ShowDialog(this); };
-        var showPairingKeyMenuItem = new ToolStripMenuItem("Show Pairing Key...");
-        showPairingKeyMenuItem.Click += OnShowPairingKeyClick;
+        var showPairingKeyMenuItem = new ToolStripMenuItem("Copy Station Info to Clipboard");
+        showPairingKeyMenuItem.Click += OnCopyStationInfoClick;
         var deleteTsAuthMenuItem = new ToolStripMenuItem("Delete Tailscale Authorization...");
         deleteTsAuthMenuItem.Click += OnDeleteTailscaleAuthClick;
         var tsAdminMenuItem = new ToolStripMenuItem("Go to Tailscale Admin Page...");
