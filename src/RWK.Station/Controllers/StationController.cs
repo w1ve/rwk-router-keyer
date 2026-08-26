@@ -93,6 +93,7 @@ public sealed class StationController : IDisposable
     private SidecarFailureHandler? _sidecarFailureHandler;
     private StationDiscoveryListener? _discoveryListener;
     private StationLoggerHost? _loggerHost;
+    private string? _pendingLoggerPort;
     private volatile bool _loggerSending;
 
     // Forward dedup: tracks (kind, tailnetPort, targetAddress) tuples currently registered
@@ -822,17 +823,24 @@ public sealed class StationController : IDisposable
     /// </summary>
     public void StartLoggerHost(string portName)
     {
-        StopLoggerHost();
+        StopLoggerHostInternal();
+
+        // Remember the requested port and persist the intent so that if the keying
+        // output isn't ready yet (e.g. user enabled logger input before arming), the
+        // arm sequence retries StartLoggerHost once the keying output is open.
+        _pendingLoggerPort = portName;
+        _config = _config with { LoggerInputEnabled = true, LoggerPortName = portName };
+        _configStore.TrySave(_config);
 
         if (_keyingOutput is null || !_keyingOutput.IsOpen)
         {
-            _diagnostics?.Invoke("Cannot start logger host: no keying output configured.");
+            _diagnostics?.Invoke($"Logger input on {portName} will start once the Station is armed (keying output not open yet).");
             return;
         }
 
         if (string.Equals(portName, _keyingOutput.PortName, StringComparison.OrdinalIgnoreCase))
         {
-            _diagnostics?.Invoke($"Cannot start logger host: port {portName} is used for keying output.");
+            _diagnostics?.Invoke($"Cannot start logger host: port {portName} is used for keying output. Choose a different port.");
             return;
         }
 
@@ -846,10 +854,8 @@ public sealed class StationController : IDisposable
             IPttOutput? pttOutput = _keyingOutput.PttLine == KeyingLine.None ? null : _keyingOutput;
             _loggerHost.Start(portName, _keyingOutput, pttOutput);
 
-            _config = _config with { LoggerInputEnabled = true, LoggerPortName = portName };
-            _configStore.TrySave(_config);
-
-            _diagnostics?.Invoke($"Logger WinKeyer host started on {portName}.");
+            _pendingLoggerPort = null; // successfully started
+            _diagnostics?.Invoke($"Logger WinKeyer host started on {portName} (keying via {_keyingOutput.PortName}).");
         }
         catch (Exception ex)
         {
@@ -866,6 +872,7 @@ public sealed class StationController : IDisposable
     public void StopLoggerHost()
     {
         StopLoggerHostInternal();
+        _pendingLoggerPort = null;
 
         _config = _config with { LoggerInputEnabled = false };
         _configStore.TrySave(_config);
