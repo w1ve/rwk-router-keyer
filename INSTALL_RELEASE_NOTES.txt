@@ -13,9 +13,12 @@ changed since version 1.0.4.
 
 IPv6 support
   - Edge/data now works over IPv6 tailnets. The Tailscale sidecar
-    listens on both IPv4 and IPv6 for UDP forwarding.
-  - Address handling accepts IPv4, IPv6, or both, with validation
-    for dotted-quad and compressed (::) IPv6 input.
+    listens on both IPv4 and IPv6 for UDP forwarding (dual listeners).
+  - Port-forward rules accept IPv6 bind addresses and Station
+    targets, validated for dotted-quad and compressed (::) IPv6
+    input. The forwarding grid highlights invalid addresses.
+  - A two-tier exposure warning distinguishes LAN-only binds from
+    globally routable (internet-reachable) IPv6 binds.
 
 Station import / pair workflow
   - The manual "Station IP + Set Key" entry has been replaced with
@@ -49,9 +52,11 @@ Toast notifications
 
 Window and layout
   - The main window is now fixed size (minimize + close only).
-  - Inputs panel reworked: DCD = PTT (footswitch) moved under the
-    Paddle dropdown; "Logger App" / "Hardware WinKey" stacked with
-    a per-selection help line; the loopback test button removed.
+  - Inputs panel reworked: the separate PTT COM port is replaced by
+    a "DCD = PTT (footswitch)" checkbox that monitors the DCD pin on
+    the paddle serial port, placed under the Paddle dropdown;
+    "Logger App" / "Hardware WinKey" are stacked with a
+    per-selection help line; the loopback test button removed.
   - Keyer group polish: Speed slider right-aligned inside the group
     with a small margin; Weight slider repositioned so it no longer
     overlaps the Mode dropdown and lines up with the Sidetone
@@ -78,8 +83,15 @@ Install
     with an idle-timeout safety net and a text-buffer drain.
   - Fixed logger input when it was configured before the Station
     was armed; the start intent is retained and retried on arm.
+  - Fixed the sidetone output-device selector, which was never
+    wired to change the output device.
+  - Fixed the Tailscale Auth Wizard getting stuck on "Waiting for
+    browser login..." when the sidecar reported a stale auth URL;
+    the wizard now advances once auth actually completes.
   - Speed and Weight sliders are now positioned from the group's
-    real width so they render correctly across display resolutions.
+    real width so they render correctly across display resolutions;
+    the Weight slider no longer overlaps the Mode dropdown and the
+    WPM readout is no longer clipped.
 
 ================================================================
  Repository:  https://github.com/w1ve/rwk-router-keyer
