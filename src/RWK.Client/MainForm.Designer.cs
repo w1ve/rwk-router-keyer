@@ -1116,7 +1116,10 @@ partial class MainForm
         Name = "MainForm";
         StartPosition = FormStartPosition.CenterScreen;
         Text = "RWK Client";
-        MinimumSize = new Size(800, 500);
+        // Fixed-size window: not resizable, but with minimize and close boxes.
+        FormBorderStyle = FormBorderStyle.FixedSingle;
+        MaximizeBox = false;
+        MinimizeBox = true;
         WindowState = FormWindowState.Normal;
 
         // Form icon

@@ -28,6 +28,19 @@ internal static class Program
         }
 
         ApplicationConfiguration.Initialize();
+
+        // Global exception traps — surface a toast and log rather than crashing silently.
+        Application.ThreadException += (_, e) =>
+        {
+            try { RWK.Shared.IO.RotatingFileLog.Append("client.log", $"UNHANDLED UI EXCEPTION: {e.Exception}"); } catch { }
+            MainForm.NotifySystemError();
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            try { RWK.Shared.IO.RotatingFileLog.Append("client.log", $"UNHANDLED EXCEPTION: {e.ExceptionObject}"); } catch { }
+            MainForm.NotifySystemError();
+        };
+
         Application.Run(new MainForm());
     }
 }

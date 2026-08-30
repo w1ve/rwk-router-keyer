@@ -59,6 +59,7 @@ public partial class MainForm : Form
     public MainForm()
     {
         InitializeComponent();
+        _instance = this;
         Text = $"RWK Router/Keyer Client Version {AppVersion} — Any Rig, Any Internet, Anytime";
         PopulateDefaults();
         InitializeDeviceMonitoring();
@@ -97,6 +98,51 @@ public partial class MainForm : Form
         };
     }
 
+    /// <summary>Static reference to the live form for global exception handlers.</summary>
+    private static MainForm? _instance;
+
+    /// <summary>
+    /// Called by Program.cs global exception handlers to surface a system error toast.
+    /// </summary>
+    public static void NotifySystemError()
+    {
+        _instance?.ShowToast("System Error occurred. Please restart RWK-Client.", ToolTipIcon.Error);
+    }
+
+    /// <summary>
+    /// Shows a toast notification (balloon tip) in the lower-right of the screen.
+    /// Works whether the window is full size, minimized, or hidden to the tray.
+    /// </summary>
+    private void ShowToast(string message, ToolTipIcon icon = ToolTipIcon.Info)
+    {
+        if (InvokeRequired) { BeginInvoke(() => ShowToast(message, icon)); return; }
+        if (_trayIcon is null) return;
+
+        // The NotifyIcon must be visible for the balloon to appear. If the window
+        // is not minimized (tray icon normally hidden), briefly make it visible.
+        bool wasVisible = _trayIcon.Visible;
+        _trayIcon.Visible = true;
+        _trayIcon.BalloonTipTitle = "RWK-Client";
+        _trayIcon.BalloonTipText = message;
+        _trayIcon.BalloonTipIcon = icon;
+        _trayIcon.ShowBalloonTip(4000);
+
+        // If the window is not minimized, hide the tray icon again after the
+        // balloon has had time to display.
+        if (!wasVisible && WindowState != FormWindowState.Minimized)
+        {
+            var t = new System.Windows.Forms.Timer { Interval = 5000 };
+            t.Tick += (_, _) =>
+            {
+                t.Stop();
+                t.Dispose();
+                if (_trayIcon is not null && WindowState != FormWindowState.Minimized)
+                    _trayIcon.Visible = false;
+            };
+            t.Start();
+        }
+    }
+
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
@@ -105,6 +151,7 @@ public partial class MainForm : Form
             Hide();
             if (_trayIcon is not null)
                 _trayIcon.Visible = true;
+            ShowToast("Client Minimized. Click the icon in the system tray to restore.");
         }
         else
         {
@@ -1586,6 +1633,7 @@ public partial class MainForm : Form
         {
             _pathLabel.Text = $"Sidecar: {e.Failure.Reason}";
             _linkIndicator.ForeColor = WarningRed;
+            ShowToast("System Error occurred. Please restart RWK-Client.", ToolTipIcon.Error);
         }
     }
 
@@ -1612,6 +1660,10 @@ public partial class MainForm : Form
             _keySetIndicator.ForeColor = Color.FromArgb(200, 0, 0);
             _flexEnableCheck.Enabled = false;
             DisablePttForSession();
+
+            // Toast: unpaired from station
+            string stationName = (_stationCombo.SelectedItem as RWK.Shared.Config.StationEntry)?.Name ?? "Station";
+            ShowToast($"Unpaired from Station {stationName}");
         }
     }
 
@@ -1899,6 +1951,8 @@ public partial class MainForm : Form
         }
     }
 
+    private TailscaleState? _lastToastedState;
+
     private void UpdateStatusForState(TailscaleState state)
     {
         switch (state)
@@ -1909,6 +1963,8 @@ public partial class MainForm : Form
                 _pathLabel.Text = "Connected";
                 DismissLoginPanel();
                 DismissWaitOverlay();
+                if (_lastToastedState != TailscaleState.Connected)
+                    ShowToast("Connected to the Tailnet");
                 break;
             case TailscaleState.Connecting:
                 _linkIndicator.ForeColor = SystemColors.Highlight;
@@ -1925,13 +1981,18 @@ public partial class MainForm : Form
                 _linkIndicator.Text = "\u25CF";
                 _pathLabel.Text = "Path lost";
                 DismissWaitOverlay();
+                if (_lastToastedState == TailscaleState.Connected)
+                    ShowToast("Disconnected from the Tailnet", ToolTipIcon.Warning);
                 break;
             default:
                 _linkIndicator.ForeColor = Color.Gray;
                 _linkIndicator.Text = "\u25CF";
                 _pathLabel.Text = "Disconnected";
+                if (_lastToastedState == TailscaleState.Connected)
+                    ShowToast("Disconnected from the Tailnet", ToolTipIcon.Warning);
                 break;
         }
+        _lastToastedState = state;
     }
 
     private void ShowWaitOverlay()
@@ -2084,6 +2145,10 @@ public partial class MainForm : Form
             _connectButton.BackColor = SystemColors.Control;
             _connectButton.ForeColor = SystemColors.ControlText;
             _connectButton.FlatStyle = FlatStyle.Standard;
+
+            // Toast: paired with station
+            string stationName = (_stationCombo.SelectedItem as RWK.Shared.Config.StationEntry)?.Name ?? address;
+            ShowToast($"Paired with Station {stationName}");
 
             // Key indicator turns green when paired and armed
             _keySetIndicator.ForeColor = _stationArmToggle.Checked ? Color.Green : Color.FromArgb(200, 0, 0);
