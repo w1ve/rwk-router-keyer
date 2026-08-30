@@ -81,6 +81,7 @@ partial class MainForm
     private RadioButton _wkModeHardwareRadio = null!;
     private Label _wkHardwareStatus = null!;
     private Label _wkModeMuteIcon = null!;
+    private Label _wkModeHelpLabel = null!;
     private Button _wkLoopbackTestBtn = null!;
     private Label _wkDitDot = null!;
     private Label _wkDahDot = null!;
@@ -475,16 +476,16 @@ partial class MainForm
 
         var portsInnerLayout = new TableLayoutPanel();
         portsInnerLayout.Dock = DockStyle.Top;
-        portsInnerLayout.Height = 142;
+        portsInnerLayout.Height = 168;
         portsInnerLayout.ColumnCount = 2;
         portsInnerLayout.RowCount = 5;
         portsInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 72F));
         portsInnerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // Paddle port
+        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));  // DCD = PTT checkbox (under paddle)
         portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // WinKeyer port
-        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24F));  // WK mode radios
-        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // Loopback test button
-        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28F));  // DCD = PTT checkbox
+        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46F));  // WK mode radios (stacked)
+        portsInnerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 20F));  // WK mode help text
         portsInnerLayout.Name = "portsInnerLayout";
 
         _paddlePortCaptionLabel.Text = "Paddle:";
@@ -507,7 +508,7 @@ partial class MainForm
         _winKeyerPortCombo.Dock = DockStyle.Fill;
         _winKeyerPortCombo.Name = "_winKeyerPortCombo";
 
-        // WinKeyer mode selection: Logger App (emulator) vs Hardware WinKey
+        // WinKeyer mode selection: Logger App (emulator) vs Hardware WinKey — stacked vertically.
         var wkModePanel = new Panel();
         wkModePanel.Dock = DockStyle.Fill;
         wkModePanel.Name = "wkModePanel";
@@ -520,45 +521,37 @@ partial class MainForm
 
         _wkModeHardwareRadio.Text = "Hardware WinKey";
         _wkModeHardwareRadio.AutoSize = true;
-        _wkModeHardwareRadio.Location = new Point(95, 2);
+        _wkModeHardwareRadio.Location = new Point(0, 24);
         _wkModeHardwareRadio.Name = "_wkModeHardwareRadio";
-
-        // Muted speaker icon shown next to Hardware WinKey when that mode is active
-        // (the hardware chip provides its own sidetone, so the local one is muted).
-        _wkModeMuteIcon = new Label();
-        _wkModeMuteIcon.Text = "\U0001F507"; // muted speaker
-        _wkModeMuteIcon.Font = new Font("Segoe UI Emoji", 9F);
-        _wkModeMuteIcon.AutoSize = true;
-        _wkModeMuteIcon.Location = new Point(205, 3);
-        _wkModeMuteIcon.Name = "_wkModeMuteIcon";
-        _wkModeMuteIcon.Visible = false;
-        var muteTooltip = new ToolTip();
-        muteTooltip.SetToolTip(_wkModeMuteIcon, "Local sidetone muted — the hardware WinKeyer provides its own sidetone.");
 
         _wkHardwareStatus = new Label();
         _wkHardwareStatus.Text = "";
         _wkHardwareStatus.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
         _wkHardwareStatus.ForeColor = Color.FromArgb(200, 0, 0);
         _wkHardwareStatus.AutoSize = true;
-        _wkHardwareStatus.Location = new Point(230, 3);
+        _wkHardwareStatus.Location = new Point(150, 24);
         _wkHardwareStatus.Name = "_wkHardwareStatus";
         _wkHardwareStatus.Visible = false;
 
-        wkModePanel.Controls.AddRange(new Control[] { _wkModeLoggerRadio, _wkModeHardwareRadio, _wkModeMuteIcon, _wkHardwareStatus });
+        wkModePanel.Controls.AddRange(new Control[] { _wkModeLoggerRadio, _wkModeHardwareRadio, _wkHardwareStatus });
 
-        // Loopback test button
-        _wkLoopbackTestBtn.Text = "WinKeyer Loopback Test";
-        _wkLoopbackTestBtn.UseVisualStyleBackColor = true;
-        _wkLoopbackTestBtn.AutoSize = true;
-        _wkLoopbackTestBtn.Dock = DockStyle.Left;
-        _wkLoopbackTestBtn.Name = "_wkLoopbackTestBtn";
+        // WinKeyer mode help text (italic, changes with radio selection).
+        _wkModeHelpLabel = new Label();
+        _wkModeHelpLabel.Text = "N1MM, DXLog, Wintest, etc.";
+        _wkModeHelpLabel.Font = new Font("Segoe UI", 8F, FontStyle.Italic);
+        _wkModeHelpLabel.ForeColor = SystemColors.GrayText;
+        _wkModeHelpLabel.Dock = DockStyle.Fill;
+        _wkModeHelpLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _wkModeHelpLabel.Name = "_wkModeHelpLabel";
 
-        // WinKeyer indicator dots (hidden — no longer displayed)
+        // Hidden legacy controls (kept as fields to avoid touching code that references them).
+        _wkLoopbackTestBtn = new Button { Visible = false, Name = "_wkLoopbackTestBtn" };
+        _wkModeMuteIcon = new Label { Visible = false, Name = "_wkModeMuteIcon" };
         _wkDitDot = new Label { Visible = false, Name = "_wkDitDot" };
         _wkDahDot = new Label { Visible = false, Name = "_wkDahDot" };
         _wkSkDot = new Label { Visible = false, Name = "_wkSkDot" };
 
-        // PTT via DCD pin on paddle port
+        // PTT via DCD pin on paddle port (hidden legacy port/line fields).
         _pttPortCaptionLabel = new Label { Visible = false, Name = "_pttPortCaptionLabel" };
         _pttPortCombo = new ComboBox { Visible = false, Name = "_pttPortCombo" };
         _pttLineCaptionLabel = new Label { Visible = false, Name = "_pttLineCaptionLabel" };
@@ -570,16 +563,20 @@ partial class MainForm
         _pttDcdCheck.Dock = DockStyle.Fill;
         _pttDcdCheck.Name = "_pttDcdCheck";
 
+        // Row 0: Paddle port
         portsInnerLayout.Controls.Add(_paddlePortCaptionLabel, 0, 0);
         portsInnerLayout.Controls.Add(_paddlePortCombo, 1, 0);
-        portsInnerLayout.Controls.Add(_wkPortCaptionLabel, 0, 1);
-        portsInnerLayout.Controls.Add(_winKeyerPortCombo, 1, 1);
+        // Row 1: DCD=PTT checkbox directly below the Paddle dropdown, left-aligned with it
+        portsInnerLayout.Controls.Add(_pttDcdCheck, 1, 1);
+        // Row 2: WinKeyer port
+        portsInnerLayout.Controls.Add(_wkPortCaptionLabel, 0, 2);
+        portsInnerLayout.Controls.Add(_winKeyerPortCombo, 1, 2);
+        // Row 3: WK mode radios (stacked vertically), spanning both columns
         portsInnerLayout.SetColumnSpan(wkModePanel, 2);
-        portsInnerLayout.Controls.Add(wkModePanel, 0, 2);
-        portsInnerLayout.SetColumnSpan(_wkLoopbackTestBtn, 2);
-        portsInnerLayout.Controls.Add(_wkLoopbackTestBtn, 0, 3);
-        portsInnerLayout.SetColumnSpan(_pttDcdCheck, 2);
-        portsInnerLayout.Controls.Add(_pttDcdCheck, 0, 4);
+        portsInnerLayout.Controls.Add(wkModePanel, 0, 3);
+        // Row 4: WK mode help text, spanning both columns
+        portsInnerLayout.SetColumnSpan(_wkModeHelpLabel, 2);
+        portsInnerLayout.Controls.Add(_wkModeHelpLabel, 0, 4);
 
         // PTT momentary button (big, bold) — below the table layout
         _pttButton = new Button();

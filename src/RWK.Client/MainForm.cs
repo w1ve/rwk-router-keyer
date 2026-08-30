@@ -211,9 +211,6 @@ public partial class MainForm : Form
         _wkModeLoggerRadio.CheckedChanged += OnWinKeyerModeChanged;
         _wkModeHardwareRadio.CheckedChanged += OnWinKeyerModeChanged;
 
-        // WinKeyer loopback test
-        _wkLoopbackTestBtn.Click += OnWinKeyerLoopbackTestClick;
-
         // Keyer mode combo
         _modeCombo.SelectedIndexChanged += OnModeComboChanged;
 
@@ -1392,12 +1389,12 @@ public partial class MainForm : Form
             {
                 _wkModeHardwareRadio.Checked = true;
                 _controller.SetWinKeyerMode(RWK.Shared.IO.WinKeyerMode.HardwareWinKey);
-                _wkModeMuteIcon.Visible = true;
+                _wkModeHelpLabel.Text = "Warning: one-character delay in sending. Local sidetone muted.";
             }
             else
             {
                 _wkModeLoggerRadio.Checked = true;
-                _sidetoneMuteLabel.Visible = false;
+                _wkModeHelpLabel.Text = "N1MM, DXLog, Wintest, etc.";
             }
 
             if (!string.IsNullOrEmpty(_controller.Config.WinKeyerPortName) && _winKeyerPortCombo.Items.Contains(_controller.Config.WinKeyerPortName))
@@ -2433,10 +2430,12 @@ public partial class MainForm : Form
         _wkHardwareStatus.Visible = false;
         _wkHardwareStatus.Text = "";
 
-        // Show/hide sidetone mute indicator — compact icon next to the radio button.
+        // Update the italic help text under the radio buttons.
         bool isHardwareMode = _wkModeHardwareRadio.Checked;
-        _wkModeMuteIcon.Visible = isHardwareMode;
-        _sidetoneMuteLabel.Visible = false; // superseded by the inline icon
+        _wkModeHelpLabel.Text = isHardwareMode
+            ? "Warning: one-character delay in sending. Local sidetone muted."
+            : "N1MM, DXLog, Wintest, etc.";
+        _sidetoneMuteLabel.Visible = false;
 
         var mode = isHardwareMode ? RWK.Shared.IO.WinKeyerMode.HardwareWinKey : RWK.Shared.IO.WinKeyerMode.LoggerApp;
         _controller.SetWinKeyerMode(mode);
@@ -2460,34 +2459,4 @@ public partial class MainForm : Form
         _wkHardwareStatus.Visible = true;
     }
 
-    private async void OnWinKeyerLoopbackTestClick(object? sender, EventArgs e)
-    {
-        if (_controller is null) return;
-
-        _wkLoopbackTestBtn.Enabled = false;
-        _wkLoopbackTestBtn.Text = "Testing...";
-
-        try
-        {
-            await _controller.RunWinKeyerLoopbackTestAsync().ConfigureAwait(true);
-            _wkLoopbackTestBtn.Text = "Test OK";
-        }
-        catch (Exception ex)
-        {
-            _wkLoopbackTestBtn.Text = $"Failed: {ex.Message}";
-        }
-        finally
-        {
-            // Re-enable after a short delay so the result is visible
-            _ = Task.Delay(3000).ContinueWith(_ =>
-            {
-                if (!IsDisposed)
-                    BeginInvoke(() =>
-                    {
-                        _wkLoopbackTestBtn.Text = "WinKeyer Loopback Test";
-                        _wkLoopbackTestBtn.Enabled = true;
-                    });
-            });
-        }
-    }
 }
