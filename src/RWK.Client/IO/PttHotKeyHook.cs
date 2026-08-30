@@ -75,6 +75,22 @@ public sealed class PttHotKeyHook : IDisposable
     }
 
     /// <summary>
+    /// Clears the configured hotkey and releases PTT if it was active. The hook may keep
+    /// running, but with no hotkey configured it will not assert PTT.
+    /// </summary>
+    public void ClearHotKey()
+    {
+        _hotKey = Keys.None;
+        _requireCtrl = _requireShift = _requireAlt = false;
+        _mainKeyDown = false;
+        if (_pttActive)
+        {
+            _pttActive = false;
+            PttStateChanged?.Invoke(this, false);
+        }
+    }
+
+    /// <summary>
     /// Enters capture mode: the next key combo pressed will be recorded as the hotkey.
     /// After capture, <see cref="HotKeyCaptured"/> fires and capture mode ends.
     /// </summary>
@@ -159,7 +175,8 @@ public sealed class PttHotKeyHook : IDisposable
                 _requireAlt = _altDown;
                 _capturing = false;
                 HotKeyCaptured?.Invoke(this, captured);
-                return NativeKeyboardMethods.CallNextHookEx(_hookId, nCode, wParam, lParam);
+                // Eat the key used to set the hotkey so it doesn't leak to the OS.
+                return new IntPtr(1);
             }
 
             if (!_capturing && _hotKey != Keys.None)
@@ -177,10 +194,16 @@ public sealed class PttHotKeyHook : IDisposable
                         _mainKeyDown = false;
                         EvaluatePttState();
                     }
+
+                    // Eat the PTT hotkey's main-key events (down/up + auto-repeat) so the
+                    // keystroke never reaches the OS / foreground app. Modifier keys are
+                    // deliberately passed through (below) so normal typing is unaffected.
+                    return new IntPtr(1);
                 }
                 else if (IsModifierKey(vk))
                 {
-                    // Modifier change while main key may be held
+                    // Modifier change while main key may be held — track state but pass
+                    // the modifier through to the OS.
                     EvaluatePttState();
                 }
             }

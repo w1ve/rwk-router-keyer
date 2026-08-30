@@ -1,4 +1,4 @@
-# RWK Router/Keyer v1.0.4
+# RWK Router/Keyer v1.0.5
 
 <p align="center">
   <img src="rwk-full.png" alt="RWK Router/Keyer" width="400">
@@ -12,6 +12,41 @@ Free, open-source CW remoting, SSB PTT control, and port forwarding for amateur 
 [![Platform: Windows x64](https://img.shields.io/badge/Platform-Windows%20x64-lightgrey.svg)]()
 [![.NET 9](https://img.shields.io/badge/.NET-9.0-purple.svg)]()
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8.svg)]()
+
+---
+
+## What's New in v1.0.5
+
+Version 1.0.5 adds **IPv6 support**, a streamlined **Station import/pair workflow**, and hardens the logger (WinKeyer) input path. It also brings a round of UI polish and quality-of-life fixes.
+
+### Highlights
+
+- **IPv6 Support** -- Edge data and port forwarding work over IPv6 tailnets (dual IPv4/IPv6 listeners in the sidecar)
+- **Station Import Workflow** -- Import a Station by pasting its "Station Info" string; pick it from a dropdown instead of typing an IP and key
+- **Copy Station Info** -- Station menu exports `TailscaleIP|Key` to the clipboard in one click
+- **Clear Hot Key** -- The PTT hot key button toggles to "Clear Hot Key" once a key is assigned
+- **Hot Keys Are Consumed** -- PTT hot key and keyboard-paddle keystrokes no longer leak to the focused app (modifiers still pass through)
+- **Sound Card Picker Fixed** -- Selecting a sidetone output device now actually switches it
+- **Toast Notifications** -- Pair/unpair, connect/disconnect, minimize, and error toasts (works minimized too)
+- **Fixed-Size Window** -- Minimize + close only, for consistent layout across resolutions
+- **Program Files Install** -- Installs to `Program Files\W1VE Software\RWK Router Keyer`
+
+### New Features and Enhancements
+
+- **IPv6** -- The Go sidecar listens on both IPv4 and IPv6 for UDP forwarding; address handling and validation accept v4, v6, or both. (See ADR 0002.)
+- **Station Import / Pair UX** -- The old "Station IP + Set Key" area is replaced by a "Station:" dropdown plus an "Import..." button. Paste the Station Info string, name it (20 chars max), and it's saved to the dropdown. Changing the selected station while paired auto-unpairs first.
+- **Copy Station Info to Clipboard** -- Replaces the Station's "Show Pairing Key" menu item; exports `TailscaleIP|Key`.
+- **PTT Hot Key** -- Once set, the button reads "Clear Hot Key" and clears the assignment when clicked. Hot key state persists across restarts.
+- **Global Key Capture** -- PTT hot key and keyboard-paddle keys are eaten by the low-level hook so they don't reach other windows; modifier keys are passed through so normal typing is unaffected.
+- **DLI Web Power Switch** -- New Digital Loggers entry in the port-forward wizard (catalog v4, 31 entries), with an AutoPing tip for power-cycling a stuck router/modem.
+- **Inputs Panel Rework** -- DCD = PTT (footswitch) moved under the Paddle dropdown; "Logger App" / "Hardware WinKey" stacked with a per-selection help line; loopback test button removed.
+
+### Bug Fixes
+
+- Fixed a WinKeyer hang when a logger (e.g. N1MM) drove the Station's logger input -- serial writes are now serialized behind a single lock, with an idle-timeout safety net and a text-buffer drain
+- Fixed logger input configured before the Station was armed -- the start intent is now retained and retried on arm
+- Fixed the sidetone output-device selector, which was never wired
+- Speed and Weight sliders now size from the group's real width so they render correctly across display resolutions; the Weight slider no longer overlaps the Mode dropdown and the WPM readout is no longer clipped
 
 ---
 
@@ -92,15 +127,15 @@ The Keyer and Inputs panels are **disabled (greyed out) until you pair with a St
 - **PTT In** -- COM port for footswitch (monitors DSR or CTS)
 - **PTT PIN** -- Select DTR or RTS for the footswitch input line
 - **PTT Button** -- Big momentary button (hold to transmit)
-- **Set Hot Key** -- Capture any key combo as a PTT hotkey
+- **Set Hot Key / Clear Hot Key** -- Capture any key combo as a PTT hotkey; the button toggles to "Clear Hot Key" once set
 - **Logger App / Hardware WinKey** -- Mode selection for WinKeyer port
 
 ### Pair with Station
 
-- Enter the Station's Tailscale IP address
-- Set the shared pairing key
-- **Red "Pair" button** indicates you are not yet paired
-- Once paired, button changes to "Unpair" (normal colors) and panels enable
+- **Import...** a Station by pasting its "Station Info" string, then pick it from the **Station:** dropdown
+- **Red "Pair with Station" button** indicates you are not yet paired
+- Once paired, the button changes to "Unpair" (normal colors) and panels enable
+- Changing the selected station while paired auto-unpairs first
 
 ---
 
@@ -227,9 +262,9 @@ A large momentary button in the Inputs panel. Hold it down to transmit, release 
 
 ### PTT Global Hotkey
 
-Click "Set Hot Key", then press any key combo (e.g. Ctrl+Shift+P, F9, Alt+Space). The hotkey works globally -- you can be in any application and the hotkey triggers PTT. Displayed in plain English below the PTT button.
+Click "Set Hot Key", then press any key combo (e.g. Ctrl+Shift+P, F9, Alt+Space). The hotkey works globally -- you can be in any application and the hotkey triggers PTT. Displayed in plain English below the PTT button. Once set, the button becomes "Clear Hot Key" to remove the assignment.
 
-The hotkey is **enabled only while paired** and disabled on unpair or app close.
+The hotkey keystroke is **consumed** and does not leak to the focused application (modifier keys still pass through). The hotkey is **enabled only while paired** and disabled on unpair or app close.
 
 ### PTT Footswitch (COM Port)
 
@@ -462,8 +497,8 @@ RWK intercepts VITA-49 discovery broadcasts at the Station, rewrites the endpoin
 ### Running the Installer
 
 1. Download `RWK-Setup.exe` from [GitHub Releases](https://github.com/w1ve/rwk-router-keyer/releases)
-2. Run it. Choose: Client only, Station only, or both.
-3. Installs to `%LOCALAPPDATA%\RWK Router Keyer\`
+2. Run it. The first page shows the release notes; then choose: Client only, Station only, or both.
+3. Installs to `Program Files\W1VE Software\RWK Router Keyer\` (elevation required for firewall rules).
 4. Previous versions are automatically uninstalled first.
 5. Windows Firewall rules are created automatically for all executables.
 
@@ -501,10 +536,10 @@ By default, Tailscale keys expire after **90 days**. For a remote station, disab
 
 ## Pairing (CW Remote Keying)
 
-1. **Station:** File menu -> Show Pairing Key. Note the 8-character code.
-2. **Client:** Enter Station's Tailscale IP in "Station Address".
-3. **Client:** Click "Set Key", enter the pairing code.
-4. **Client:** Click the red "Pair" button. On success, panels enable and button shows "Unpair".
+1. **Station:** File menu -> Copy Station Info to Clipboard (exports `TailscaleIP|Key`).
+2. **Client:** Click "Import...", paste the Station Info string, and give it a name.
+3. **Client:** Select the imported station in the "Station:" dropdown.
+4. **Client:** Click the red "Pair with Station" button. On success, panels enable and the button shows "Unpair".
 
 Pairing is only for CW keying and PTT. Port forwarding works without it.
 

@@ -1,0 +1,87 @@
+================================================================
+ RWK Router/Keyer  --  Release Notes  --  Version 1.0.5
+================================================================
+
+This release adds IPv6 support, a redesigned Station import/pair
+workflow, several stability fixes for logger (WinKeyer) input, and
+a number of UI polish items. The list below covers everything that
+changed since version 1.0.4.
+
+----------------------------------------------------------------
+ NEW FEATURES AND ENHANCEMENTS
+----------------------------------------------------------------
+
+IPv6 support
+  - Edge/data now works over IPv6 tailnets. The Tailscale sidecar
+    listens on both IPv4 and IPv6 for UDP forwarding.
+  - Address handling accepts IPv4, IPv6, or both, with validation
+    for dotted-quad and compressed (::) IPv6 input.
+
+Station import / pair workflow
+  - The manual "Station IP + Set Key" entry has been replaced with
+    a "Station:" dropdown of imported stations plus an "Import..."
+    button.
+  - Import dialog: paste the Station Info string (copied from the
+    Station) and give it a name. Imported stations are saved and
+    added to the dropdown.
+  - On the Station, the menu item "Show Pairing Key" is now
+    "Copy Station Info to Clipboard".
+  - "Pair with Station" stays disabled until a valid station is
+    selected, then turns red until you are actually paired.
+  - Changing the selected station while paired auto-unpairs first.
+
+PTT hot key and keyboard paddle
+  - When a PTT hot key is set, the button now reads "Clear Hot Key"
+    and clicking it clears the assigned key.
+  - PTT hot key and keyboard-paddle keystrokes are now consumed by
+    RWK and no longer leak through to whatever window has focus.
+    (Modifier keys still pass through so normal typing is intact.)
+
+Sound card picker
+  - The sidetone output device selector is now wired; picking a
+    sound card actually changes the sidetone output.
+
+Toast notifications
+  - Lower-right balloon notifications (title "RWK-Client") appear on
+    pair/unpair, tailnet connect/disconnect, minimize to tray, and
+    on a trapped system error. They fire whether the window is open
+    or minimized.
+
+Window and layout
+  - The main window is now fixed size (minimize + close only).
+  - Inputs panel reworked: DCD = PTT (footswitch) moved under the
+    Paddle dropdown; "Logger App" / "Hardware WinKey" stacked with
+    a per-selection help line; the loopback test button removed.
+  - Keyer group polish: Speed slider right-aligned inside the group
+    with a small margin; Weight slider repositioned so it no longer
+    overlaps the Mode dropdown and lines up with the Sidetone
+    sliders; the WPM readout is no longer clipped.
+
+Wizard
+  - Added a Digital Loggers (DLI) Web Power Switch entry to the
+    port-forward wizard, with notes on enabling non-LAN access and
+    a tip on using AutoPing to power-cycle a stuck router/modem.
+  - The wizard now surfaces port-conflict errors and reminds you
+    that ports can be edited after the wizard runs.
+
+Install
+  - Installs to Program Files\W1VE Software\RWK Router Keyer.
+    Elevation is required so the installer can create the Windows
+    Firewall rules for the apps and the sidecar.
+
+----------------------------------------------------------------
+ BUG FIXES
+----------------------------------------------------------------
+
+  - Fixed a hang when a logger (N1MM) drove the Station's WinKeyer
+    input: serial writes are now serialized behind a single lock,
+    with an idle-timeout safety net and a text-buffer drain.
+  - Fixed logger input when it was configured before the Station
+    was armed; the start intent is retained and retried on arm.
+  - Speed and Weight sliders are now positioned from the group's
+    real width so they render correctly across display resolutions.
+
+================================================================
+ Repository:  https://github.com/w1ve/rwk-router-keyer
+ Copyright (c) 2026 Gerry Hull, W1VE.  MIT License.
+================================================================

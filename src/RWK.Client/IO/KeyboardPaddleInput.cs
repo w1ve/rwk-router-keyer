@@ -154,6 +154,11 @@ public sealed class KeyboardPaddleInput : IPaddleInputPoller
                     else _dahPressed = false;
                     RaiseStateChanged();
                 }
+
+                // Eat the paddle key events so they are NOT passed to the OS / foreground
+                // app (returning non-zero short-circuits the hook chain). This keeps CW
+                // keying from leaking characters into whatever window has focus.
+                return new IntPtr(1);
             }
         }
 

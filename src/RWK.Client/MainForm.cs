@@ -61,6 +61,13 @@ public partial class MainForm : Form
         InitializeComponent();
         _instance = this;
         Text = $"RWK Router/Keyer Client Version {AppVersion} — Any Rig, Any Internet, Anytime";
+
+        // Keyer sliders are positioned relative to the actual (runtime) group width so
+        // the Speed slider always ends a few px inside the group edge, and the Weight
+        // slider mirrors the Sidetone Volume slider's left/right extents.
+        _keyerGroup.SizeChanged += (_, _) => LayoutKeyerSliders();
+        LayoutKeyerSliders();
+
         PopulateDefaults();
         InitializeDeviceMonitoring();
         InitializeLogService();
@@ -158,6 +165,51 @@ public partial class MainForm : Form
             if (_trayIcon is not null)
                 _trayIcon.Visible = false;
         }
+    }
+
+    /// <summary>
+    /// Positions the Speed and Weight sliders inside the Keyer group based on the
+    /// group's real runtime width (the window is fixed-size, so this runs once at
+    /// startup and whenever the group is sized by the layout panel).
+    ///
+    /// Speed slider: right edge sits <see cref="EdgeGap"/> px inside the group's inner
+    /// right edge, left edge fixed at X=105 (aligns with the Weight label reference).
+    ///
+    /// Weight row: mirrors the Sidetone "Volume" slider's group-relative extents —
+    /// the "Weight:" label left edge lines up with the Volume slider's left (X=20),
+    /// and the Weight slider's right edge lines up with the Volume slider's right
+    /// (X=220). The slider is shortened on its left so the label + value fit on the
+    /// same vertical line as the slider.
+    /// </summary>
+    private void LayoutKeyerSliders()
+    {
+        if (_speedSlider is null || _weightSlider is null) return;
+
+        const int EdgeGap = 5;     // px gap between slider right edge and group inner edge
+        const int ModeLabelLeft = 12; // "Mode:" label left (weight label aligns to this)
+
+        int innerRight = _keyerGroup.ClientSize.Width - _keyerGroup.Padding.Right;
+        int rightEdge = innerRight - EdgeGap;
+
+        // --- Speed slider: keep left at 105, stretch to rightEdge ---
+        int speedLeft = _speedSlider.Left; // fixed reference (105)
+        int speedWidth = Math.Max(60, rightEdge - speedLeft);
+        _speedSlider.Width = speedWidth;
+
+        // --- Weight row: label/value left-aligned with "Mode:" label; slider right edge
+        //     matches the speed slider's right edge. Moved up so it clears the Mode row. ---
+        _weightCaptionLabel.Left = ModeLabelLeft;
+        _weightValueLabel.Left = _weightCaptionLabel.Right + 4;
+
+        // Slider starts after the value label (+ small gap), right edge = speed right edge.
+        int weightSliderLeft = _weightValueLabel.Right + 8;
+        int weightWidth = Math.Max(50, rightEdge - weightSliderLeft);
+        _weightSlider.Left = weightSliderLeft;
+        _weightSlider.Width = weightWidth;
+
+        // Label/value top-aligned with the weight slider (share the same top).
+        _weightCaptionLabel.Top = _weightSlider.Top;
+        _weightValueLabel.Top = _weightSlider.Top;
     }
 
     private void PopulateDefaults()
@@ -503,6 +555,7 @@ public partial class MainForm : Form
                 _pttHotKeyHook.SetHotKey(info);
                 _pttHotKeyLabel.Text = $"Hot Key: {info.ToDisplayString()}";
                 _pttHotKeyLabel.ForeColor = SystemColors.ControlText;
+                _pttSetHotKeyBtn.Text = "Clear Hot Key";
             }
         }
 
@@ -542,6 +595,18 @@ public partial class MainForm : Form
     {
         if (_pttHotKeyHook is null) return;
 
+        // If a hotkey is already configured, this button acts as "Clear Hot Key".
+        if (_pttHotKeyHook.HasHotKey)
+        {
+            _pttHotKeyHook.ClearHotKey();
+            _controller?.UpdateConfig(c => c with { PttHotKey = null });
+            _pttSetHotKeyBtn.Text = "Set Hot Key";
+            _pttHotKeyLabel.Text = "(none)";
+            _pttHotKeyLabel.ForeColor = SystemColors.GrayText;
+            _logService.Info("PTT hotkey cleared");
+            return;
+        }
+
         _pttSetHotKeyBtn.Text = "Press key...";
         _pttSetHotKeyBtn.Enabled = false;
         _pttHotKeyLabel.Text = "Waiting for key combo...";
@@ -553,7 +618,7 @@ public partial class MainForm : Form
     {
         if (InvokeRequired) { BeginInvoke(() => OnPttHotKeyCaptured(sender, info)); return; }
 
-        _pttSetHotKeyBtn.Text = "Set Hot Key";
+        _pttSetHotKeyBtn.Text = "Clear Hot Key";
         _pttSetHotKeyBtn.Enabled = true;
         _pttHotKeyLabel.Text = $"Hot Key: {info.ToDisplayString()}";
         _pttHotKeyLabel.ForeColor = SystemColors.ControlText;

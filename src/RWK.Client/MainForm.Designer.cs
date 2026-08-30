@@ -253,33 +253,39 @@ partial class MainForm
         _speedSlider.Maximum = 60;
         _speedSlider.Value = 20;
         _speedSlider.TickFrequency = 5;
+        // Width is set at runtime by LayoutKeyerSliders() so the right edge sits a few
+        // px inside the group edge regardless of the actual (40%) column pixel width.
         _speedSlider.Location = new Point(105, 30);
         _speedSlider.Size = new Size(195, 45);
         _speedSlider.AutoSize = false;
-        _speedSlider.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        _speedSlider.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         _speedSlider.Name = "_speedSlider";
         _speedSlider.Scroll += OnSpeedSliderScroll;
 
-        // Weight row (Y=84) — "Weight:" left-justified with the left edge of the speed
-        // slider (X=105); slider right-aligned to the group box.
+        // Weight row (Y=84) — mirrors the Sidetone Volume slider extents. The label
+        // left, value, and slider left/width are all set at runtime by
+        // LayoutKeyerSliders(); the values below are just design-time placeholders.
         _weightCaptionLabel.Text = "Weight:";
         _weightCaptionLabel.AutoSize = true;
-        _weightCaptionLabel.Location = new Point(105, 88);
+        _weightCaptionLabel.Location = new Point(20, 88);
         _weightCaptionLabel.Name = "_weightCaptionLabel";
 
         _weightValueLabel.Text = "50%";
         _weightValueLabel.AutoSize = true;
-        _weightValueLabel.Location = new Point(153, 88);
+        _weightValueLabel.Location = new Point(70, 88);
         _weightValueLabel.Name = "_weightValueLabel";
 
+        // Weight slider Y=80 (raised so it clears the Mode row at Y=120). Left/width and
+        // label positions are set at runtime by LayoutKeyerSliders(); values below are
+        // design-time placeholders.
         _weightSlider.Minimum = 25;
         _weightSlider.Maximum = 75;
         _weightSlider.Value = 50;
         _weightSlider.TickFrequency = 5;
-        _weightSlider.Location = new Point(192, 84);
-        _weightSlider.Size = new Size(108, 30);
+        _weightSlider.Location = new Point(110, 80);
+        _weightSlider.Size = new Size(110, 26);
         _weightSlider.AutoSize = false;
-        _weightSlider.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _weightSlider.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         _weightSlider.Name = "_weightSlider";
         _weightSlider.Scroll += OnWeightSliderScroll;
 
@@ -358,6 +364,11 @@ partial class MainForm
             _cwTypeAheadBox,
             _testTxButton
         });
+
+        // Keep the WPM readout + "WPM" caption on top of the speed slider (the slider's
+        // bounding box overlaps the caption row, which otherwise clips the text).
+        _speedLabel.BringToFront();
+        _speedCaptionLabel.BringToFront();
 
         // ============================================================
         // SIDETONE PANEL — vertical layout: Device, Frequency (value+slider), Volume (value+slider)

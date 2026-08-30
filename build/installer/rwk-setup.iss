@@ -36,6 +36,8 @@ PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog
 SetupIconFile=..\..\rwk.ico
 UninstallDisplayIcon={app}\rwk.ico
+; Read-only release-notes page shown up front (right after Welcome).
+InfoBeforeFile=..\..\INSTALL_RELEASE_NOTES.txt
 WizardStyle=modern
 WizardImageFile=wizard-image.bmp
 WizardSmallImageFile=wizard-small.bmp
@@ -60,6 +62,7 @@ Source: "..\..\artifacts\release\staging\rwk-tailscale-sidecar.exe"; DestDir: "{
 ; Shared assets
 Source: "..\..\artifacts\release\staging\splash.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\rwk.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\INSTALL_RELEASE_NOTES.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Client
 Source: "..\..\artifacts\release\staging\RWKClient.exe"; DestDir: "{app}"; Components: client; Flags: ignoreversion
 Source: "..\..\artifacts\release\staging\Wizard\radios.json"; DestDir: "{app}\Wizard"; Components: client; Flags: ignoreversion
