@@ -1,6 +1,7 @@
 ; RWK Router/Keyer Installer
 ; Inno Setup Script
-; Per-user install to {localappdata} — no admin rights required.
+; Installs to Program Files\W1VE Software\RWK Router Keyer (admin elevation
+; required for Windows Firewall rule creation).
 
 #define MyAppName "RWK Router/Keyer"
 #define MyAppVersion "1.0.5"
@@ -21,6 +22,10 @@ VersionInfoCopyright=Copyright (c) 2026 Gerry Hull, W1VE
 VersionInfoProductName=RWK Router/Keyer
 VersionInfoProductVersion={#MyAppVersion}
 DefaultDirName={autopf}\W1VE Software\RWK Router Keyer
+; Always use the new DefaultDirName, even if a previous version was installed to
+; a different location (e.g. the old %LOCALAPPDATA% path). Without this, Inno
+; reuses the remembered install directory and ignores DefaultDirName.
+UsePreviousAppDir=no
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\..\artifacts\release
