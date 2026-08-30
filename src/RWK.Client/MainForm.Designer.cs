@@ -234,12 +234,12 @@ partial class MainForm
         _dahLabel.Visible = false; _dahLabel.Name = "_dahLabel";
         _skLabel.Visible = false; _skLabel.Name = "_skLabel";
 
-        // Large WPM readout at top-left
+        // Large WPM readout at top-left (22pt — small enough not to clip the weight row)
         _speedLabel.Text = "20";
-        _speedLabel.Font = new Font("Segoe UI", 28F, FontStyle.Bold);
+        _speedLabel.Font = new Font("Segoe UI", 22F, FontStyle.Bold);
         _speedLabel.ForeColor = SystemColors.Highlight;
         _speedLabel.AutoSize = true;
-        _speedLabel.Location = new Point(12, 18);
+        _speedLabel.Location = new Point(12, 22);
         _speedLabel.Name = "_speedLabel";
 
         _speedCaptionLabel.Text = "WPM";
@@ -247,87 +247,94 @@ partial class MainForm
         _speedCaptionLabel.Location = new Point(14, 58);
         _speedCaptionLabel.Name = "_speedCaptionLabel";
 
+        // Speed slider — right-aligned to the group box, moved down slightly.
+        // Left edge X=105 is the reference for the Weight label below.
         _speedSlider.Minimum = 5;
         _speedSlider.Maximum = 60;
         _speedSlider.Value = 20;
         _speedSlider.TickFrequency = 5;
-        _speedSlider.Location = new Point(70, 24);
-        _speedSlider.Size = new Size(140, 45);
+        _speedSlider.Location = new Point(105, 30);
+        _speedSlider.Size = new Size(195, 45);
+        _speedSlider.AutoSize = false;
+        _speedSlider.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
         _speedSlider.Name = "_speedSlider";
         _speedSlider.Scroll += OnSpeedSliderScroll;
 
-        // Weight row (Y=72, clear of speed slider)
-        _weightCaptionLabel.Text = "Wt:";
+        // Weight row (Y=84) — "Weight:" left-justified with the left edge of the speed
+        // slider (X=105); slider right-aligned to the group box.
+        _weightCaptionLabel.Text = "Weight:";
         _weightCaptionLabel.AutoSize = true;
-        _weightCaptionLabel.Location = new Point(12, 76);
+        _weightCaptionLabel.Location = new Point(105, 88);
         _weightCaptionLabel.Name = "_weightCaptionLabel";
+
+        _weightValueLabel.Text = "50%";
+        _weightValueLabel.AutoSize = true;
+        _weightValueLabel.Location = new Point(153, 88);
+        _weightValueLabel.Name = "_weightValueLabel";
 
         _weightSlider.Minimum = 25;
         _weightSlider.Maximum = 75;
         _weightSlider.Value = 50;
         _weightSlider.TickFrequency = 5;
-        _weightSlider.Location = new Point(34, 72);
-        _weightSlider.Size = new Size(80, 30);
+        _weightSlider.Location = new Point(192, 84);
+        _weightSlider.Size = new Size(108, 30);
         _weightSlider.AutoSize = false;
+        _weightSlider.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _weightSlider.Name = "_weightSlider";
         _weightSlider.Scroll += OnWeightSliderScroll;
 
-        _weightValueLabel.Text = "50%";
-        _weightValueLabel.AutoSize = true;
-        _weightValueLabel.Location = new Point(116, 76);
-        _weightValueLabel.Name = "_weightValueLabel";
-
+        // Mode row (Y=120) — left-justified below where Weight was.
         _modeCaptionLabel.Text = "Mode:";
         _modeCaptionLabel.AutoSize = true;
-        _modeCaptionLabel.Location = new Point(150, 76);
+        _modeCaptionLabel.Location = new Point(12, 123);
         _modeCaptionLabel.Name = "_modeCaptionLabel";
 
         _modeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _modeCombo.Location = new Point(192, 73);
-        _modeCombo.Size = new Size(100, 23);
+        _modeCombo.Location = new Point(55, 120);
+        _modeCombo.Size = new Size(110, 23);
         _modeCombo.Name = "_modeCombo";
 
-        // Paddle Reverse + Keyboard Paddle on same line (Y=104)
+        // Paddle Reverse + Keyboard Paddle on same line (Y=152)
         _paddleReverseCheck.Text = "Paddle Rev";
         _paddleReverseCheck.AutoSize = true;
-        _paddleReverseCheck.Location = new Point(12, 104);
+        _paddleReverseCheck.Location = new Point(12, 152);
         _paddleReverseCheck.Name = "_paddleReverseCheck";
 
         // Keyboard paddle
         _keyboardPaddleCheck = new CheckBox();
         _keyboardPaddleCheck.Text = "Keyboard Paddle";
         _keyboardPaddleCheck.AutoSize = true;
-        _keyboardPaddleCheck.Location = new Point(120, 104);
+        _keyboardPaddleCheck.Location = new Point(120, 152);
         _keyboardPaddleCheck.Name = "_keyboardPaddleCheck";
 
-        // Paddle Keys label + combo (Y=128)
+        // Paddle Keys label + combo (Y=178)
         var _paddleKeysCaptionLabel = new Label();
         _paddleKeysCaptionLabel.Text = "Paddle Keys:";
         _paddleKeysCaptionLabel.AutoSize = true;
-        _paddleKeysCaptionLabel.Location = new Point(12, 131);
+        _paddleKeysCaptionLabel.Location = new Point(12, 181);
         _paddleKeysCaptionLabel.Name = "_paddleKeysCaptionLabel";
 
         _keyboardPaddleCombo = new ComboBox();
         _keyboardPaddleCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _keyboardPaddleCombo.Location = new Point(90, 128);
-        _keyboardPaddleCombo.Size = new Size(200, 22);
+        _keyboardPaddleCombo.Location = new Point(90, 178);
+        _keyboardPaddleCombo.Size = new Size(210, 22);
         _keyboardPaddleCombo.Enabled = false;
         _keyboardPaddleCombo.Name = "_keyboardPaddleCombo";
 
-        // CW Macro buttons (2 rows of 4 + Edit) — Y=156
-        _macro1Btn = new Button { Text = "CQ", Size = new Size(60, 24), Location = new Point(12, 156), UseVisualStyleBackColor = true, Name = "_macro1Btn" };
-        _macro2Btn = new Button { Text = "599", Size = new Size(60, 24), Location = new Point(76, 156), UseVisualStyleBackColor = true, Name = "_macro2Btn" };
-        _macro3Btn = new Button { Text = "TU", Size = new Size(60, 24), Location = new Point(140, 156), UseVisualStyleBackColor = true, Name = "_macro3Btn" };
-        _macro4Btn = new Button { Text = "73", Size = new Size(60, 24), Location = new Point(204, 156), UseVisualStyleBackColor = true, Name = "_macro4Btn" };
-        _macro5Btn = new Button { Text = "MYCALL", Size = new Size(60, 24), Location = new Point(12, 184), UseVisualStyleBackColor = true, Name = "_macro5Btn" };
-        _macro6Btn = new Button { Text = "QRL?", Size = new Size(60, 24), Location = new Point(76, 184), UseVisualStyleBackColor = true, Name = "_macro6Btn" };
-        _macro7Btn = new Button { Text = "?", Size = new Size(60, 24), Location = new Point(140, 184), UseVisualStyleBackColor = true, Name = "_macro7Btn" };
-        _macro8Btn = new Button { Text = "QRX", Size = new Size(60, 24), Location = new Point(204, 184), UseVisualStyleBackColor = true, Name = "_macro8Btn" };
-        _macroEditBtn = new Button { Text = "Edit", Size = new Size(40, 24), Location = new Point(268, 156), UseVisualStyleBackColor = true, Name = "_macroEditBtn" };
+        // CW Macro buttons (2 rows of 4 + Edit) — Y=206
+        _macro1Btn = new Button { Text = "CQ", Size = new Size(60, 24), Location = new Point(12, 206), UseVisualStyleBackColor = true, Name = "_macro1Btn" };
+        _macro2Btn = new Button { Text = "599", Size = new Size(60, 24), Location = new Point(76, 206), UseVisualStyleBackColor = true, Name = "_macro2Btn" };
+        _macro3Btn = new Button { Text = "TU", Size = new Size(60, 24), Location = new Point(140, 206), UseVisualStyleBackColor = true, Name = "_macro3Btn" };
+        _macro4Btn = new Button { Text = "73", Size = new Size(60, 24), Location = new Point(204, 206), UseVisualStyleBackColor = true, Name = "_macro4Btn" };
+        _macro5Btn = new Button { Text = "MYCALL", Size = new Size(60, 24), Location = new Point(12, 234), UseVisualStyleBackColor = true, Name = "_macro5Btn" };
+        _macro6Btn = new Button { Text = "QRL?", Size = new Size(60, 24), Location = new Point(76, 234), UseVisualStyleBackColor = true, Name = "_macro6Btn" };
+        _macro7Btn = new Button { Text = "?", Size = new Size(60, 24), Location = new Point(140, 234), UseVisualStyleBackColor = true, Name = "_macro7Btn" };
+        _macro8Btn = new Button { Text = "QRX", Size = new Size(60, 24), Location = new Point(204, 234), UseVisualStyleBackColor = true, Name = "_macro8Btn" };
+        _macroEditBtn = new Button { Text = "Edit", Size = new Size(40, 24), Location = new Point(268, 206), UseVisualStyleBackColor = true, Name = "_macroEditBtn" };
 
-        // Type-ahead CW input box — Y=214
+        // Type-ahead CW input box — Y=264
         _cwTypeAheadBox = new TextBox();
-        _cwTypeAheadBox.Location = new Point(12, 214);
+        _cwTypeAheadBox.Location = new Point(12, 264);
         _cwTypeAheadBox.Size = new Size(220, 22);
         _cwTypeAheadBox.PlaceholderText = "Type CW here (sent immediately)...";
         _cwTypeAheadBox.Name = "_cwTypeAheadBox";
@@ -336,7 +343,7 @@ partial class MainForm
         _testTxButton = new Button();
         _testTxButton.Text = "Test TX";
         _testTxButton.Size = new Size(64, 23);
-        _testTxButton.Location = new Point(236, 214);
+        _testTxButton.Location = new Point(236, 264);
         _testTxButton.UseVisualStyleBackColor = true;
         _testTxButton.Name = "_testTxButton";
 
@@ -977,8 +984,8 @@ partial class MainForm
         _mainLayout.ColumnCount = 1;
         _mainLayout.RowCount = 2;
         _mainLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        _mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 65F));
-        _mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 35F));
+        _mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 72F));
+        _mainLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 28F));
         _mainLayout.Padding = new Padding(6);
         _mainLayout.Name = "_mainLayout";
         _mainLayout.Controls.Add(_remoteWinKeyerGroup, 0, 0);
@@ -1109,7 +1116,7 @@ partial class MainForm
 
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(940, 540);
+        ClientSize = new Size(940, 580);
         Name = "MainForm";
         StartPosition = FormStartPosition.CenterScreen;
         Text = "RWK Client";
