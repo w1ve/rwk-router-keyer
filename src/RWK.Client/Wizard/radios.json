@@ -1,6 +1,6 @@
 {
-  "catalogVersion": 3,
-  "updated": "2026-08-20",
+  "catalogVersion": 4,
+  "updated": "2026-08-26",
   "entries": [
     {
       "id": "icom.rsba1.radio-lan",
@@ -846,6 +846,43 @@
         "Physical: If Station PC has no serial port, use a USB-to-RS232 adapter",
         "Physical: Baud rate is fixed at 1200 baud -- ensure VSPE is configured to match",
         "Note: The official ACOM eBox (Ethernet adapter) is an alternative if you prefer no VSPE setup"
+      ]
+    },
+    {
+      "id": "svc.digitalloggers.webpowerswitch",
+      "vendor": "Digital Loggers",
+      "displayName": "Web Power Switch (remote AC power control)",
+      "models": ["Web Power Switch 8", "Web Power Switch Pro", "DIN Relay", "Ethernet Power Controller"],
+      "software": "Web browser / REST API",
+      "endpointLocation": "lan",
+      "confidence": "verified",
+      "source": "https://www.digital-loggers.com/lpc.html",
+      "isService": true,
+      "forwards": [
+        { "proto": "TCP", "port": 80, "role": "control", "portIdentity": "floating", "fixed": false, "name": "DLI-WebPower", "notes": "Digital Loggers Web Power Switch HTTP interface", "direction": "ClientToStation" }
+      ],
+      "prompts": {
+        "stationTarget": {
+          "label": "Web Power Switch IP address on the Station's LAN",
+          "why": "The Web Power Switch has its own Ethernet port with a static IP. You control the outlets via its built-in web page, which the Station forwards to you over the tunnel.",
+          "howToFind": "Check the switch's LCD (if equipped) or your router's DHCP client list. Set a static IP in the switch's Setup -> Network page so the rule doesn't break on a lease change.",
+          "ifWrong": "The forwarded web page will fail to load. The switch's outlets still work locally and via its front panel."
+        }
+      },
+      "clientNotes": [
+        "Open a web browser to http://127.0.0.1/ to reach the Web Power Switch control page",
+        "Bookmark it for one-click access to cycle station power (radio, amp, rotator, PC, etc.)",
+        "The REST/HTTP API also works through the tunnel for scripted power control"
+      ],
+      "stationNotes": [
+        "The Web Power Switch must have a static IP on the Station LAN",
+        "IMPORTANT: In the switch's Setup -> Security page, you MUST change the access setting so it is NOT limited to the local LAN. By default many Digital Loggers units restrict web access to same-subnet clients; because RWK forwards the connection from the Station's loopback, the switch may see it as a non-LAN request and refuse it. Disable 'Allow only local access' (or the equivalent LAN-restriction option) and set a strong admin password.",
+        "Set a strong username/password on the switch -- once forwarded, anyone with tunnel access can control station power"
+      ],
+      "radioNotes": [
+        "Physical: Connect the Web Power Switch to your Station LAN switch via Ethernet cable",
+        "Physical: Plug station equipment (radio, amplifier, rotator, PC) into the switched outlets",
+        "Physical: A power-cycle-able Station PC should NOT be plugged into a switched outlet you might turn off remotely -- keep it on an always-on outlet or you will lock yourself out"
       ]
     },
     {
