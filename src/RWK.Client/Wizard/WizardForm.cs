@@ -710,7 +710,9 @@ public sealed class WizardForm : Form
     private void BuildStep5_Review()
     {
         _stepTitle.Text = "Review & Apply";
-        _stepDescription.Text = "Review the rules that will be created. Click Apply to add them to the Port Forwards grid.";
+        _stepDescription.Text = "Review the rules that will be created. Click Apply to add them to the Port Forwards grid.\r\n" +
+            "These are default ports. If a device uses different ports, or you are adding a second device of the " +
+            "same type, you can change the Client Port / Station Port in the Ham Router grid after the wizard finishes.";
 
         // Profile name
         var nameLabel = new Label

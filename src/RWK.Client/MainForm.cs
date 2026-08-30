@@ -983,6 +983,8 @@ public partial class MainForm : Form
     {
         if (_controller is null) return;
 
+        var conflicts = new List<string>();
+
         foreach (var pfr in rules)
         {
             var protocol = pfr.Protocol.Equals("UDP", StringComparison.OrdinalIgnoreCase)
@@ -1029,13 +1031,37 @@ public partial class MainForm : Form
                     pfr.StationTarget,
                     direction);
 
-                try { _controller.AddForwardRule(newRule); } catch { }
+                try
+                {
+                    _controller.AddForwardRule(newRule);
+                }
+                catch (Exception ex)
+                {
+                    // Surface duplicate/port-conflict failures instead of silently dropping.
+                    conflicts.Add($"'{pfr.Name}' ({pfr.Protocol} {pfr.ClientPort}): {ex.Message}");
+                    _logService.Info($"Wizard/Import rule '{pfr.Name}' rejected: {ex.Message}");
+                }
             }
         }
 
         // Reload grid from controller state.
         LoadForwardRulesIntoGrid();
         _logService.Info($"Wizard/Import: {rules.Count} rules merged into forwarding table.");
+
+        // If any rules failed (usually a port already in use by another device of the
+        // same type), tell the user and remind them ports are editable in the grid.
+        if (conflicts.Count > 0)
+        {
+            MessageBox.Show(
+                "Some rules could not be added because their ports are already in use:\n\n" +
+                string.Join("\n", conflicts) +
+                "\n\nThis usually happens when you add a second device of the same type " +
+                "(both want the same default ports). You can edit the Client Port / Station Port " +
+                "columns in the Ham Router grid to assign different ports, then enable the rules.",
+                "Port Conflict",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
     }
 
     private ForwardRule BuildRuleFromRow(DataGridViewRow row)
