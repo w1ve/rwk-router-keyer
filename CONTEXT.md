@@ -6,8 +6,15 @@ RWK v2.0 is a Client/Station CW (Morse code) remoting and port forwarding system
 
 **Repository**: https://github.com/w1ve/rwk-router-keyer
 **Release**: https://github.com/w1ve/rwk-router-keyer/releases/tag/v1.0.0
-**Current Version**: 1.0.4
+**Published Release**: v1.0.4 (on GitHub)
+**Current Working Version**: 1.0.5 — branch `v1.0.5-ipv6`, NOT yet merged/pushed to main or GitHub
 **Spec location**: `.kiro/specs/rwk-v2/` (requirements.md, design.md, tasks.md)
+
+> **RESUME NOTE (v1.0.5):** All v1.0.5 work is committed on branch `v1.0.5-ipv6`. The
+> installer at `artifacts\release\RWK-Setup.exe` is built from this branch for local
+> testing with a friend. v1.0.4 remains the published GitHub release. Do NOT push to
+> GitHub or merge to main until explicitly told. See the "v1.0.5 Changes" section below
+> for everything done this cycle.
 
 ## Three Independent Features
 
@@ -446,3 +453,127 @@ Full specification in `RWK-Wizard-SPEC.md` (root folder). Key design points:
 - `src/RWK.Client/MainForm.cs` + `MainForm.Designer.cs` — Wizard button, File menu entry
 - `src/RWK.Shared/Config/ForwardRule.cs` — may need metadata fields (role, portIdentity, notes) for round-trip with profiles
 - `src/RWK.Shared/Config/ClientConfig.cs` — profile storage path
+
+---
+
+## v1.0.5 Changes — IPv6 Support + Test-Driven Fixes (August 2026)
+
+**Branch:** `v1.0.5-ipv6` (version 1.0.5 in `Directory.Build.props` + `build/installer/rwk-setup.iss`).
+**Status:** All committed on the branch. Installer built at `artifacts\release\RWK-Setup.exe` for
+local test. NOT merged to main, NOT pushed to GitHub. v1.0.4 is still the published release.
+
+### 1. IPv6 Support
+- **Go sidecar dual-listener UDP fix** (`src/RWK.TailscaleSidecar/forward.go`) — the sidecar now
+  listens on both IPv4 and IPv6 for UDP forwarding (dual listeners) so edge/data works over v6 tailnets.
+- **.NET `AddressExposure`** — address handling reworked to accept v4, v6, or both.
+- **`IpAddressValidator`** — validates v4 dotted-quad and v6 (incl. `::` compression) input.
+- **ADR 0002** — architecture decision record for the IPv6 approach (see `docs/adr/`).
+- Tests: Go 26 pass; .NET 111+28 pass. Integration test is gated behind build tag `integration`
+  and needs a tsnet auth key at `C:\Users\gerry\.rwk-tsnet-authkey`.
+- **Decision:** Removed the custom `IpAddressTextBox` control. Pairing now uses a dropdown + paste
+  (Import) workflow, not manual IP entry, so a structured octet/slider control was unnecessary.
+  Kept `DataGridViewIpAddressColumn` + `IpAddressValidator` for the port-forward grid.
+
+### 2. Station Import / Pair UX Overhaul
+- Replaced the manual "Station Tailscale IP + IP box + Set Key" area with **"Station:" + a dropdown**
+  of imported station names (default `(None)`), plus an **"Import..."** button.
+- **Import dialog:** user pastes the Station Info string (copied from the Station), enters a name
+  (20 char max). Imported stations are persisted and added to the dropdown.
+- **Station side:** menu item renamed **"Show Pairing Key" → "Copy Station Info to Clipboard"**.
+  Exported format is `TailscaleIP|Key`.
+- **New models/stores:** `StationEntry` (Name|TailscaleIP|Key), `StationListStore` (persisted table).
+- **"Pair with Station"** button is disabled until a valid station is selected in the dropdown, then
+  turns **red** until actually paired.
+- **Auto-unpair** when the station dropdown is changed while paired to a different station.
+
+### 3. WinKeyer Hang Fix (N1MM logger input hang)
+- **Symptom:** N1MM keying into the Station's logger input hung after a few transmissions with no
+  recovery ("no keyer output configured" / stuck WK protocol).
+- **Root cause:** concurrent serial writes to the WinKeyer port from two threads (ReaderLoop and
+  KeyerLoop) corrupted the protocol.
+- **Fix:** serialized all port writes through `WriteToPort` guarded by `_writeLock`, added an
+  idle-timeout safety net, and a TextBuffer drain. (Rejected reworking the status protocol.)
+
+### 4. Logger Host Start-Before-Armed Fix
+- Persist the intent to start the logger host and retry on arm, so the logger input works even when
+  configured before the station is armed. File: `src/RWK.Station/IO/StationLoggerHost.cs`.
+
+### 5. Sound Card Picker Fix
+- The client audio device combo was never wired. Added `OnAudioDeviceComboChanged` +
+  `SetSidetoneDevice` so selecting a sound card actually changes the sidetone output device.
+
+### 6. Toast Notifications (lower-right, title "RWK-Client")
+- Balloon notifications via `_trayIcon` on: pair / unpair ("Paired/Unpaired with Station XXXX"),
+  tailnet connect / disconnect, minimize ("Client Minimized. Click the icon in the system tray to
+  restore"), and trapped system error ("System Error occurred. Please restart RWK-Client").
+- Notifications fire whether the window is full-size or minimized.
+
+### 7. Fixed (Non-Sizable) Window
+- `FormBorderStyle.FixedSingle`, `MaximizeBox = false` — window keeps minimize + close only.
+
+### 8. Inputs Panel Rework
+- DCD=PTT (Footswitch) checkbox moved directly below the Paddle dropdown, left-aligned with it.
+- Removed the "WinKeyer Loopback Test" button and its handler. (Left `RunWinKeyerLoopbackTestAsync`
+  in ClientController as dead code to avoid destabilizing the `_loopbackTestActive` echo-path guard.)
+- "Logger App" / "Hardware WinKey" radio buttons vertically stacked and left-aligned, with an italic
+  help line below that changes per selection:
+  - Logger App: "N1MM, DXLog, Wintest, etc"
+  - Hardware WinKey: "Warning: one-character delay in sending.  Local sidetone muted."
+- Removed the hidden speaker-mute button that was to the right of "Hardware WinKey".
+- **Decision:** panels stay ENABLED when unpaired so the keyer can be tested locally (keying goes to
+  sidetone only when unpaired). Rejected greying them out.
+
+### 9. Digital Loggers Web Power Switch (DLI) — Wizard entry
+- Added a DLI Web Power Switch entry to the Wizard's optional port-forward services (catalog v4,
+  31 entries in `src/RWK.Client/Wizard/radios.json`).
+- Notes remind the user to change the DLI setting so access is not limited to the local LAN.
+- **AutoPing tip:** documented that the user can plug their router/modem into a DLI outlet and program
+  the switch to ping Google/Cloudflare DNS; on repeated ping failure the DLI power-cycles the devices,
+  potentially saving a trip to the remote site.
+
+### 10. Install Path + Elevation
+- Install path changed to `{autopf}\W1VE Software\RWK Router Keyer` (Program Files) with
+  `UsePreviousAppDir=no` (needed because upgrades were reusing the old path).
+- Elevation retained (required for `netsh advfirewall` firewall rules).
+
+### 11. Wizard Port-Conflict Feedback
+- `MergeWizardRules` now surfaces port-conflict errors to the user, plus a reminder that ports can be
+  edited after the wizard (many hardware boxes like the RRC may not use the defaults).
+
+### 12. Keyer Group Layout Rework (final UI polish — commit 4015cf4)
+- WPM readout shrunk 28pt → 22pt so it no longer clips the weight row.
+- Speed slider right-aligned to the group box (anchored L+R), moved down, widened.
+- Weight row: "Weight:" label left-justified with the speed slider's left edge (X=105), value beside
+  it, weight slider right-aligned (anchored right).
+- Mode label + dropdown left-justified below the weight row.
+- Paddle Rev / Keyboard Paddle, Paddle Keys, macros, type-ahead, Test TX shifted down into freed space.
+- Keyer row given 72% of form height (was 65%); ClientSize 940×540 → 940×580.
+- Sliders use anchoring for clean scaling on non-hi-DPI monitors (fixes 1920×1200 clipping).
+
+### Key Files (v1.0.5)
+- `src/RWK.Client/MainForm.cs`, `src/RWK.Client/MainForm.Designer.cs`
+- `src/RWK.Client/Wizard/radios.json`
+- `src/RWK.Station/IO/StationLoggerHost.cs`
+- `src/RWK.TailscaleSidecar/forward.go`
+
+### Build / Release Commands (v1.0.5)
+- Go: `E:\go\bin\go.exe`; tests: `cd src/RWK.TailscaleSidecar; go test .` (26 pass). Integration test
+  needs `C:\Users\gerry\.rwk-tsnet-authkey` and tag `integration`. If the Go build cache corrupts,
+  delete `C:\Users\gerry\AppData\Local\go-build`.
+- Installer (AV locks the output — build to a tmp name then rename):
+  ```
+  dotnet publish src/RWK.Client/RWK.Client.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/release/publish-client
+  dotnet publish src/RWK.Station/RWK.Station.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/release/publish-station
+  Copy-Item artifacts\release\publish-client\RWKClient.exe artifacts\release\staging\RWKClient.exe -Force
+  Copy-Item artifacts\release\publish-station\RWKStation.exe artifacts\release\staging\RWKStation.exe -Force
+  Copy-Item artifacts\release\publish-client\Wizard\radios.json artifacts\release\staging\Wizard\radios.json -Force
+  Start-Sleep 3; & "C:\Users\gerry\AppData\Local\Programs\Inno Setup 6\ISCC.exe" "build\installer\rwk-setup.iss" /O"artifacts\release" /FRWK-Setup-tmp
+  Start-Sleep 3; Remove-Item artifacts\release\RWK-Setup.exe -Force; Move-Item artifacts\release\RWK-Setup-tmp.exe artifacts\release\RWK-Setup.exe -Force
+  ```
+- `gh` CLI: `C:\tools\gh\bin\gh.exe` (authenticated as w1ve). Release repo: `w1ve/rwk-router-keyer`
+  (remote `rwk-router-keyer`); also remote `origin` = `w1ve/rwk.git`.
+
+### Next Steps (v1.0.5)
+1. Local test with friend using `artifacts\release\RWK-Setup.exe`.
+2. If good: bump/confirm version, merge `v1.0.5-ipv6` → main, push, and cut a v1.0.5 GitHub release.
+3. (Deferred) Opus audio streaming; Linux/Pi Station port.
