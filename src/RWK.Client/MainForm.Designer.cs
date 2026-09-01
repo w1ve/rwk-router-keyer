@@ -1101,6 +1101,26 @@ partial class MainForm
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         };
         rwkMenuItem.DropDownItems.Add(deleteLogsMenuItem);
+
+        // Logs submenu: one entry per generated log type; opens the current log in Notepad.
+        var logsMenuItem = new ToolStripMenuItem("View &Logs");
+        foreach (var (label, fileName) in new (string, string)[]
+        {
+            ("Client Log", "client.log"),
+            ("Client Debug Log", "client-debug.log"),
+            ("WinKeyer Log", "winkeyer.log"),
+            ("Hardware WinKeyer Log", "winkeyer-hw.log"),
+            ("Sidecar Log", "sidecar.log"),
+            ("Crash Log", "crash.log"),
+        })
+        {
+            string file = fileName;
+            var item = new ToolStripMenuItem(label);
+            item.Click += (_, _) => OpenLogInNotepad(file);
+            logsMenuItem.DropDownItems.Add(item);
+        }
+        rwkMenuItem.DropDownItems.Add(logsMenuItem);
+
         rwkMenuItem.DropDownItems.Add(new ToolStripSeparator());
         rwkMenuItem.DropDownItems.Add(exitMenuItem);
         _mainMenu.Items.Add(rwkMenuItem);

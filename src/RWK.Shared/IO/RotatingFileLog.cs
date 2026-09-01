@@ -25,13 +25,33 @@ public static class RotatingFileLog
     private static readonly object _lock = new();
 
     /// <summary>
+    /// Returns the directory where log files are stored:
+    /// <c>%LocalAppData%\RWK Router Keyer\logs</c>. This is always writable by the running
+    /// user, unlike the install directory (Program Files) where logs were previously written
+    /// and silently failed (or got UAC-virtualized). The directory is created if missing.
+    /// </summary>
+    public static string GetLogDirectory()
+    {
+        string dir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RWK Router Keyer",
+            "logs");
+        try { Directory.CreateDirectory(dir); } catch { /* best effort */ }
+        return dir;
+    }
+
+    /// <summary>Returns the full path of the current (non-rotated) log file for the given name.</summary>
+    public static string GetLogFilePath(string logFileName)
+        => Path.Combine(GetLogDirectory(), logFileName);
+
+    /// <summary>
     /// Appends a timestamped message to the specified log file, rotating if necessary.
     /// </summary>
-    /// <param name="logFileName">Log file name (e.g. "client.log"). Placed in AppContext.BaseDirectory.</param>
+    /// <param name="logFileName">Log file name (e.g. "client.log"). Stored in <see cref="GetLogDirectory"/>.</param>
     /// <param name="message">The message to log (no trailing newline needed).</param>
     public static void Append(string logFileName, string message)
     {
-        string dir = AppContext.BaseDirectory;
+        string dir = GetLogDirectory();
         string path = Path.Combine(dir, logFileName);
 
         lock (_lock)
@@ -64,7 +84,7 @@ public static class RotatingFileLog
     /// <returns>Number of files deleted.</returns>
     public static int DeleteAll(params string[] logFileNames)
     {
-        string dir = AppContext.BaseDirectory;
+        string dir = GetLogDirectory();
         int deleted = 0;
 
         lock (_lock)
@@ -95,7 +115,7 @@ public static class RotatingFileLog
     /// </summary>
     public static string[] FindAll(params string[] logFileNames)
     {
-        string dir = AppContext.BaseDirectory;
+        string dir = GetLogDirectory();
         var found = new List<string>();
 
         foreach (string baseName in logFileNames)

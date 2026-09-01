@@ -37,13 +37,18 @@ public static class HybridWaiter
 
         long remaining = targetTimestamp - clock.GetTimestamp();
 
-        // Coarse phase: yield timeslice while far from target (>2ms).
-        // Thread.Sleep(0) yields to same-priority threads without the timer resolution issue.
+        // Coarse phase: actually SLEEP while far from target (>2ms). With timeBeginPeriod(1)
+        // active on the keyer/replay threads, Thread.Sleep(1) sleeps ~1ms and RELEASES the CPU
+        // core. This matters because the keyer thread runs at THREAD_PRIORITY_HIGHEST: a busy
+        // spin here (the previous Thread.Sleep(0), which only yields to equal/higher-priority
+        // threads and therefore returns immediately) pegs a core for the whole element and can
+        // starve the WASAPI audio render thread and the sidecar — heard as glitchy/dragged CW.
+        // The SpinWait phases below still provide sub-millisecond precision for the final approach.
         long yieldThreshold = clock.Frequency / 500; // ~2ms
         while (remaining > yieldThreshold)
         {
             if (shouldAbort?.Invoke() == true) return;
-            Thread.Sleep(0); // Yield, not sleep — returns immediately if nothing else to run
+            Thread.Sleep(1); // Real ~1ms sleep (timeBeginPeriod(1) is active) — frees the core.
             remaining = targetTimestamp - clock.GetTimestamp();
         }
 

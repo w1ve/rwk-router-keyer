@@ -2412,6 +2412,32 @@ public partial class MainForm : Form
         }
     }
 
+    /// <summary>
+    /// Opens the current (non-rotated) log file for the given name in Notepad. Creates an
+    /// empty file first if it doesn't exist yet, so Notepad always opens cleanly.
+    /// </summary>
+    private void OpenLogInNotepad(string logFileName)
+    {
+        try
+        {
+            string path = RWK.Shared.IO.RotatingFileLog.GetLogFilePath(logFileName);
+            if (!File.Exists(path))
+                File.WriteAllText(path, $"(no {logFileName} entries yet)\n");
+
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "notepad.exe",
+                Arguments = $"\"{path}\"",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not open {logFileName}:\n{ex.Message}",
+                "Open Log", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     private void OnImportStationClick(object? sender, EventArgs e)
     {
         using var dlg = new RWK.Client.Controls.ImportStationDialog();

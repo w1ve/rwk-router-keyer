@@ -309,6 +309,32 @@ public partial class MainForm : Form
         ShowPortOpenError("logger", e.PortName, e.Error);
     }
 
+    /// <summary>
+    /// Opens the current (non-rotated) log file for the given name in Notepad. Creates an
+    /// empty file first if it doesn't exist yet, so Notepad always opens cleanly.
+    /// </summary>
+    private void OpenLogInNotepad(string logFileName)
+    {
+        try
+        {
+            string path = RWK.Shared.IO.RotatingFileLog.GetLogFilePath(logFileName);
+            if (!File.Exists(path))
+                File.WriteAllText(path, $"(no {logFileName} entries yet)\n");
+
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "notepad.exe",
+                Arguments = $"\"{path}\"",
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"Could not open {logFileName}:\n{ex.Message}",
+                "Open Log", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     // ────────────────────────────────────────────────────────────────
     // COM port polling and dynamic connection
     // ────────────────────────────────────────────────────────────────
@@ -436,8 +462,32 @@ public partial class MainForm : Form
         }
     }
 
+    private bool _suppressKeyingConfigEvents;
+
     private void OnKeyingConfigChanged(object? sender, EventArgs e)
     {
+        if (_suppressKeyingConfigEvents) return;
+
+        // Guard: Key and PTT cannot use the same line. If the user selects a PTT line that
+        // matches the Key line (both DTR or both RTS), force PTT to None — a shared line is
+        // invalid and would fail to open the keying port.
+        bool keyIsRts = _keyLineRts.Checked;
+        bool pttSharesKeyLine =
+            (keyIsRts && _pttLineRts.Checked) || (!keyIsRts && _pttLineDtr.Checked);
+        if (pttSharesKeyLine)
+        {
+            _suppressKeyingConfigEvents = true;
+            try
+            {
+                _pttLineNone.Checked = true; // resets _pttLineRts/_pttLineDtr in the radio group
+            }
+            finally
+            {
+                _suppressKeyingConfigEvents = false;
+            }
+            SetStatusText("PTT set to (None): it cannot share the same line as the Key output.");
+        }
+
         // Reconnect with new pin settings if a port is selected.
         string? selectedPort = _comPortCombo.SelectedItem as string;
         if (string.IsNullOrEmpty(selectedPort) || _controller is null) return;

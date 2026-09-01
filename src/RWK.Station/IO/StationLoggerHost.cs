@@ -134,6 +134,12 @@ public sealed class StationLoggerHost : IDisposable
         _sending = false;
         _lastRxTimestamp = 0;
 
+        // Start every session with a clean pump: clear any stuck immediate-key latch, leftover
+        // host text, or paddle/abort state from a previous session. A stuck _immediateHeld
+        // latch would otherwise make Pump() short-circuit before it ever dequeues host text,
+        // so macros would be received but never keyed.
+        _pump.Reset();
+
         // Create protocol state machine.
         var legacyLogger = new ProtocolLoggerBridge(_protocolLogger);
         _protocol = new WinKeyerProtocol(legacyLogger);
@@ -153,7 +159,10 @@ public sealed class StationLoggerHost : IDisposable
             DtrEnable = true,
             RtsEnable = true,
             ReadTimeout = 500,
-            WriteTimeout = 500
+            // Short write timeout: WK status/echo bytes are 1 byte each and must not block the
+            // shared _writeLock (and therefore the reader thread) for long. If the peer stops
+            // draining, fail fast rather than stalling the whole pipeline for half a second.
+            WriteTimeout = 200
         };
 
         _port.Open();
@@ -219,8 +228,7 @@ public sealed class StationLoggerHost : IDisposable
         _cts?.Dispose();
         _cts = null;
 
-        _idleTimer?.Dispose();
-        _idleTimer = null;
+        CancelIdleTimer();
 
         if (_sending)
         {
@@ -307,8 +315,7 @@ public sealed class StationLoggerHost : IDisposable
             SendingCompleted?.Invoke(this, EventArgs.Empty);
         }
 
-        _idleTimer?.Dispose();
-        _idleTimer = null;
+        CancelIdleTimer();
     }
 
     // ──────────────────────────────────────────────────────────────────────────────
@@ -322,20 +329,31 @@ public sealed class StationLoggerHost : IDisposable
         _lastEdgeTimestamp = _clock.GetTimestamp();
         ResetIdleTimer();
 
-        if (edge.KeyDown)
+        // This runs on the keyer thread (raised from inside _pump.Pump). Never let a COM
+        // error escape back into the pump — that would tear down the keyer thread and stop
+        // all further keying for the session. Log and swallow instead.
+        try
         {
-            if (!_keying)
+            if (edge.KeyDown)
             {
-                // Assert PTT before first key-down.
-                _pttOutput?.PttDown();
+                if (!_keying)
+                {
+                    // Assert PTT before first key-down.
+                    _pttOutput?.PttDown();
+                    LogStation($"EDGE: key DOWN — keyingOutput={_keyingOutput.GetType().Name}, ptt={(_pttOutput is null ? "none" : "yes")}");
+                }
+                _keyingOutput.KeyDown();
+                _keying = true;
             }
-            _keyingOutput.KeyDown();
-            _keying = true;
+            else
+            {
+                _keyingOutput.KeyUp();
+                _keying = false;
+            }
         }
-        else
+        catch (Exception ex)
         {
-            _keyingOutput.KeyUp();
-            _keying = false;
+            LogStation($"Edge keying error ({(edge.KeyDown ? "down" : "up")}): {ex.Message}");
         }
     }
 
@@ -369,15 +387,42 @@ public sealed class StationLoggerHost : IDisposable
     //  Idle detection → sending completed
     // ──────────────────────────────────────────────────────────────────────────────
 
+    private readonly object _idleTimerLock = new();
+    private int _idleTimerGeneration;
+
     private void ResetIdleTimer()
     {
-        _idleTimer?.Dispose();
-        _idleTimer = new System.Threading.Timer(OnIdleTimeout, null, IdleTimeoutMs, Timeout.Infinite);
+        lock (_idleTimerLock)
+        {
+            // Bump the generation so any callback already queued from the previous timer
+            // (which Dispose cannot cancel once it's about to fire) recognizes itself as
+            // stale and does nothing. This closes the multi-thread idle-timer race.
+            int gen = ++_idleTimerGeneration;
+            _idleTimer?.Dispose();
+            _idleTimer = new System.Threading.Timer(_ => OnIdleTimeout(gen), null, IdleTimeoutMs, Timeout.Infinite);
+        }
     }
 
-    private void OnIdleTimeout(object? state)
+    /// <summary>Cancels the idle timer and invalidates any queued callback (generation bump).</summary>
+    private void CancelIdleTimer()
+    {
+        lock (_idleTimerLock)
+        {
+            _idleTimerGeneration++;
+            _idleTimer?.Dispose();
+            _idleTimer = null;
+        }
+    }
+
+    private void OnIdleTimeout(int generation)
     {
         if (!_running) return;
+
+        // Ignore a stale callback whose timer was already superseded by a newer ResetIdleTimer.
+        lock (_idleTimerLock)
+        {
+            if (generation != _idleTimerGeneration) return;
+        }
 
         // If we're not actively keying and the pump has nothing queued, we're done.
         if (!_keying && !_pump.HasPendingText)
@@ -421,7 +466,23 @@ public sealed class StationLoggerHost : IDisposable
         {
             while (!token.IsCancellationRequested)
             {
-                if (_pump.Pump(stop) == PumpAction.Idle)
+                PumpAction action;
+                try
+                {
+                    action = _pump.Pump(stop);
+                }
+                catch (Exception ex)
+                {
+                    // A transient keying/COM error must NOT kill the keyer thread for the rest
+                    // of the session (that would silently stop all keying). Log, force key up,
+                    // and keep pumping so the next character still keys.
+                    LogStation($"KEYER PUMP ERROR (continuing): {ex.Message}");
+                    try { _pump.ForceKeyUp(); } catch { /* best effort */ }
+                    token.WaitHandle.WaitOne(IdleWaitMs);
+                    continue;
+                }
+
+                if (action == PumpAction.Idle)
                 {
                     token.WaitHandle.WaitOne(IdleWaitMs);
                 }
@@ -447,11 +508,6 @@ public sealed class StationLoggerHost : IDisposable
 
     private void ReaderLoop()
     {
-        // Tracks the peer's DTR (seen as our DSR). When the logger closes the port its DTR
-        // drops; on a real reconnect it rises again. A high→low transition means the peer
-        // disconnected, so we reset the protocol session to avoid a stale-state wedge.
-        bool dsrWasHolding = SafeDsrHolding();
-
         while (_running)
         {
             try
@@ -459,21 +515,18 @@ public sealed class StationLoggerHost : IDisposable
                 var port = _port;
                 if (port is null || !port.IsOpen)
                 {
-                    // Port is not usable — try to recover it rather than dying permanently.
+                    // Port genuinely unusable — try to recover it rather than dying permanently.
                     if (!TryRecoverPort()) break;
-                    dsrWasHolding = SafeDsrHolding();
                     continue;
                 }
 
-                // Detect peer disconnect via DSR drop (best-effort; virtual-port drivers vary).
-                bool dsrHolding = SafeDsrHolding();
-                if (dsrWasHolding && !dsrHolding)
-                {
-                    _protocolLogger.Log("Logger peer disconnected (DSR dropped) — resetting session",
-                        ProtocolLogSeverity.Info, "LoggerHost");
-                    HandlePeerDisconnected();
-                }
-                dsrWasHolding = dsrHolding;
+                // NOTE: We deliberately do NOT infer "peer disconnected" from DSR/pin state.
+                // On virtual COM pairs (com0com/VSPE) DsrHolding is unreliable and momentarily
+                // reads low even while N1MM is connected and actively sending. A previous version
+                // reset the protocol session on a DSR drop, which false-fired mid-session and
+                // silently wedged the emulator (HostMode cleared → all bytes ignored). Reconnect
+                // is handled non-destructively instead: the inter-byte-gap ResetPendingCommand
+                // below, and the AdminOpen self-heal in the protocol state machine.
 
                 int b = port.ReadByte();
                 if (b < 0)
@@ -482,9 +535,10 @@ public sealed class StationLoggerHost : IDisposable
                 // Inter-byte-gap guard: genuine WK multi-byte commands arrive back-to-back
                 // (milliseconds apart). If a long gap elapsed since the previous byte, any
                 // half-consumed multi-byte command is almost certainly stale (the peer app
-                // closed mid-command). Reset the pending-command register so this byte is
-                // interpreted fresh — this deterministically prevents the reopen-handshake
-                // desync even when DSR-drop detection is unavailable on the virtual port.
+                // closed mid-command). Reset only the pending-command register so this byte is
+                // interpreted fresh. This is deliberately lightweight — it does NOT touch
+                // HostMode, the text buffer, or in-flight keying — so it cannot wedge or
+                // interrupt an active send. This is how a reconnect is handled safely.
                 long nowTicks = _clock.GetTimestamp();
                 long lastTicks = _lastRxTimestamp;
                 _lastRxTimestamp = nowTicks;
@@ -509,8 +563,8 @@ public sealed class StationLoggerHost : IDisposable
             }
             catch (TimeoutException)
             {
-                // Normal — ReadByte timed out, loop again. This is also the periodic tick
-                // that lets the DSR-drop check above run even when the peer is silent.
+                // Normal — ReadByte timed out with no data. Loop again. (This is expected and
+                // frequent; it must NOT be treated as any kind of disconnect.)
             }
             catch (OperationCanceledException)
             {
@@ -518,41 +572,28 @@ public sealed class StationLoggerHost : IDisposable
             }
             catch (IOException)
             {
-                // Transient I/O error (common with virtual ports when the peer app cycles).
-                // Reset the session and try to recover the port instead of dying forever.
+                // A genuine I/O error on the port (not a mere read timeout). Try to recover
+                // the handle. Only a real exception reaches here — never a spurious pin read.
                 if (!_running) break;
                 _protocolLogger.Log("Logger port I/O error — attempting recovery",
                     ProtocolLogSeverity.Error, "LoggerHost");
                 if (!TryRecoverPort()) break;
-                dsrWasHolding = SafeDsrHolding();
             }
             catch (InvalidOperationException)
             {
                 // Port closed/handle invalidated. Attempt recovery once; break if it fails.
                 if (!_running) break;
                 if (!TryRecoverPort()) break;
-                dsrWasHolding = SafeDsrHolding();
             }
         }
     }
 
-    /// <summary>Reads DSR (the peer's DTR) without throwing if the port is transitioning.</summary>
-    private bool SafeDsrHolding()
-    {
-        try
-        {
-            var port = _port;
-            return port is not null && port.IsOpen && port.DsrHolding;
-        }
-        catch { return false; }
-    }
-
     /// <summary>
-    /// Handles the logger peer closing its side of the (virtual) port: resets the protocol
-    /// session and all host-side latches so the next Admin Open handshake starts clean.
-    /// This is the core fix for the "N1MM restart doesn't recover" hang.
+    /// Resets the emulated WinKeyer session and releases in-flight keying. Only called on a
+    /// GENUINE port error/recovery — never speculatively from pin state — so it cannot wedge
+    /// an active session.
     /// </summary>
-    private void HandlePeerDisconnected()
+    private void ResetLoggerSession()
     {
         _protocol?.ResetSession();
 
@@ -560,8 +601,7 @@ public sealed class StationLoggerHost : IDisposable
         _pump.AbortAndClear();
         ForceKeyUp();
 
-        _idleTimer?.Dispose();
-        _idleTimer = null;
+        CancelIdleTimer();
 
         if (_sending)
         {
@@ -569,12 +609,12 @@ public sealed class StationLoggerHost : IDisposable
             SendingCompleted?.Invoke(this, EventArgs.Empty);
         }
 
-        LogStation("PEER DISCONNECT — protocol session reset, ready for reconnect.");
+        LogStation("Logger session reset (port recovery).");
     }
 
     /// <summary>
     /// Attempts to close and reopen the serial port and reset the protocol session, so a
-    /// stuck/errored port (or a peer that cycled) recovers without a full Station restart.
+    /// genuinely stuck/errored port recovers without a full Station restart.
     /// Returns true if the port is open and usable afterward.
     /// </summary>
     private bool TryRecoverPort()
@@ -584,8 +624,8 @@ public sealed class StationLoggerHost : IDisposable
         string? portName = _port?.PortName;
         if (string.IsNullOrEmpty(portName)) return false;
 
-        // First, reset the protocol session — whatever state it held is now stale.
-        HandlePeerDisconnected();
+        // The port errored — whatever protocol state it held is now stale.
+        ResetLoggerSession();
 
         for (int attempt = 1; attempt <= 2 && _running; attempt++)
         {
@@ -604,7 +644,7 @@ public sealed class StationLoggerHost : IDisposable
                     DtrEnable = true,
                     RtsEnable = true,
                     ReadTimeout = 500,
-                    WriteTimeout = 500
+                    WriteTimeout = 200
                 };
                 _port.Open();
                 _protocolLogger.Log($"Logger port {portName} recovered on attempt {attempt}",
