@@ -82,7 +82,85 @@ public partial class MainForm : Form
             ShowWaitOverlay();
             await Task.Yield(); // Let the form finish rendering first
             OnStartClick(this, EventArgs.Empty);
+
+            // Check GitHub for a newer build (fire-and-forget; fails silently offline).
+            _ = CheckForUpdatesAsync();
         };
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Auto-update check (banner above the status strip)
+    // ────────────────────────────────────────────────────────────────
+
+    private string? _updateInstallerUrl;
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            var current = typeof(MainForm).Assembly.GetName().Version ?? new Version(1, 0, 0, 0);
+            var info = await RWK.Shared.Net.UpdateChecker.CheckForUpdateAsync(current).ConfigureAwait(false);
+            if (info is null) return;
+
+            void ShowBanner()
+            {
+                _updateInstallerUrl = info.InstallerUrl;
+                _updateBannerLabel.Links.Clear();
+                string prefix = $"New version {info.Version} available — ";
+                string link = "Install";
+                _updateBannerLabel.Text = prefix + link;
+                _updateBannerLabel.LinkArea = new LinkArea(prefix.Length, link.Length);
+                _updateBannerLabel.LinkClicked -= OnUpdateLinkClicked;
+                _updateBannerLabel.LinkClicked += OnUpdateLinkClicked;
+                _updateBanner.Visible = true;
+            }
+
+            if (InvokeRequired) Invoke(ShowBanner); else ShowBanner();
+        }
+        catch { /* never let the update check disrupt the app */ }
+    }
+
+    private async void OnUpdateLinkClicked(object? sender, LinkLabelLinkClickedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_updateInstallerUrl)) return;
+
+        var proceed = MessageBox.Show(
+            this,
+            "RWK will download the latest installer and launch it.\n\n" +
+            "If Windows shows a \"Windows protected your PC\" (SmartScreen) message, " +
+            "choose \"More info\" and then \"Run anyway\" to continue.\n\n" +
+            "The app will close so the installer can update it. Continue?",
+            "Install Update",
+            MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Information);
+
+        if (proceed != DialogResult.OK) return;
+
+        _updateBannerLabel.Text = "Downloading update…";
+        _updateBannerLabel.LinkArea = new LinkArea(0, 0);
+
+        string? launched = await RWK.Shared.Net.UpdateChecker
+            .DownloadAndLaunchInstallerAsync(_updateInstallerUrl).ConfigureAwait(true);
+
+        if (launched is null)
+        {
+            MessageBox.Show(
+                this,
+                "The update could not be downloaded. Please check your internet connection, " +
+                "or download the latest release manually from:\n\n" +
+                "https://github.com/w1ve/rwk-router-keyer/releases/latest",
+                "Update Failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            _updateBannerLabel.Text = "Update download failed — click to retry: Install";
+            _updateBannerLabel.LinkArea = new LinkArea(_updateBannerLabel.Text.Length - "Install".Length, "Install".Length);
+            return;
+        }
+
+        // Installer launched — close cleanly so ports/sidecar release before it replaces files.
+        _updateBannerLabel.Text = "Update started — closing…";
+        _updateBannerLabel.LinkArea = new LinkArea(0, 0);
+        Close();
     }
 
     private void InitializeTrayIcon()
@@ -1654,6 +1732,50 @@ public partial class MainForm : Form
         controller.ForwardRulesChanged += OnForwardRulesChanged;
         controller.HardwareWinKeyerConnected += OnHardwareWinKeyerConnected;
         controller.KeyerBusy += OnControllerKeyerBusy;
+        controller.VersionMismatchDetected += OnControllerVersionMismatch;
+    }
+
+    private void OnControllerVersionMismatch(object? sender, RWK.Client.Controllers.VersionMismatchEventArgs e)
+    {
+        if (InvokeRequired) { BeginInvoke(() => OnControllerVersionMismatch(sender, e)); return; }
+
+        // Show major.minor.patch to the operator (build number is intentionally ignored here).
+        string clientV = $"{e.ClientVersion.Major}.{e.ClientVersion.Minor}.{e.ClientVersion.Build}";
+        string stationV = e.StationVersion is null
+            ? "older/unknown"
+            : $"{e.StationVersion.Major}.{e.StationVersion.Minor}.{e.StationVersion.Build}";
+
+        string detail = e.StationVersion is null
+            ? "The Station did not report its version, which means it is running an older " +
+              "release that predates this compatibility check."
+            : "Different versions can behave inconsistently and may cause keying problems. " +
+              "It is strongly recommended that both ends run the same version.";
+
+        var result = MessageBox.Show(
+            this,
+            $"Version mismatch between Client and Station:\n\n" +
+            $"    Client:   {clientV}\n" +
+            $"    Station:  {stationV}\n\n" +
+            detail + "\n\n" +
+            "Pair anyway?",
+            "RWK — Version Mismatch",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2); // default to "No" (do not pair)
+
+        if (result != DialogResult.Yes)
+        {
+            // Decline: unpair immediately.
+            _controller?.Disconnect();
+            DisablePttForSession();
+            _logService.Info($"Unpaired due to version mismatch (Client {clientV} / Station {stationV}).");
+            ShowToast($"Unpaired — version mismatch (Station {stationV}, Client {clientV}).", ToolTipIcon.Warning);
+            ValidatePairButton();
+        }
+        else
+        {
+            _logService.Info($"Operator chose to pair despite version mismatch (Client {clientV} / Station {stationV}).");
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────────────

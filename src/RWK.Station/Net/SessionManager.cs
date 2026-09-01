@@ -59,6 +59,9 @@ public sealed class SessionManager : ISessionManager
     /// <inheritdoc/>
     public event EventHandler<SessionEventArgs>? SessionEnded;
 
+    /// <inheritdoc/>
+    public event EventHandler<SessionEventArgs>? ConnectionRejected;
+
 
     /// <summary>
     /// Creates a new SessionManager.
@@ -241,7 +244,8 @@ public sealed class SessionManager : ISessionManager
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
             {
                 await SendAndCloseAsync(client, FailResponse, ct).ConfigureAwait(false);
-                RaiseSessionEnded(remoteAddress, "unknown", SessionState.Closed, "Auth timeout");
+                // Rejected attempt — does not affect any active session.
+                RaiseConnectionRejected(remoteAddress, "Auth timeout");
                 return;
             }
 
@@ -249,8 +253,8 @@ public sealed class SessionManager : ISessionManager
             if (!AcceptNewSessions || HasActiveSession())
             {
                 await SendAndCloseAsync(client, BusyResponse, ct).ConfigureAwait(false);
-                RaiseSessionEnded(remoteAddress, "unknown", SessionState.Closed,
-                    "Rejected: keyer session already active");
+                // BUSY reject of a NON-owner attempt. Must NOT clear the active session's UI.
+                RaiseConnectionRejected(remoteAddress, "Rejected: keyer session already active");
                 return;
             }
 
@@ -259,7 +263,8 @@ public sealed class SessionManager : ISessionManager
             if (!CryptographicOperations.FixedTimeEquals(expected, response))
             {
                 await SendAndCloseAsync(client, FailResponse, ct).ConfigureAwait(false);
-                RaiseSessionEnded(remoteAddress, "unknown", SessionState.Closed, "Invalid HMAC");
+                // Rejected attempt — does not affect any active session.
+                RaiseConnectionRejected(remoteAddress, "Invalid HMAC");
                 return;
             }
 
@@ -366,6 +371,16 @@ public sealed class SessionManager : ISessionManager
             address,
             name,
             state,
+            DateTime.UtcNow,
+            reason));
+    }
+
+    private void RaiseConnectionRejected(string address, string reason)
+    {
+        ConnectionRejected?.Invoke(this, new SessionEventArgs(
+            address,
+            "unknown",
+            SessionState.Closed,
             DateTime.UtcNow,
             reason));
     }

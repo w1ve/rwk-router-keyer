@@ -96,6 +96,37 @@ public class WinKeyerProtocol
     }
 
     /// <summary>
+    /// Resets all protocol session state to a clean slate: clears any half-consumed
+    /// multi-byte command (<c>_pending</c>), the pending-byte counter, host-mode flag,
+    /// text buffer, and buffer state. Call this when the serial peer (logging software)
+    /// disconnects and reconnects, so a mid-command disconnect can never leave the state
+    /// machine desynced against the next Admin Open handshake.
+    /// </summary>
+    public void ResetSession()
+    {
+        _pending = PendingCommand.None;
+        _pendingBytesRemaining = 0;
+        _state.Reset();
+        _logger.Log("Protocol session reset", LogSeverity.Info, "Protocol");
+    }
+
+    /// <summary>
+    /// Clears only a half-consumed multi-byte command (the <c>_pending</c> register),
+    /// without touching host mode or the text buffer. Used when a long inter-byte gap
+    /// indicates the previous multi-byte command was abandoned (e.g. the host app closed
+    /// mid-command), so the next byte is interpreted as a fresh command.
+    /// </summary>
+    public void ResetPendingCommand()
+    {
+        if (_pending != PendingCommand.None)
+        {
+            _pending = PendingCommand.None;
+            _pendingBytesRemaining = 0;
+            _logger.Log("Pending command cleared after inter-byte gap", LogSeverity.Info, "Protocol");
+        }
+    }
+
+    /// <summary>
     /// Processes a single incoming byte through the protocol state machine.
     /// </summary>
     /// <param name="b">The byte received from the host.</param>
@@ -428,6 +459,13 @@ public class WinKeyerProtocol
                 return null;
 
             case CommandDefinitions.AdminOpen:
+                // Host Open is the start of a fresh session. Clear any leftover buffer/
+                // sending state so a prior (possibly abruptly-closed) session cannot leave
+                // the emulator reporting "busy" to the newly-connected host.
+                _pending = PendingCommand.None;
+                _pendingBytesRemaining = 0;
+                _state.TextBuffer.Clear();
+                _state.BufferState = BufferState.Idle;
                 _state.HostMode = true;
                 _logger.Log("Host mode opened", LogSeverity.Info, "Protocol");
                 // Return version byte followed by idle status byte

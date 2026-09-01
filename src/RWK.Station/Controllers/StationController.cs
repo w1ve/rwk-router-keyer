@@ -114,6 +114,12 @@ public sealed class StationController : IDisposable
     /// <summary>Raised when a session ends.</summary>
     public event EventHandler<SessionEventArgs>? SessionEnded;
 
+    /// <summary>
+    /// Raised when an incoming connection attempt is rejected (busy/auth-fail/timeout).
+    /// Does NOT indicate the active session ended; used for diagnostics/notification only.
+    /// </summary>
+    public event EventHandler<SessionEventArgs>? ConnectionRejected;
+
     /// <summary>Raised when the SAFE latch fires (UI shows red banner).</summary>
     public event EventHandler<FailSafeTriggeredEventArgs>? SafeLatched;
 
@@ -366,6 +372,7 @@ public sealed class StationController : IDisposable
             _sessionManager = new SessionManager(secretBytes);
             _sessionManager.SessionStarted += OnSessionStarted;
             _sessionManager.SessionEnded += OnSessionEnded;
+            _sessionManager.ConnectionRejected += OnConnectionRejected;
 
             _sessionManager.Start(DefaultControlPort);
             _diagnostics?.Invoke($"SessionManager listening on port {DefaultControlPort}.");
@@ -599,6 +606,39 @@ public sealed class StationController : IDisposable
     }
 
     /// <summary>
+    /// Opens a <see cref="StationKeyingOutput"/> for the given config, retrying once after a
+    /// close if the first attempt fails. Returns an open output, or throws the second
+    /// exception if both attempts fail (caller shows the error to the operator).
+    /// </summary>
+    private StationKeyingOutput OpenKeyingOutputWithRetry(KeyingOutputConfig config, string portName)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            var output = new StationKeyingOutput();
+            try
+            {
+                output.Configure(config);
+                output.Open();
+                return output;
+            }
+            catch (Exception ex)
+            {
+                // Clean up the failed handle so DTR/RTS drop and the port is released.
+                try { output.Dispose(); } catch { /* best effort */ }
+
+                if (attempt >= 2)
+                {
+                    _diagnostics?.Invoke($"Keying port {portName} failed to open after retry: {ex.Message}");
+                    throw;
+                }
+
+                _diagnostics?.Invoke($"Keying port {portName} open failed (attempt {attempt}): {ex.Message}. Retrying…");
+                System.Threading.Thread.Sleep(250);
+            }
+        }
+    }
+
+    /// <summary>
     /// Dynamically connects or reconnects the keying output to the specified COM port.
     /// Called by the UI when the operator selects a port from the dropdown.
     /// If a port was already open, it is closed first (lines de-asserted).
@@ -606,7 +646,7 @@ public sealed class StationController : IDisposable
     /// </summary>
     /// <param name="portName">COM port name (e.g. "COM5").</param>
     /// <param name="config">Full keying output configuration (port, lines, inversion).</param>
-    /// <exception cref="Exception">Thrown if the port cannot be opened (caller should display error).</exception>
+    /// <exception cref="Exception">Thrown if the port cannot be opened after a retry (caller should display error).</exception>
     public void ConnectKeyingPort(string portName, KeyingOutputConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
@@ -622,10 +662,10 @@ public sealed class StationController : IDisposable
         _pttSequencer?.Dispose();
         _pttSequencer = null;
 
-        // Open new port — may throw (caller shows error).
-        _keyingOutput = new StationKeyingOutput();
-        _keyingOutput.Configure(config);
-        _keyingOutput.Open();
+        // Open new port with one automatic retry. A common failure is a virtual COM port
+        // (e.g. VSPE) that is transiently busy; closing and reopening often clears it. If the
+        // second attempt also fails, rethrow so the caller (UI) can show an error dialog.
+        _keyingOutput = OpenKeyingOutputWithRetry(config, portName);
         _diagnostics?.Invoke($"Keying output opened on {portName}.");
 
         // Create PTT sequencer.
@@ -734,7 +774,43 @@ public sealed class StationController : IDisposable
         // Start reading control messages (forward rules, etc.) from the Client.
         _ = ReadControlMessagesAsync();
 
+        // Announce this Station's version to the Client so it can warn on a version mismatch.
+        _ = SendStationVersionAsync();
+
         SessionStarted?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Sends this Station's application version to the paired Client over the control channel,
+    /// so the Client can warn the operator if the two builds differ (major.minor.patch).
+    /// </summary>
+    private async Task SendStationVersionAsync()
+    {
+        var stream = _sessionManager?.CurrentControlStream;
+        if (stream is null) return;
+
+        try
+        {
+            Version v = typeof(StationController).Assembly.GetName().Version ?? new Version(1, 0, 0, 0);
+            string json = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                type = "station_version",
+                version = v.ToString()
+            });
+
+            byte[] body = Encoding.UTF8.GetBytes(json);
+            byte[] lengthPrefix = BitConverter.GetBytes(System.Net.IPAddress.HostToNetworkOrder(body.Length));
+
+            await stream.WriteAsync(lengthPrefix).ConfigureAwait(false);
+            await stream.WriteAsync(body).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
+
+            _diagnostics?.Invoke($"Sent station version {v} to Client.");
+        }
+        catch (Exception ex)
+        {
+            _diagnostics?.Invoke($"Failed to send station version: {ex.Message}");
+        }
     }
 
     private void OnSessionEnded(object? sender, SessionEventArgs e)
@@ -746,6 +822,13 @@ public sealed class StationController : IDisposable
         lock (_activeForwards) { _activeForwards.Clear(); }
 
         SessionEnded?.Invoke(this, e);
+    }
+
+    private void OnConnectionRejected(object? sender, SessionEventArgs e)
+    {
+        // A new connection attempt was rejected; the active session (if any) is unaffected.
+        _diagnostics?.Invoke($"Connection rejected from {e.ClientAddress}: {e.Reason}");
+        ConnectionRejected?.Invoke(this, e);
     }
 
     private void OnEdgeReceived(object? sender, ReadOnlyMemory<byte> data)
@@ -760,6 +843,11 @@ public sealed class StationController : IDisposable
 
         // If no keying output, don't process edge transitions (nothing to key).
         if (_keyingOutput is null) return;
+
+        // HARD SAFETY GATE: never enqueue remote edges unless the station is armed and
+        // the SAFE latch is clear. This is the primary interlock — see also ProcessJitterQueue
+        // and ApplyKeyState, which re-check at fire time in case state changes while queued.
+        if (!IsKeyingAllowed) return;
 
         // Logger interlock: when the logger is sending CW macros, suppress remote edges.
         if (_loggerSending) return;
@@ -844,26 +932,49 @@ public sealed class StationController : IDisposable
             return;
         }
 
-        try
-        {
-            _loggerHost = new StationLoggerHost();
-            _loggerHost.SendingStarted += OnLoggerSendingStarted;
-            _loggerHost.SendingCompleted += OnLoggerSendingCompleted;
-            _loggerHost.SpeedChanged += OnLoggerSpeedChanged;
+        IPttOutput? loggerPtt = _keyingOutput.PttLine == KeyingLine.None ? null : _keyingOutput;
 
-            IPttOutput? pttOutput = _keyingOutput.PttLine == KeyingLine.None ? null : _keyingOutput;
-            _loggerHost.Start(portName, _keyingOutput, pttOutput);
-
-            _pendingLoggerPort = null; // successfully started
-            _diagnostics?.Invoke($"Logger WinKeyer host started on {portName} (keying via {_keyingOutput.PortName}).");
-        }
-        catch (Exception ex)
+        // Open the logger port with one automatic retry (mirrors the keying-port behavior).
+        // Virtual COM ports held by a stale VSPE instance often succeed on the second try.
+        for (int attempt = 1; ; attempt++)
         {
-            _diagnostics?.Invoke($"Failed to start logger host on {portName}: {ex.Message}");
-            _loggerHost?.Dispose();
-            _loggerHost = null;
+            try
+            {
+                _loggerHost = new StationLoggerHost();
+                _loggerHost.SendingStarted += OnLoggerSendingStarted;
+                _loggerHost.SendingCompleted += OnLoggerSendingCompleted;
+                _loggerHost.SpeedChanged += OnLoggerSpeedChanged;
+
+                _loggerHost.Start(portName, _keyingOutput, loggerPtt);
+
+                _pendingLoggerPort = null; // successfully started
+                _diagnostics?.Invoke($"Logger WinKeyer host started on {portName} (keying via {_keyingOutput.PortName}).");
+                return;
+            }
+            catch (Exception ex)
+            {
+                _loggerHost?.Dispose();
+                _loggerHost = null;
+
+                if (attempt >= 2)
+                {
+                    _diagnostics?.Invoke($"Failed to start logger host on {portName} after retry: {ex.Message}");
+                    // Surface to the UI so the operator gets an actionable dialog.
+                    LoggerPortOpenFailed?.Invoke(this, new LoggerPortOpenFailedEventArgs(portName, ex));
+                    return;
+                }
+
+                _diagnostics?.Invoke($"Logger host start on {portName} failed (attempt {attempt}): {ex.Message}. Retrying…");
+                System.Threading.Thread.Sleep(250);
+            }
         }
     }
+
+    /// <summary>
+    /// Raised when the logger WinKeyer port cannot be opened after the automatic retry, so
+    /// the UI can display an error dialog. Fired on a background thread; marshal to the UI.
+    /// </summary>
+    public event EventHandler<LoggerPortOpenFailedEventArgs>? LoggerPortOpenFailed;
 
     /// <summary>
     /// Stops the logger WinKeyer host.
@@ -929,10 +1040,36 @@ public sealed class StationController : IDisposable
         _jitterTimer = new System.Threading.Timer(ProcessJitterQueue, null, 0, 1);
     }
 
+    /// <summary>
+    /// The single authoritative interlock for remote CW keying: keying is permitted only
+    /// while the station is Armed AND the SAFE latch is clear. Read on every path that can
+    /// assert the key line (enqueue, jitter-queue drain, apply, and PTT-from-control).
+    /// </summary>
+    private bool IsKeyingAllowed => _state == StationControllerState.Armed && !IsSafeLatched;
+
+    /// <summary>
+    /// Drops any queued remote edges and forces the key/PTT lines down. Called when the
+    /// SAFE latch engages or keying otherwise becomes disallowed, so nothing stale keys.
+    /// </summary>
+    private void FlushKeyingQueue()
+    {
+        lock (_jitterQueue) { _jitterQueue.Clear(); }
+        _directKeyInitialized = false;
+        try { _keyingOutput?.KeyUp(); } catch { /* best effort */ }
+    }
+
     private void ProcessJitterQueue(object? state)
     {
         // Logger interlock: skip processing while logger is sending.
         if (_loggerSending) return;
+
+        // HARD SAFETY GATE: if keying is not currently allowed (not armed or SAFE-latched),
+        // discard everything queued and ensure the key line is down. Never key while unarmed.
+        if (!IsKeyingAllowed)
+        {
+            FlushKeyingQueue();
+            return;
+        }
 
         long now = Stopwatch.GetTimestamp();
         while (true)
@@ -951,6 +1088,11 @@ public sealed class StationController : IDisposable
 
     private void ApplyKeyState(bool keyDown)
     {
+        // Final defense: re-check the interlock immediately before touching the serial line.
+        // A key-up is always allowed (it can only release the transmitter); a key-down is
+        // gated on IsKeyingAllowed.
+        if (keyDown && !IsKeyingAllowed) return;
+
         try
         {
             if (keyDown)
@@ -987,6 +1129,9 @@ public sealed class StationController : IDisposable
 
     private void OnFailSafeTriggered(object? sender, FailSafeTriggeredEventArgs e)
     {
+        // SAFE latched: purge any remote edges still buffered in the jitter queue and drop
+        // the key line so the direct keying path cannot key the radio after the latch.
+        FlushKeyingQueue();
         SafeLatched?.Invoke(this, e);
     }
 
@@ -994,6 +1139,7 @@ public sealed class StationController : IDisposable
     {
         // The monitor may fire conditions (F1-F3, F6, F9) that the replayer's own event
         // doesn't surface. Route them to the same UI sink.
+        FlushKeyingQueue();
         SafeLatched?.Invoke(this, e);
     }
 
@@ -1049,6 +1195,11 @@ public sealed class StationController : IDisposable
         var stream = _sessionManager?.CurrentControlStream;
         if (stream is null) return;
 
+        // Tracks whether the loop exited because the control channel died (peer close or IO
+        // error) rather than a deliberate local disconnect, so we can tear the session down
+        // and keep CurrentSession — and therefore the Session box — accurate.
+        bool controlChannelLost = false;
+
         try
         {
             while (true)
@@ -1059,7 +1210,7 @@ public sealed class StationController : IDisposable
                 while (read < 4)
                 {
                     int n = await stream.ReadAsync(lengthBuf.AsMemory(read, 4 - read)).ConfigureAwait(false);
-                    if (n == 0) return; // Client closed stream — session ended.
+                    if (n == 0) { controlChannelLost = true; return; } // Client closed stream.
                     read += n;
                 }
 
@@ -1067,6 +1218,7 @@ public sealed class StationController : IDisposable
                 if (bodyLength <= 0 || bodyLength > 64 * 1024)
                 {
                     _diagnostics?.Invoke($"Control message invalid length: {bodyLength}");
+                    controlChannelLost = true;
                     return;
                 }
 
@@ -1075,7 +1227,7 @@ public sealed class StationController : IDisposable
                 while (read < bodyLength)
                 {
                     int n = await stream.ReadAsync(body.AsMemory(read, bodyLength - read)).ConfigureAwait(false);
-                    if (n == 0) return;
+                    if (n == 0) { controlChannelLost = true; return; }
                     read += n;
                 }
 
@@ -1085,11 +1237,24 @@ public sealed class StationController : IDisposable
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or OperationCanceledException)
         {
-            // Session closed or stream unavailable — normal during disconnect.
+            // Stream unavailable — the control channel is gone.
+            controlChannelLost = true;
         }
         catch (Exception ex)
         {
             _diagnostics?.Invoke($"Control message read error: {ex.Message}");
+            controlChannelLost = true;
+        }
+        finally
+        {
+            // If the control channel dropped while a session is still marked active, tear the
+            // session down so CurrentSession (and the reconciled Session box) reflect reality.
+            // No-op if the session was already disconnected locally.
+            if (controlChannelLost && _sessionManager?.CurrentSession is not null)
+            {
+                _diagnostics?.Invoke("Control channel lost — ending session.");
+                _sessionManager.DisconnectSession();
+            }
         }
     }
 
@@ -1254,10 +1419,16 @@ public sealed class StationController : IDisposable
             else if (msgType == "ptt_assert")
             {
                 // Client is asserting PTT (SSB mode / footswitch / hotkey).
-                if (_keyingOutput is not null && _keyingOutput.PttLine != KeyingLine.None)
+                // HARD SAFETY GATE: honor the armed/SAFE interlock — never assert PTT when
+                // the station is not armed or is SAFE-latched.
+                if (_keyingOutput is not null && _keyingOutput.PttLine != KeyingLine.None && IsKeyingAllowed)
                 {
                     _keyingOutput.PttDown();
                     _diagnostics?.Invoke("PTT asserted (Client request).");
+                }
+                else if (!IsKeyingAllowed)
+                {
+                    _diagnostics?.Invoke("PTT assert ignored — station not armed / SAFE latched.");
                 }
             }
             else if (msgType == "ptt_deassert")
@@ -1399,3 +1570,10 @@ public record StationControllerStateChangedEventArgs(
 /// </summary>
 /// <param name="Message">Human-readable description of the failure.</param>
 public record StationStartupFailedEventArgs(string Message);
+
+/// <summary>
+/// Raised when the logger WinKeyer serial port could not be opened after the automatic retry.
+/// </summary>
+/// <param name="PortName">The COM port that failed to open.</param>
+/// <param name="Error">The exception from the final failed attempt.</param>
+public record LoggerPortOpenFailedEventArgs(string PortName, Exception Error);

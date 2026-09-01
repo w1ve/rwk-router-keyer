@@ -13,6 +13,10 @@ partial class MainForm
 {
     private System.ComponentModel.IContainer components = null!;
 
+    // === Update-available banner (above status strip, bottom-left) ===
+    private Panel _updateBanner = null!;
+    private LinkLabel _updateBannerLabel = null!;
+
     // === Status Strip (13.10) ===
     private StatusStrip _statusStrip = null!;
     private ToolStripStatusLabel _linkIndicator = null!;
@@ -199,6 +203,31 @@ partial class MainForm
         _statusStrip.Items.AddRange(new ToolStripItem[] {
             _linkIndicator, _pathLabel, _rttLabel, _bufferLabel, _keyStateLabel
         });
+
+        // ============================================================
+        // Update-available banner — sits just above the status strip,
+        // anchored bottom-left. Hidden until an update is detected.
+        // ============================================================
+        _updateBanner = new Panel
+        {
+            Name = "_updateBanner",
+            Dock = DockStyle.Bottom,
+            Height = 24,
+            BackColor = Color.FromArgb(255, 250, 205),
+            Visible = false,
+            Padding = new Padding(8, 2, 8, 2)
+        };
+        _updateBannerLabel = new LinkLabel
+        {
+            Name = "_updateBannerLabel",
+            AutoSize = true,
+            Dock = DockStyle.Left,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Text = "",
+            LinkColor = Color.FromArgb(0, 102, 204),
+            Font = new Font("Segoe UI", 9F)
+        };
+        _updateBanner.Controls.Add(_updateBannerLabel);
 
         // ============================================================
         // KEYER CONTROLS + MACROS + TYPE-AHEAD + PTT
@@ -1144,6 +1173,8 @@ partial class MainForm
 
         Controls.Add(_tabControl);
         Controls.Add(_statusStrip);
+        // Added after the status strip so it docks just ABOVE it.
+        Controls.Add(_updateBanner);
         Controls.Add(_mainMenu);
         MainMenuStrip = _mainMenu;
 

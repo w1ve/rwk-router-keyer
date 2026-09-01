@@ -26,8 +26,19 @@ public interface ISessionManager : IDisposable
     /// <summary>Raised when a session has been successfully authenticated and is now Active.</summary>
     event EventHandler<SessionEventArgs>? SessionStarted;
 
-    /// <summary>Raised when a session ends for any reason (owner disconnect, fail-safe, client gone).</summary>
+    /// <summary>
+    /// Raised only when the currently-owning session ends (owner disconnect, fail-safe, or
+    /// forced disconnect). This is NOT raised for rejected new-connection attempts — those
+    /// surface via <see cref="ConnectionRejected"/> so the active session's UI is not disturbed.
+    /// </summary>
     event EventHandler<SessionEventArgs>? SessionEnded;
+
+    /// <summary>
+    /// Raised when an incoming connection attempt is rejected (auth timeout, invalid HMAC, or
+    /// the Station is already paired/busy). It does NOT represent the end of the active session
+    /// and must not clear the Session UI. Informational/diagnostic only.
+    /// </summary>
+    event EventHandler<SessionEventArgs>? ConnectionRejected;
 
     /// <summary>
     /// Begins accepting connections on the specified TCP control port.

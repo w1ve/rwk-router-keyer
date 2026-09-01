@@ -59,8 +59,14 @@ public sealed class StationLoggerHost : IDisposable
     private volatile bool _keying; // true while key is asserted by logger
     private volatile bool _sending; // true while logger has buffered text in flight
     private long _lastEdgeTimestamp;
+    private long _lastRxTimestamp; // QPC of the previous received byte (inter-byte-gap guard)
     private System.Threading.Timer? _idleTimer;
     private const int IdleTimeoutMs = 2000; // 2s after last edge → consider idle
+
+    // A gap larger than this between received bytes means any half-consumed multi-byte WK
+    // command is stale (real command bytes arrive back-to-back). Used to clear _pending so a
+    // mid-command peer disconnect can't desync the next Admin Open handshake.
+    private const int StaleCommandGapMs = 750;
 
     /// <summary>
     /// Raised when the logger starts sending (first character queued).
@@ -126,6 +132,7 @@ public sealed class StationLoggerHost : IDisposable
         _pttOutput = pttOutput;
         _keying = false;
         _sending = false;
+        _lastRxTimestamp = 0;
 
         // Create protocol state machine.
         var legacyLogger = new ProtocolLoggerBridge(_protocolLogger);
@@ -440,17 +447,53 @@ public sealed class StationLoggerHost : IDisposable
 
     private void ReaderLoop()
     {
+        // Tracks the peer's DTR (seen as our DSR). When the logger closes the port its DTR
+        // drops; on a real reconnect it rises again. A high→low transition means the peer
+        // disconnected, so we reset the protocol session to avoid a stale-state wedge.
+        bool dsrWasHolding = SafeDsrHolding();
+
         while (_running)
         {
             try
             {
                 var port = _port;
                 if (port is null || !port.IsOpen)
-                    break;
+                {
+                    // Port is not usable — try to recover it rather than dying permanently.
+                    if (!TryRecoverPort()) break;
+                    dsrWasHolding = SafeDsrHolding();
+                    continue;
+                }
+
+                // Detect peer disconnect via DSR drop (best-effort; virtual-port drivers vary).
+                bool dsrHolding = SafeDsrHolding();
+                if (dsrWasHolding && !dsrHolding)
+                {
+                    _protocolLogger.Log("Logger peer disconnected (DSR dropped) — resetting session",
+                        ProtocolLogSeverity.Info, "LoggerHost");
+                    HandlePeerDisconnected();
+                }
+                dsrWasHolding = dsrHolding;
 
                 int b = port.ReadByte();
                 if (b < 0)
                     continue;
+
+                // Inter-byte-gap guard: genuine WK multi-byte commands arrive back-to-back
+                // (milliseconds apart). If a long gap elapsed since the previous byte, any
+                // half-consumed multi-byte command is almost certainly stale (the peer app
+                // closed mid-command). Reset the pending-command register so this byte is
+                // interpreted fresh — this deterministically prevents the reopen-handshake
+                // desync even when DSR-drop detection is unavailable on the virtual port.
+                long nowTicks = _clock.GetTimestamp();
+                long lastTicks = _lastRxTimestamp;
+                _lastRxTimestamp = nowTicks;
+                if (lastTicks != 0)
+                {
+                    double gapMs = (nowTicks - lastTicks) * 1000.0 / _clock.Frequency;
+                    if (gapMs > StaleCommandGapMs)
+                        _protocol?.ResetPendingCommand();
+                }
 
                 _protocolLogger.Log($"RX: 0x{b:X2}", ProtocolLogSeverity.Info, "LoggerHost");
 
@@ -466,7 +509,8 @@ public sealed class StationLoggerHost : IDisposable
             }
             catch (TimeoutException)
             {
-                // Normal — ReadByte timed out, loop again.
+                // Normal — ReadByte timed out, loop again. This is also the periodic tick
+                // that lets the DSR-drop check above run even when the peer is silent.
             }
             catch (OperationCanceledException)
             {
@@ -474,19 +518,109 @@ public sealed class StationLoggerHost : IDisposable
             }
             catch (IOException)
             {
-                if (_running)
-                {
-                    _protocolLogger.Log("Logger port I/O error",
-                        ProtocolLogSeverity.Error, "LoggerHost");
-                }
-                break;
+                // Transient I/O error (common with virtual ports when the peer app cycles).
+                // Reset the session and try to recover the port instead of dying forever.
+                if (!_running) break;
+                _protocolLogger.Log("Logger port I/O error — attempting recovery",
+                    ProtocolLogSeverity.Error, "LoggerHost");
+                if (!TryRecoverPort()) break;
+                dsrWasHolding = SafeDsrHolding();
             }
             catch (InvalidOperationException)
             {
-                // Port closed externally.
-                break;
+                // Port closed/handle invalidated. Attempt recovery once; break if it fails.
+                if (!_running) break;
+                if (!TryRecoverPort()) break;
+                dsrWasHolding = SafeDsrHolding();
             }
         }
+    }
+
+    /// <summary>Reads DSR (the peer's DTR) without throwing if the port is transitioning.</summary>
+    private bool SafeDsrHolding()
+    {
+        try
+        {
+            var port = _port;
+            return port is not null && port.IsOpen && port.DsrHolding;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// Handles the logger peer closing its side of the (virtual) port: resets the protocol
+    /// session and all host-side latches so the next Admin Open handshake starts clean.
+    /// This is the core fix for the "N1MM restart doesn't recover" hang.
+    /// </summary>
+    private void HandlePeerDisconnected()
+    {
+        _protocol?.ResetSession();
+
+        // Release any in-flight keying and clear the sending interlock.
+        _pump.AbortAndClear();
+        ForceKeyUp();
+
+        _idleTimer?.Dispose();
+        _idleTimer = null;
+
+        if (_sending)
+        {
+            _sending = false;
+            SendingCompleted?.Invoke(this, EventArgs.Empty);
+        }
+
+        LogStation("PEER DISCONNECT — protocol session reset, ready for reconnect.");
+    }
+
+    /// <summary>
+    /// Attempts to close and reopen the serial port and reset the protocol session, so a
+    /// stuck/errored port (or a peer that cycled) recovers without a full Station restart.
+    /// Returns true if the port is open and usable afterward.
+    /// </summary>
+    private bool TryRecoverPort()
+    {
+        if (!_running) return false;
+
+        string? portName = _port?.PortName;
+        if (string.IsNullOrEmpty(portName)) return false;
+
+        // First, reset the protocol session — whatever state it held is now stale.
+        HandlePeerDisconnected();
+
+        for (int attempt = 1; attempt <= 2 && _running; attempt++)
+        {
+            try
+            {
+                try { _port?.Close(); } catch { /* best effort */ }
+                try { _port?.Dispose(); } catch { /* best effort */ }
+
+                _port = new SerialPort(portName)
+                {
+                    BaudRate = 1200,
+                    DataBits = 8,
+                    Parity = Parity.None,
+                    StopBits = StopBits.Two,
+                    Handshake = Handshake.None,
+                    DtrEnable = true,
+                    RtsEnable = true,
+                    ReadTimeout = 500,
+                    WriteTimeout = 500
+                };
+                _port.Open();
+                _protocolLogger.Log($"Logger port {portName} recovered on attempt {attempt}",
+                    ProtocolLogSeverity.Info, "LoggerHost");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _protocolLogger.Log($"Logger port recovery attempt {attempt} failed: {ex.Message}",
+                    ProtocolLogSeverity.Warning, "LoggerHost");
+                // Wait before retrying, but stay responsive to Stop().
+                _cts?.Token.WaitHandle.WaitOne(500);
+            }
+        }
+
+        return false;
     }
 
     // ──────────────────────────────────────────────────────────────────────────────

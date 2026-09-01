@@ -577,3 +577,44 @@ local test. NOT merged to main, NOT pushed to GitHub. v1.0.4 is still the publis
 1. Local test with friend using `artifacts\release\RWK-Setup.exe`.
 2. If good: bump/confirm version, merge `v1.0.5-ipv6` → main, push, and cut a v1.0.5 GitHub release.
 3. (Deferred) Opus audio streaming; Linux/Pi Station port.
+
+## In-App Update Checker (added later v1.0.5)
+
+Both apps check GitHub's latest release on startup and show a yellow banner just above
+the status strip — "New version X.X.X.NNNN available — Install" — when a newer BUILD is
+published. Clicking Install shows a SmartScreen advisory, downloads `RWK-Setup.exe` to
+`%TEMP%`, launches it (elevated), and closes the app so the installer can replace files.
+
+**Implementation:** `src/RWK.Shared/Net/UpdateChecker.cs` (shared);
+`_updateBanner`/`_updateBannerLabel` + `CheckForUpdatesAsync`/`OnUpdateLinkClicked` in
+both `MainForm`s. Fails silently offline. Uses `Assembly.GetName().Version`
+(= `AssemblyVersion`, the full `1.x.x.NNNNN`) for comparison.
+
+### REQUIRED release asset: `version.txt`
+
+The checker compares the running build against a **`version.txt`** asset on the GitHub
+release (the tag `vX.Y.Z` is NOT build-precise). **Every release MUST include a
+`version.txt` asset whose sole contents are the full four-part version**, e.g.:
+
+```
+1.0.5.24512
+```
+
+Generate it from the freshly built exe and upload it alongside `RWK-Setup.exe`:
+
+```powershell
+# After publishing (exe has the final AssemblyVersion baked in):
+$v = [System.Diagnostics.FileVersionInfo]::GetVersionInfo("artifacts\release\publish-client\RWKClient.exe").FileVersion
+# FileVersion may be 1.0.0.NNNN; prefer the AssemblyVersion via reflection if needed.
+Set-Content -Path artifacts\release\version.txt -Value $v -NoNewline
+
+# Publish the release with BOTH assets:
+& C:\tools\gh\bin\gh.exe release create vX.Y.Z `
+    artifacts\release\RWK-Setup.exe `
+    artifacts\release\version.txt `
+    --repo w1ve/rwk-router-keyer --title "RWK Router/Keyer vX.Y.Z" --notes-file <notes> --latest
+```
+
+If the running build is NEWER than `version.txt` (dev machine ahead of the release), no
+banner shows — correct. If `version.txt` is missing from a release, the checker simply
+never flags an update (fail-safe, no error).

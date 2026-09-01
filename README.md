@@ -15,6 +15,23 @@ Free, open-source CW remoting, SSB PTT control, and port forwarding for amateur 
 
 ---
 
+## Recent Bug Fixes (later v1.0.5 builds)
+
+A round of **safety and reliability** fixes shipped in later v1.0.5 builds:
+
+- **Station could key the radio while not armed (critical).** The remote-edge keying path did not consult the SAFE latch or the armed state, so buffered or newly-arriving edges could key the transmitter even after a fail-safe latched (with the Re-Arm button showing). Keying is now hard-gated by a single interlock: the key line is asserted only while the Station is **armed AND not SAFE-latched**. When SAFE engages, any queued edges are purged and the key line is forced down. PTT-assert requests from the Client are gated by the same interlock.
+- **N1MM / logger WinKeyer input could hang permanently.** After some use, the logger's WinKeyer indicator would turn red and stay red even after restarting the logger — only a Station restart recovered it. The Station now detects the logger closing the (virtual) COM port, resets the emulated WinKeyer session on reconnect, clears any half-received command after an inter-byte gap, and recovers the port after an I/O error instead of dying silently.
+- **Session box could disagree with the real pairing state.** A rejected non-owner connection (BUSY / bad key / auth timeout) was raising the same "session ended" signal used for the active session, so the Unpair button greyed out and the client showed "(none)" while keying and port forwards kept working. Rejections now use a separate, non-destructive notification. The Session box is also continuously reconciled against the authoritative session, and a dropped control channel now ends the session — so the box **always** reflects the true pairing state.
+- **Serial port open failures are now recoverable and visible.** Opening the keying port or the logger port now retries once automatically (which clears most transient virtual-COM hiccups). If the second attempt still fails, a dialog reports the port and error and suggests restarting VSPE / freeing the port, instead of failing silently.
+- **Client: imported Stations were not being saved.** Since the move to Program Files, the station list was being written next to the executable (not writable), so imports vanished on restart. The list is now stored under `%AppData%\RWK Client\` and persisted immediately on import, with automatic migration of any prior list.
+
+These later builds also add two convenience/safety features:
+
+- **In-app update check.** On startup each app checks GitHub for a newer build and, if one exists, shows a notice just above the status bar: *"New version 1.x.x.nnnn available — Install."* Clicking Install downloads and launches the latest installer (after a brief note about Windows SmartScreen), then closes the app so it can update.
+- **Version-mismatch warning on pair.** When the Client pairs with a Station running a different version (or an older Station that predates this check), it warns the operator and offers to cancel the pairing, since mismatched versions can cause keying problems.
+
+---
+
 ## What's New in v1.0.5
 
 Version 1.0.5 adds **IPv6 support**, a streamlined **Station import/pair workflow**, and hardens the logger (WinKeyer) input path. It also brings a round of UI polish and quality-of-life fixes.

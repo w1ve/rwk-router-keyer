@@ -181,6 +181,12 @@ public sealed class ClientController : IDisposable
     /// <summary>Raised when the Station reports KEYER BUSY (another client has the keyer).</summary>
     public event EventHandler? KeyerBusy;
 
+    /// <summary>
+    /// Raised after pairing when the Station reports a version whose major.minor.patch differs
+    /// from this Client's. The args carry both versions so the UI can warn and offer to unpair.
+    /// </summary>
+    public event EventHandler<VersionMismatchEventArgs>? VersionMismatchDetected;
+
 
     /// <summary>Raised on every key edge (for key-state indicator).</summary>
     public event EventHandler<EdgeEvent>? EdgeGenerated;
@@ -1138,6 +1144,7 @@ public sealed class ClientController : IDisposable
     {
         if (!_sessionActive) return;
         _sessionActive = false;
+        DisarmVersionCheckWatchdog();
         StopHeartbeat();
         _reconnectTimer?.Dispose();
         _reconnectTimer = null;
@@ -1219,6 +1226,11 @@ public sealed class ClientController : IDisposable
             _recentEdgeCount = 0;
             _sessionActive = true;
             _reconnectAttempts = 0;
+
+            // Arm the version handshake watchdog: a current Station sends "station_version"
+            // immediately. If none arrives within the window, the Station is older/unknown
+            // (predates the version-match feature) — which is itself a mismatch to flag.
+            ArmVersionCheckWatchdog();
 
             // Play "OK READY" locally via sidetone only — suppress network sending.
             _suppressEdgeSend = true;
@@ -1537,6 +1549,7 @@ public sealed class ClientController : IDisposable
         if (!_sessionActive) return;
 
         _sessionActive = false;
+        DisarmVersionCheckWatchdog();
         StopHeartbeat();
         _controlStream?.Dispose();
         _controlStream = null;
@@ -1817,6 +1830,10 @@ public sealed class ClientController : IDisposable
                     _discoveryEmitter?.OnDiscoveryAnnounce(payload);
                 }
             }
+            else if (msgType == "station_version" && root.TryGetProperty("version", out var verProp))
+            {
+                HandleStationVersion(verProp.GetString());
+            }
             else
             {
                 _log?.Info($"Station message received: type={msgType}");
@@ -1827,4 +1844,80 @@ public sealed class ClientController : IDisposable
             _log?.Info($"ProcessStationMessage error: {ex.Message}");
         }
     }
+
+    // Watchdog that fires if the Station never reports its version after pairing (i.e. an
+    // older Station that predates the version-match feature). Set/cleared on the session.
+    private System.Threading.Timer? _versionCheckTimer;
+    private volatile bool _stationVersionReceived;
+    private const int VersionHandshakeTimeoutMs = 4000;
+
+    /// <summary>
+    /// Starts the version-handshake watchdog after a successful pair. If no
+    /// <c>station_version</c> message arrives within <see cref="VersionHandshakeTimeoutMs"/>,
+    /// the Station is treated as running an older/unknown version and a mismatch is raised.
+    /// </summary>
+    private void ArmVersionCheckWatchdog()
+    {
+        _stationVersionReceived = false;
+        _versionCheckTimer?.Dispose();
+        _versionCheckTimer = new System.Threading.Timer(_ =>
+        {
+            if (!_sessionActive || _stationVersionReceived) return;
+
+            Version clientVersion = typeof(ClientController).Assembly.GetName().Version ?? new Version(1, 0, 0, 0);
+            _log?.Info($"No station_version received within {VersionHandshakeTimeoutMs}ms — Station is older/unknown.");
+            // Null station version signals "older/unknown version".
+            VersionMismatchDetected?.Invoke(this, new VersionMismatchEventArgs(clientVersion, null));
+        }, null, VersionHandshakeTimeoutMs, System.Threading.Timeout.Infinite);
+    }
+
+    /// <summary>Cancels the version-handshake watchdog (on receipt or on unpair/disconnect).</summary>
+    private void DisarmVersionCheckWatchdog()
+    {
+        _versionCheckTimer?.Dispose();
+        _versionCheckTimer = null;
+    }
+
+    /// <summary>
+    /// Compares the Station's reported version to this Client's. Warns (via
+    /// <see cref="VersionMismatchDetected"/>) only when major.minor.patch differ; a difference
+    /// in build number alone (e.g. two 1.0.5.x builds) is ignored so routine build bumps between
+    /// paired machines don't nag.
+    /// </summary>
+    private void HandleStationVersion(string? stationVersionText)
+    {
+        // A version arrived — cancel the "older/unknown Station" watchdog regardless of value.
+        _stationVersionReceived = true;
+        DisarmVersionCheckWatchdog();
+
+        if (string.IsNullOrWhiteSpace(stationVersionText)
+            || !Version.TryParse(stationVersionText, out Version? stationVersion)
+            || stationVersion is null)
+        {
+            return;
+        }
+
+        Version clientVersion = typeof(ClientController).Assembly.GetName().Version ?? new Version(1, 0, 0, 0);
+
+        // Compare only major.minor.patch (ignore build/revision).
+        bool mismatch =
+            clientVersion.Major != stationVersion.Major ||
+            clientVersion.Minor != stationVersion.Minor ||
+            clientVersion.Build != stationVersion.Build;
+
+        _log?.Info($"Station version {stationVersion} (client {clientVersion}); mismatch={mismatch}.");
+
+        if (mismatch)
+            VersionMismatchDetected?.Invoke(this, new VersionMismatchEventArgs(clientVersion, stationVersion));
+    }
 }
+
+/// <summary>
+/// Carries the Client and Station versions when a post-pair version mismatch is detected.
+/// </summary>
+/// <param name="ClientVersion">This Client's version.</param>
+/// <param name="StationVersion">
+/// The paired Station's reported version, or <see langword="null"/> when the Station never
+/// reported one (an older Station predating the version-match handshake).
+/// </param>
+public sealed record VersionMismatchEventArgs(Version ClientVersion, Version? StationVersion);

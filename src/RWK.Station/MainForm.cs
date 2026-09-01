@@ -164,6 +164,7 @@ public partial class MainForm : Form
         _controller.StartupFailed += OnControllerStartupFailed;
         _controller.AuthUrlAvailable += OnControllerAuthUrlAvailable;
         _controller.ForwardRulesReceived += OnForwardRulesReceived;
+        _controller.LoggerPortOpenFailed += OnControllerLoggerPortOpenFailed;
 
         // Start the controller — it will skip keying output if no port is configured,
         // and auto-connect Tailscale if an auth key is present.
@@ -179,6 +180,87 @@ public partial class MainForm : Form
             TryConnectSelectedPort();
             LoadLoggerConfigToUi();
         }
+
+        // Check GitHub for a newer build (fire-and-forget; fails silently offline).
+        _ = CheckForUpdatesAsync();
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Auto-update check (banner above the status strip)
+    // ────────────────────────────────────────────────────────────────
+
+    private string? _updateInstallerUrl;
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            var current = typeof(MainForm).Assembly.GetName().Version ?? new Version(1, 0, 0, 0);
+            var info = await RWK.Shared.Net.UpdateChecker.CheckForUpdateAsync(current).ConfigureAwait(false);
+            if (info is null) return;
+
+            void ShowBanner()
+            {
+                _updateInstallerUrl = info.InstallerUrl;
+                _updateBannerLabel.Text = "";
+                _updateBannerLabel.Links.Clear();
+                string prefix = $"New version {info.Version} available — ";
+                string link = "Install";
+                _updateBannerLabel.Text = prefix + link;
+                _updateBannerLabel.LinkArea = new LinkArea(prefix.Length, link.Length);
+                _updateBannerLabel.LinkClicked -= OnUpdateLinkClicked;
+                _updateBannerLabel.LinkClicked += OnUpdateLinkClicked;
+                _updateBanner.Visible = true;
+            }
+
+            if (InvokeRequired) Invoke(ShowBanner); else ShowBanner();
+        }
+        catch { /* never let the update check disrupt the app */ }
+    }
+
+    private async void OnUpdateLinkClicked(object? sender, LinkLabelLinkClickedEventArgs e)
+    {
+        if (string.IsNullOrEmpty(_updateInstallerUrl)) return;
+
+        var proceed = MessageBox.Show(
+            this,
+            "RWK will download the latest installer and launch it.\n\n" +
+            "If Windows shows a \"Windows protected your PC\" (SmartScreen) message, " +
+            "choose \"More info\" and then \"Run anyway\" to continue.\n\n" +
+            "The app will close so the installer can update it. Continue?",
+            "Install Update",
+            MessageBoxButtons.OKCancel,
+            MessageBoxIcon.Information);
+
+        if (proceed != DialogResult.OK) return;
+
+        _updateBannerLabel.Text = "Downloading update…";
+        _updateBannerLabel.LinkArea = new LinkArea(0, 0);
+
+        string? launched = await RWK.Shared.Net.UpdateChecker
+            .DownloadAndLaunchInstallerAsync(_updateInstallerUrl).ConfigureAwait(true);
+
+        if (launched is null)
+        {
+            MessageBox.Show(
+                this,
+                "The update could not be downloaded. Please check your internet connection, " +
+                "or download the latest release manually from:\n\n" +
+                "https://github.com/w1ve/rwk-router-keyer/releases/latest",
+                "Update Failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            _updateBannerLabel.Text = "Update download failed — click to retry: Install";
+            _updateBannerLabel.LinkArea = new LinkArea(_updateBannerLabel.Text.Length - "Install".Length, "Install".Length);
+            return;
+        }
+
+        // Installer launched successfully — shut this app down cleanly and promptly so the
+        // COM ports and sidecar are released before the installer replaces the executables.
+        // Close() runs OnFormClosing, which stops the controller (releases ports, sidecar).
+        _updateBannerLabel.Text = "Update started — closing…";
+        _updateBannerLabel.LinkArea = new LinkArea(0, 0);
+        Close();
     }
 
     private void TryConnectSelectedPort()
@@ -188,14 +270,43 @@ public partial class MainForm : Form
         {
             try
             {
+                // ConnectKeyingPort retries the open once internally before throwing.
                 _controller.ConnectKeyingPort(selectedPort, GetKeyingConfig());
+                _comPortErrorLabel.Visible = false;
             }
             catch (Exception ex)
             {
                 _comPortErrorLabel.Text = $"⚠ {ex.Message}";
                 _comPortErrorLabel.Visible = true;
+                ShowPortOpenError("keying", selectedPort, ex);
             }
         }
+    }
+
+    /// <summary>
+    /// Shows a modal error dialog when a serial port (keying or logger) cannot be opened
+    /// after the automatic retry, with guidance to restart VSPE if virtual ports are in use.
+    /// </summary>
+    private void ShowPortOpenError(string role, string portName, Exception ex)
+    {
+        if (InvokeRequired) { Invoke(() => ShowPortOpenError(role, portName, ex)); return; }
+
+        MessageBox.Show(
+            this,
+            $"The {role} port {portName} could not be opened, even after a retry.\n\n" +
+            $"Error: {ex.Message}\n\n" +
+            "If you are using virtual COM ports (e.g. VSPE / com0com), try restarting that " +
+            "software — the port may be held by a stale or crashed instance. Also confirm no " +
+            "other application (logger, CAT software) has the port open, then reselect it.",
+            $"RWK Station — {char.ToUpper(role[0]) + role.Substring(1)} Port Error",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Warning);
+    }
+
+    private void OnControllerLoggerPortOpenFailed(object? sender, LoggerPortOpenFailedEventArgs e)
+    {
+        if (InvokeRequired) { Invoke(() => OnControllerLoggerPortOpenFailed(sender, e)); return; }
+        ShowPortOpenError("logger", e.PortName, e.Error);
     }
 
     // ────────────────────────────────────────────────────────────────
@@ -231,10 +342,51 @@ public partial class MainForm : Form
             var elapsed = DateTime.UtcNow - _sessionStartTime.Value;
             _sessionDurationValue.Text = elapsed.ToString(@"hh\:mm\:ss");
         }
+
+        // Reconcile the Session box against the authoritative pairing state every tick.
+        // This self-heals any UI drift from missed/spurious session events (e.g. a rejected
+        // non-owner reconnect, or a silently-dropped socket) so the box ALWAYS reflects reality.
+        ReconcileSessionBox();
     }
 
     private DateTime _lastKeyDownTime = DateTime.MinValue;
     private DateTime _lastPttOnTime = DateTime.MinValue;
+
+    /// <summary>
+    /// Forces the Session box (client text + Unpair button) to match the controller's
+    /// authoritative <see cref="StationController.CurrentSession"/>. Idempotent: only
+    /// writes when the displayed state diverges from the real state.
+    /// </summary>
+    private void ReconcileSessionBox()
+    {
+        var session = _controller?.CurrentSession;
+        bool paired = session is not null;
+
+        if (paired)
+        {
+            // Ensure text + button reflect the active session.
+            string expectedText = $"{session!.ClientName} ({session.ClientAddress})";
+            if (!_disconnectButton.Enabled || _sessionClientValue.Text != expectedText)
+            {
+                _sessionClientValue.Text = expectedText;
+                _clientNameStatus.Text = session.ClientName;
+                _disconnectButton.Enabled = true;
+                _sessionStartTime ??= DateTime.UtcNow;
+            }
+        }
+        else
+        {
+            // No session: ensure the box shows "(none)" and Unpair is disabled.
+            if (_disconnectButton.Enabled || _sessionClientValue.Text != "(none)")
+            {
+                _sessionClientValue.Text = "(none)";
+                _sessionDurationValue.Text = "\u2014";
+                _clientNameStatus.Text = "";
+                _disconnectButton.Enabled = false;
+                _sessionStartTime = null;
+            }
+        }
+    }
 
     private void RefreshComPorts()
     {
