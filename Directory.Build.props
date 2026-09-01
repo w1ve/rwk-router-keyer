@@ -1,9 +1,13 @@
 <Project>
   <PropertyGroup>
-    <!-- Version: 1.0.0.BUILD where BUILD is a short auto-incrementing number.
-         We use the day-of-year * 100 + hour to get a value under 65535. -->
+    <!-- Version: 1.0.5.BUILD where BUILD encodes the UTC build time as (DayOfYear*100 + Hour).
+         Example: day 244, hour 15 => 24415. This stays under the 65535 limit for the
+         AssemblyVersion revision field (max 366*100+23 = 36623) and is monotonic across the
+         year. NOTE: resolution is one hour — two builds within the SAME UTC hour produce the
+         SAME build number, so the in-app update check would treat them as equal. If you must
+         cut two builds within one hour, bump VersionPrefix (or wait for the next hour). -->
     <VersionPrefix>1.0.5</VersionPrefix>
-    <BuildNumber>$([System.DateTime]::UtcNow.DayOfYear)$([System.DateTime]::UtcNow.ToString("HH"))</BuildNumber>
+    <BuildNumber>$([MSBuild]::Add($([MSBuild]::Multiply($([System.DateTime]::UtcNow.DayOfYear), 100)), $([System.DateTime]::UtcNow.Hour)))</BuildNumber>
     <Version>$(VersionPrefix).$(BuildNumber)</Version>
     <AssemblyVersion>1.0.5.$(BuildNumber)</AssemblyVersion>
     <FileVersion>1.0.5.$(BuildNumber)</FileVersion>
