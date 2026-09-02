@@ -238,18 +238,30 @@ func (n *Node) bringUp(authKey string) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.StartTimeout)
-	defer cancel()
-
-	st, err := srv.Up(ctx)
-	if err != nil {
-		fail("tailnet up", err)
-		return
-	}
-
+	// The LocalClient is usable as soon as Start() succeeds — before the blocking
+	// Up() returns. Grab it now so we can observe backend state DURING an interactive
+	// browser login. Without this, backend stays "Starting" and authURL stays stale for
+	// the whole login window (Up blocks), so the C# side never sees "Running"/cleared
+	// authURL and the auth wizard hangs on "Waiting for browser login...".
 	lc, err := srv.LocalClient()
 	if err != nil {
 		fail("local client", err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.StartTimeout)
+	defer cancel()
+
+	// Watch backend state while Up() blocks. When the user completes browser login the
+	// backend transitions to "Running": reflect that (and clear the interactive authURL)
+	// immediately so the wizard advances, rather than waiting for Up() to return.
+	upWatchStop := make(chan struct{})
+	go n.watchBackendDuringUp(ctx, lc, upWatchStop)
+
+	st, err := srv.Up(ctx)
+	close(upWatchStop) // Up() returned (success or failure) — stop the interim watcher.
+	if err != nil {
+		fail("tailnet up", err)
 		return
 	}
 
@@ -313,6 +325,51 @@ func (n *Node) bringUp(authKey string) {
 		defer close(done)
 		n.poll(pollCtx)
 	}()
+}
+
+// watchBackendDuringUp polls the local backend state while srv.Up() is blocking (which it
+// does for the entire duration of an interactive browser login). It mirrors lc.Status()'s
+// BackendState into n.backend and clears the interactive authURL once the backend reaches
+// "Running", so the C# side (and the auth wizard) can observe success promptly instead of
+// waiting for Up() to return. It exits when stop is closed (Up returned) or ctx is done.
+func (n *Node) watchBackendDuringUp(ctx context.Context, lc *local.Client, stop <-chan struct{}) {
+	if lc == nil {
+		return
+	}
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			st, err := lc.Status(sctx)
+			cancel()
+			if err != nil || st == nil {
+				continue
+			}
+
+			n.mu.Lock()
+			// Only advance backend state; never regress a real "Running" that the main
+			// poll may have already set.
+			if n.backend != "Running" {
+				n.backend = st.BackendState
+			}
+			if st.BackendState == "Running" {
+				n.everRunning = true
+				n.authURL = ""
+			} else if st.BackendState != "NeedsLogin" && st.BackendState != "NeedsMachineAuth" {
+				// Once login is no longer pending (e.g. "Starting" after the browser step,
+				// or "Authenticated"), drop the stale interactive URL so the wizard advances.
+				n.authURL = ""
+			}
+			n.mu.Unlock()
+		}
+	}
 }
 
 func (n *Node) userLogf(format string, args ...any) {
