@@ -1150,6 +1150,12 @@ public sealed class ClientController : IDisposable
         _reconnectTimer = null;
         _controlStream?.Dispose();
         _controlStream = null;
+
+        // Clear the edge peer so an unpaired client stops probing the ex-peer. Leaving it
+        // set would let a later peer-offline event cross the fault threshold and report
+        // Fault on a healthy, intentionally-unpaired link. Best-effort (never throws/faults).
+        _ = _sidecarHost.ClearPeerAsync();
+
         _log?.Info("Disconnected by user (station selection changed).");
         SessionStatusChanged?.Invoke(this, "Disconnected.");
     }
@@ -1184,37 +1190,50 @@ public sealed class ClientController : IDisposable
         _controlStream = await _tailscaleNode.ConnectControlAsync(stationAddress, DefaultControlPort)
             .ConfigureAwait(false);
 
-        // Perform HMAC challenge/response handshake (11.2-11.4).
-        // 1. Read 32-byte nonce from Station.
-        byte[] nonce = new byte[32];
-        int totalRead = 0;
-        while (totalRead < 32)
+        string response;
+        try
         {
-            int read = await _controlStream.ReadAsync(nonce.AsMemory(totalRead, 32 - totalRead))
-                .ConfigureAwait(false);
-            if (read == 0)
-                throw new InvalidOperationException(
-                    "Station closed connection before sending nonce. " +
-                    "Ensure the Station has completed Tailscale login and is showing 'ARMED'.");
-            totalRead += read;
+            // Perform HMAC challenge/response handshake (11.2-11.4).
+            // 1. Read 32-byte nonce from Station.
+            byte[] nonce = new byte[32];
+            int totalRead = 0;
+            while (totalRead < 32)
+            {
+                int read = await _controlStream.ReadAsync(nonce.AsMemory(totalRead, 32 - totalRead))
+                    .ConfigureAwait(false);
+                if (read == 0)
+                    throw new InvalidOperationException(
+                        "Station closed connection before sending nonce. " +
+                        "Ensure the Station has completed Tailscale login and is showing 'ARMED'.");
+                totalRead += read;
+            }
+
+            // 2. Compute HMAC-SHA256(nonce, pairing_secret).
+            string? pairingSecret = _config.Tailscale.PairingSecret;
+            if (string.IsNullOrEmpty(pairingSecret))
+                pairingSecret = "rwk-default-pairing-secret-v2";
+
+            byte[] secretBytes = System.Text.Encoding.UTF8.GetBytes(pairingSecret);
+            byte[] hmac = System.Security.Cryptography.HMACSHA256.HashData(secretBytes, nonce);
+
+            // 3. Send HMAC response.
+            await _controlStream.WriteAsync(hmac).ConfigureAwait(false);
+            await _controlStream.FlushAsync().ConfigureAwait(false);
+
+            // 4. Read response: "OK" (2+ bytes), "KEYER BUSY" (10 bytes), or "FAIL" (4 bytes).
+            byte[] responseBuf = new byte[16];
+            int respRead = await _controlStream.ReadAsync(responseBuf).ConfigureAwait(false);
+            response = System.Text.Encoding.UTF8.GetString(responseBuf, 0, respRead);
         }
-
-        // 2. Compute HMAC-SHA256(nonce, pairing_secret).
-        string? pairingSecret = _config.Tailscale.PairingSecret;
-        if (string.IsNullOrEmpty(pairingSecret))
-            pairingSecret = "rwk-default-pairing-secret-v2";
-
-        byte[] secretBytes = System.Text.Encoding.UTF8.GetBytes(pairingSecret);
-        byte[] hmac = System.Security.Cryptography.HMACSHA256.HashData(secretBytes, nonce);
-
-        // 3. Send HMAC response.
-        await _controlStream.WriteAsync(hmac).ConfigureAwait(false);
-        await _controlStream.FlushAsync().ConfigureAwait(false);
-
-        // 4. Read response: "OK" (2+ bytes), "KEYER BUSY" (10 bytes), or "FAIL" (4 bytes).
-        byte[] responseBuf = new byte[16];
-        int respRead = await _controlStream.ReadAsync(responseBuf).ConfigureAwait(false);
-        string response = System.Text.Encoding.UTF8.GetString(responseBuf, 0, respRead);
+        catch
+        {
+            // Handshake failed (network error, nonce timeout, etc.). Abandon only the pairing
+            // attempt — the Tailscale link stays up. Clean up the control stream and the stale
+            // edge peer so we return to a clean "connected, ready to pair" state, then rethrow
+            // for the UI to display the error.
+            AbandonPairingAttempt();
+            throw;
+        }
 
         if (response.StartsWith("OK"))
         {
@@ -1266,8 +1285,8 @@ public sealed class ClientController : IDisposable
         }
         else if (response.StartsWith("KEYER BUSY") || response.StartsWith("BUSY"))
         {
-            _controlStream.Dispose();
-            _controlStream = null;
+            // Not paired — abandon the attempt but keep the tailnet link up.
+            AbandonPairingAttempt();
 
             // Play "KEYER BUSY" via sidetone only (suppress network sending)
             _suppressEdgeSend = true;
@@ -1281,12 +1300,34 @@ public sealed class ClientController : IDisposable
         }
         else
         {
-            _controlStream.Dispose();
-            _controlStream = null;
+            AbandonPairingAttempt();
             throw new InvalidOperationException(
                 $"Station rejected connection: {response}. " +
                 "Check that the Station Key matches (RWK menu → Show Pairing Key on Station).");
         }
+    }
+
+    /// <summary>
+    /// Cleans up after a FAILED pairing attempt without disturbing the Tailscale link.
+    /// Disposes the control stream and clears the edge peer that was configured before the
+    /// handshake, so the app returns to a clean "connected, ready to pair" state. Does NOT
+    /// stop the sidecar, heartbeat, or port forwarding, and does NOT change Tailscale state.
+    /// </summary>
+    private void AbandonPairingAttempt()
+    {
+        _sessionActive = false;
+
+        try { _controlStream?.Dispose(); } catch { /* best effort */ }
+        _controlStream = null;
+
+        // Clear the edge peer configured before the handshake. It is NOT inert: if the
+        // attempt targeted a stale/dead Station IP, leaving the peer set makes the sidecar
+        // keep probing it, cross the fault threshold (~6s), and report Fault — which drops
+        // the link display even though the tailnet is healthy. Clearing the peer makes
+        // PeerConfigured=false so a failed/abandoned pair can never drive the node to Fault.
+        // Fire-and-forget best-effort: ClearPeerAsync never throws and never faults the link,
+        // and AbandonPairingAttempt is called synchronously from handshake catch blocks.
+        _ = _sidecarHost.ClearPeerAsync();
     }
 
     private void OnSidecarFailureStateChanged(object? sender, SidecarFailureStateChangedEventArgs e)
@@ -1553,6 +1594,12 @@ public sealed class ClientController : IDisposable
         StopHeartbeat();
         _controlStream?.Dispose();
         _controlStream = null;
+
+        // Clear the edge peer: once the Station has unpaired us there is no session, so an
+        // ex-peer must not be left configured for the sidecar to keep probing. If the peer
+        // later goes offline, a lingering configured peer would cross the fault threshold and
+        // report Fault on an unpaired-but-healthy link. Best-effort (never throws/faults).
+        _ = _sidecarHost.ClearPeerAsync();
 
         // Remove Flex forward rules (they're only meaningful while paired).
         // The checked state persists — rules will be re-created on next pair.

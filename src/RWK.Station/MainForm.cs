@@ -289,7 +289,7 @@ public partial class MainForm : Form
     /// </summary>
     private void ShowPortOpenError(string role, string portName, Exception ex)
     {
-        if (InvokeRequired) { Invoke(() => ShowPortOpenError(role, portName, ex)); return; }
+        if (InvokeRequired) { BeginInvoke(() => ShowPortOpenError(role, portName, ex)); return; }
 
         MessageBox.Show(
             this,
@@ -305,7 +305,7 @@ public partial class MainForm : Form
 
     private void OnControllerLoggerPortOpenFailed(object? sender, LoggerPortOpenFailedEventArgs e)
     {
-        if (InvokeRequired) { Invoke(() => OnControllerLoggerPortOpenFailed(sender, e)); return; }
+        if (InvokeRequired) { BeginInvoke(() => OnControllerLoggerPortOpenFailed(sender, e)); return; }
         ShowPortOpenError("logger", e.PortName, e.Error);
     }
 
@@ -643,7 +643,7 @@ public partial class MainForm : Form
 
     private void OnControllerStateChanged(object? sender, StationControllerStateChangedEventArgs e)
     {
-        if (InvokeRequired) { Invoke(() => OnControllerStateChanged(sender, e)); return; }
+        if (InvokeRequired) { BeginInvoke(() => OnControllerStateChanged(sender, e)); return; }
 
         switch (e.NewState)
         {
@@ -669,14 +669,14 @@ public partial class MainForm : Form
 
     private void OnControllerSessionStarted(object? sender, SessionEventArgs e)
     {
-        if (InvokeRequired) { Invoke(() => OnControllerSessionStarted(sender, e)); return; }
+        if (InvokeRequired) { BeginInvoke(() => OnControllerSessionStarted(sender, e)); return; }
         _sessionStartTime = DateTime.UtcNow;
         SetSessionInfo(e.ClientName, e.ClientAddress);
     }
 
     private void OnControllerSessionEnded(object? sender, SessionEventArgs e)
     {
-        if (InvokeRequired) { Invoke(() => OnControllerSessionEnded(sender, e)); return; }
+        if (InvokeRequired) { BeginInvoke(() => OnControllerSessionEnded(sender, e)); return; }
         _sessionStartTime = null;
         ClearSessionInfo(e.Reason);
     }
@@ -688,7 +688,7 @@ public partial class MainForm : Form
 
     private void OnControllerReplayerStateChanged(object? sender, EdgeReplayerStateChangedEventArgs e)
     {
-        if (InvokeRequired) { Invoke(() => OnControllerReplayerStateChanged(sender, e)); return; }
+        if (InvokeRequired) { BeginInvoke(() => OnControllerReplayerStateChanged(sender, e)); return; }
 
         if (e.IsSafeLatched)
         {
@@ -711,7 +711,12 @@ public partial class MainForm : Form
 
     private void OnControllerTailscaleStateChanged(object? sender, TailscaleStateChangedEventArgs e)
     {
-        if (InvokeRequired) { Invoke(() => OnControllerTailscaleStateChanged(sender, e)); return; }
+        // Marshal ASYNCHRONOUSLY (BeginInvoke): this event is raised on the sidecar
+        // status-poll thread. A synchronous Invoke would block the poll thread while the
+        // modal auth wizard is open, so /v1/status stops flowing and the sidecar IPC
+        // watchdog kills the healthy node (Link: FAULT / duplicate re-register). BeginInvoke
+        // returns immediately, keeping the poll loop alive to feed the watchdog. (Requirement 2.6)
+        if (InvokeRequired) { BeginInvoke(() => OnControllerTailscaleStateChanged(sender, e)); return; }
 
         _pathStatus.Text = e.Path switch
         {
@@ -727,7 +732,6 @@ public partial class MainForm : Form
         {
             _linkIndicatorStatus.Text = "\u25CF Link: Up";
             _linkIndicatorStatus.ForeColor = Color.LimeGreen;
-            DismissLoginPanel();
             DismissWaitOverlay();
 
             // Update Station's own Tailscale IP for display.
@@ -736,10 +740,8 @@ public partial class MainForm : Form
         else if (e.State == TailscaleState.Connecting)
         {
             // Transitioning from NeedsAuth → Connecting → Connected.
-            // Dismiss the login panel early since auth succeeded.
             _linkIndicatorStatus.Text = "\u25CF Link: Connecting...";
             _linkIndicatorStatus.ForeColor = Color.Gold;
-            DismissLoginPanel();
         }
         else if (e.State == TailscaleState.Fault)
         {
@@ -751,18 +753,14 @@ public partial class MainForm : Form
             _linkIndicatorStatus.Text = "● Link: Waiting for login";
             _linkIndicatorStatus.ForeColor = Color.Gold;
 
-            // Show the login panel proactively when NeedsAuth is detected,
-            // even if the auth URL hasn't arrived yet from the sidecar poll.
-            if (!_loginDismissed && !HasPersistedTailscaleState() && _loginPanel is null)
-            {
-                ShowLoginPanel(_pendingAuthUrl ?? "");
-            }
+            // The modal wizard is opened by OnControllerAuthUrlAvailable (single entry point),
+            // matching the Client. The NeedsAuth branch only updates the link indicator.
         }
     }
 
     private void OnControllerSidecarFailureStateChanged(object? sender, SidecarFailureStateChangedEventArgs e)
     {
-        if (InvokeRequired) { Invoke(() => OnControllerSidecarFailureStateChanged(sender, e)); return; }
+        if (InvokeRequired) { BeginInvoke(() => OnControllerSidecarFailureStateChanged(sender, e)); return; }
 
         if (!e.IsRecovered && e.Failure is not null)
         {
@@ -779,7 +777,7 @@ public partial class MainForm : Form
 
     private void OnControllerStartupFailed(object? sender, StationStartupFailedEventArgs e)
     {
-        if (InvokeRequired) { Invoke(() => OnControllerStartupFailed(sender, e)); return; }
+        if (InvokeRequired) { BeginInvoke(() => OnControllerStartupFailed(sender, e)); return; }
 
         _safeBannerPanel.BackColor = Color.FromArgb(120, 60, 0);
         _safeBannerLabel.Text = "NOT ARMED";
@@ -926,13 +924,6 @@ public partial class MainForm : Form
     // Interactive Tailscale Login (same pattern as Client)
     // ────────────────────────────────────────────────────────────────
 
-    private Panel? _loginPanel;
-    private Label? _loginMessageLabel;
-    private Button? _openBrowserButton;
-    private Button? _pasteKeyButton;
-    private TextBox? _authKeyTextBox;
-    private Button? _submitKeyButton;
-    private Label? _loginStatusLabel;
     private string? _pendingAuthUrl;
 
     private bool _loginDismissed;
@@ -951,12 +942,26 @@ public partial class MainForm : Form
 
     private void OnControllerAuthUrlAvailable(object? sender, string authUrl)
     {
-        if (InvokeRequired) { Invoke(() => OnControllerAuthUrlAvailable(sender, authUrl)); return; }
+        // CRITICAL: marshal ASYNCHRONOUSLY (BeginInvoke), never synchronously (Invoke).
+        // This event is raised on the sidecar status-poll thread. ShowAuthWizard() opens a
+        // MODAL dialog (ShowDialog) that does not return until the user finishes logging in.
+        // A synchronous Invoke would block the poll thread for that entire time, so no
+        // /v1/status polls are sent — the sidecar's IPC watchdog then kills the sidecar
+        // mid-login (tailnet drops to FAULT and a new node re-registers each attempt).
+        // BeginInvoke returns immediately, keeping the poll loop alive during login.
+        if (InvokeRequired) { BeginInvoke(() => OnControllerAuthUrlAvailable(sender, authUrl)); return; }
 
         // Don't show the wizard if auth was already completed in this session.
         if (_loginDismissed) return;
 
         _pendingAuthUrl = authUrl;
+
+        // Open-once guard (Change 6): OnControllerAuthUrlAvailable is the SINGLE entry point that
+        // opens the wizard in the Station — there is no proactive NeedsAuth open path (the NeedsAuth
+        // branch of OnControllerTailscaleStateChanged only updates the link indicator, removed in
+        // Task 7.1). Setting the guard here before ShowAuthWizard, together with the early-return
+        // above, ensures the wizard opens at most once. On user Cancel the guard is cleared in
+        // ShowAuthWizard so it can re-open. Mirrors the Client (Task 6.2) for parity.
         _loginDismissed = true; // Prevent re-entry while wizard is open
         ShowAuthWizard();
     }
@@ -965,7 +970,10 @@ public partial class MainForm : Form
     {
         if (_controller?.SidecarHost is null) return;
 
-        DismissWaitOverlay(); // Remove overlay before showing wizard
+        // Single-surface auth: dismiss any pre-wizard overlay (e.g. the startup "Waiting for
+        // Tailscale" / "PLEASE WAIT" overlay) BEFORE showing the modal wizard so the wizard is
+        // the only visible auth surface. The wizard no longer sits behind a competing overlay.
+        DismissWaitOverlay();
 
         var provider = new RWK.Shared.Auth.SidecarAuthProvider(_controller.SidecarHost);
         using var wizard = new Auth.TailscaleAuthWizard(provider);
@@ -973,7 +981,7 @@ public partial class MainForm : Form
 
         if (!wizard.AuthSucceeded)
         {
-            // User cancelled — allow re-showing if auth URL appears again
+            // User cancelled — allow re-showing if auth URL appears again.
             _loginDismissed = false;
         }
     }
@@ -1000,7 +1008,7 @@ public partial class MainForm : Form
 
         var label = new Label
         {
-            Text = "Wait... Connecting to Tailscale",
+            Text = "Waiting for Tailscale...",
             Font = new Font("Segoe UI", 14f, FontStyle.Bold),
             ForeColor = Color.Black,
             AutoSize = true,
@@ -1045,154 +1053,6 @@ public partial class MainForm : Form
         _waitOverlay = null;
     }
 
-    private void ShowLoginPanel(string authUrl)
-    {
-        if (_loginPanel is not null)
-        {
-            _pendingAuthUrl = authUrl;
-            return;
-        }
-
-        _loginPanel = new Panel
-        {
-            Size = new Size(420, 180),
-            BorderStyle = BorderStyle.FixedSingle,
-            BackColor = SystemColors.Info,
-            Anchor = AnchorStyles.None
-        };
-        _loginPanel.Location = new Point(
-            (ClientSize.Width - _loginPanel.Width) / 2,
-            (ClientSize.Height - _loginPanel.Height) / 2);
-
-        _loginMessageLabel = new Label
-        {
-            Text = "Sign in with Tailscale to connect.\nA browser window will open.",
-            Font = new Font(Font.FontFamily, 9.5f),
-            AutoSize = false,
-            Size = new Size(380, 40),
-            Location = new Point(20, 15),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
-
-        _openBrowserButton = new Button
-        {
-            Text = "Open Browser",
-            Size = new Size(120, 32),
-            Location = new Point(20, 62),
-            UseVisualStyleBackColor = true
-        };
-        _openBrowserButton.Click += OnLoginOpenBrowserClick;
-
-        _pasteKeyButton = new Button
-        {
-            Text = "Paste Auth Key Instead",
-            Size = new Size(160, 32),
-            Location = new Point(155, 62),
-            UseVisualStyleBackColor = true
-        };
-        _pasteKeyButton.Click += OnLoginPasteKeyClick;
-
-        _authKeyTextBox = new TextBox
-        {
-            Size = new Size(260, 24),
-            Location = new Point(20, 105),
-            Visible = false,
-            PlaceholderText = "tskey-auth-..."
-        };
-
-        _submitKeyButton = new Button
-        {
-            Text = "Submit",
-            Size = new Size(80, 24),
-            Location = new Point(290, 105),
-            UseVisualStyleBackColor = true,
-            Visible = false
-        };
-        _submitKeyButton.Click += OnLoginSubmitKeyClick;
-
-        _loginStatusLabel = new Label
-        {
-            Text = "Waiting for browser login...",
-            ForeColor = Color.FromArgb(180, 140, 20),
-            Font = new Font(Font.FontFamily, 8.5f),
-            AutoSize = true,
-            Location = new Point(20, 145)
-        };
-
-        _loginPanel.Controls.AddRange(new Control[]
-        {
-            _loginMessageLabel, _openBrowserButton, _pasteKeyButton,
-            _authKeyTextBox, _submitKeyButton!, _loginStatusLabel
-        });
-
-        Controls.Add(_loginPanel);
-        _loginPanel.BringToFront();
-    }
-
-    private void DismissLoginPanel()
-    {
-        if (_loginPanel is null) return;
-
-        _loginDismissed = true;
-
-        Controls.Remove(_loginPanel);
-        _loginPanel.Dispose();
-        _loginPanel = null;
-        _loginMessageLabel = null;
-        _openBrowserButton = null;
-        _pasteKeyButton = null;
-        _authKeyTextBox = null;
-        _submitKeyButton = null;
-        _loginStatusLabel = null;
-        _pendingAuthUrl = null;
-    }
-
-    private void OnLoginOpenBrowserClick(object? sender, EventArgs e)
-    {
-        if (!string.IsNullOrEmpty(_pendingAuthUrl))
-        {
-            try
-            {
-                System.Diagnostics.Process.Start(
-                    new System.Diagnostics.ProcessStartInfo(_pendingAuthUrl) { UseShellExecute = true });
-            }
-            catch
-            {
-                if (_loginStatusLabel is not null)
-                    _loginStatusLabel.Text = $"Open manually: {_pendingAuthUrl}";
-            }
-        }
-    }
-
-    private void OnLoginPasteKeyClick(object? sender, EventArgs e)
-    {
-        if (_authKeyTextBox is not null) _authKeyTextBox.Visible = true;
-        if (_submitKeyButton is not null) _submitKeyButton.Visible = true;
-        if (_loginStatusLabel is not null) _loginStatusLabel.Text = "Paste your auth key and click Submit.";
-    }
-
-    private async void OnLoginSubmitKeyClick(object? sender, EventArgs e)
-    {
-        string key = _authKeyTextBox?.Text?.Trim() ?? "";
-        if (string.IsNullOrEmpty(key)) return;
-
-        try
-        {
-            if (_loginStatusLabel is not null)
-                _loginStatusLabel.Text = "Submitting auth key...";
-
-            await _controller!.SubmitAuthKeyAsync(key).ConfigureAwait(true);
-
-            if (_loginStatusLabel is not null)
-                _loginStatusLabel.Text = "Key accepted — connecting...";
-        }
-        catch (Exception ex)
-        {
-            if (_loginStatusLabel is not null)
-                _loginStatusLabel.Text = $"Failed: {ex.Message}";
-        }
-    }
-
     /// <summary>
     /// Clean up controller on form close. Uses a fire-and-forget with a timeout
     /// to prevent UI hangs if the sidecar is unresponsive.
@@ -1229,7 +1089,7 @@ public partial class MainForm : Form
 
     private void OnForwardRulesReceived(object? sender, List<ForwardRuleInfo> rules)
     {
-        if (InvokeRequired) { Invoke(() => OnForwardRulesReceived(sender, rules)); return; }
+        if (InvokeRequired) { BeginInvoke(() => OnForwardRulesReceived(sender, rules)); return; }
 
         _forwardRulesGrid.Rows.Clear();
         foreach (var rule in rules)

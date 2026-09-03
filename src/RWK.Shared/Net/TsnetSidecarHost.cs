@@ -649,6 +649,40 @@ public sealed class TsnetSidecarHost : ITsnetSidecarHost
         response.EnsureSuccessStatusCode();
     }
 
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Best-effort: mirrors <see cref="SetPeerAsync"/> but POSTs an empty address to clear
+    /// the peer, and deliberately does NOT call EnsureSuccessStatusCode. A failure while
+    /// clearing must never fault the link, because this runs during cleanup after an
+    /// abandoned pairing attempt on an otherwise healthy tailnet.
+    /// </remarks>
+    public async Task ClearPeerAsync(CancellationToken cancellationToken = default)
+    {
+        if (_disposed || _httpClient is null)
+            return;
+
+        try
+        {
+            var body = JsonSerializer.Serialize(
+                new PeerRequest { Address = string.Empty, EdgePort = 0 },
+                SidecarJsonContext.Default.PeerRequest);
+
+            using var content = new StringContent(body, Encoding.UTF8, "application/json");
+            // Intentionally no EnsureSuccessStatusCode: clearing is best-effort cleanup.
+            using var response = await _httpClient.PostAsync("/v1/peer", content, cancellationToken)
+                .ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                Debug.WriteLine($"ClearPeerAsync: sidecar returned {(int)response.StatusCode} (ignored, best-effort).");
+            }
+        }
+        catch (Exception ex)
+        {
+            // Swallow everything: a failed cleanup must not disrupt the link.
+            Debug.WriteLine($"ClearPeerAsync failed (ignored, best-effort): {ex.Message}");
+        }
+    }
+
     // ──────────────────────────────────────────────────────────────────────────────
     //  IDisposable
     // ──────────────────────────────────────────────────────────────────────────────

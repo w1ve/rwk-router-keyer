@@ -141,6 +141,8 @@ partial class MainForm
     private TextBox _logTextBox = null!;
     private Label _stationAddressCaptionLabel = null!;
     private ComboBox _stationCombo = null!;
+    private Button _editStationBtn = null!;
+    private Button _deleteStationBtn = null!;
     private Button _importStationBtn = null!;
     private Button _connectButton = null!;
     private CheckBox _stationArmToggle = null!;
@@ -954,11 +956,33 @@ partial class MainForm
         _stationCombo.SelectedIndex = 0;
         _stationCombo.SelectedIndexChanged += OnStationComboChanged;
 
+        _editStationBtn = new Button
+        {
+            Text = "Edit...",
+            Size = new Size(56, 25),
+            Location = new Point(260, 3),
+            UseVisualStyleBackColor = true,
+            Enabled = false,
+            Name = "_editStationBtn"
+        };
+        _editStationBtn.Click += OnEditStationClick;
+
+        _deleteStationBtn = new Button
+        {
+            Text = "Delete",
+            Size = new Size(56, 25),
+            Location = new Point(320, 3),
+            UseVisualStyleBackColor = true,
+            Enabled = false,
+            Name = "_deleteStationBtn"
+        };
+        _deleteStationBtn.Click += OnDeleteStationClick;
+
         _importStationBtn = new Button
         {
             Text = "Import...",
             Size = new Size(70, 25),
-            Location = new Point(262, 3),
+            Location = new Point(380, 3),
             UseVisualStyleBackColor = true,
             Name = "_importStationBtn"
         };
@@ -970,7 +994,7 @@ partial class MainForm
             Font = new Font("Segoe UI", 12F, FontStyle.Bold),
             ForeColor = Color.FromArgb(200, 0, 0),
             AutoSize = true,
-            Location = new Point(338, 4),
+            Location = new Point(458, 4),
             Visible = false,
             Name = "_keySetIndicator"
         };
@@ -978,8 +1002,8 @@ partial class MainForm
         _connectButton = new Button
         {
             Text = "Pair with Station",
-            Location = new Point(360, 3),
-            Size = new Size(150, 25),
+            Location = new Point(478, 3),
+            Size = new Size(140, 25),
             BackColor = Color.FromArgb(200, 40, 40),
             ForeColor = Color.White,
             FlatStyle = FlatStyle.Flat,
@@ -1008,7 +1032,7 @@ partial class MainForm
         };
 
         connectionPanel.Controls.AddRange(new Control[] {
-            _stationAddressCaptionLabel, _stationCombo, _importStationBtn,
+            _stationAddressCaptionLabel, _stationCombo, _editStationBtn, _deleteStationBtn, _importStationBtn,
             _keySetIndicator, _connectButton, _stationArmToggle, pairingHelpLabel
         });
 

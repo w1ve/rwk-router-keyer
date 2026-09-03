@@ -19,19 +19,21 @@ namespace RWK.Shared.Auth;
 public sealed class SidecarAuthProvider : ITailscaleAuthProvider
 {
     private readonly ITsnetSidecarHost _host;
-    private string? _lastAuthUrl;
-    private int _staleAuthUrlPolls;
-
-    /// <summary>
-    /// After this many consecutive polls where the state is NeedsAuth with the same
-    /// non-empty authUrl, assume the sidecar is lagging and report Connecting so the
-    /// wizard advances. At 1.5s poll interval, 12 polls = ~18 seconds.
-    /// </summary>
-    private const int StaleAuthUrlThreshold = 12;
 
     public SidecarAuthProvider(ITsnetSidecarHost host)
     {
         _host = host ?? throw new ArgumentNullException(nameof(host));
+    }
+
+    /// <inheritdoc/>
+    public event EventHandler<TailscaleStateChangedEventArgs>? StateChanged
+    {
+        // Forward the host-owned poller's state-change events so the wizard can
+        // subscribe here instead of running its own poll timer (Requirements 2.1, 2.2).
+        // Task 3.2 finalizes the read-through provider; this minimal forwarding keeps
+        // the single-source-of-truth semantics intact.
+        add => _host.StateChanged += value;
+        remove => _host.StateChanged -= value;
     }
 
     /// <inheritdoc/>
@@ -53,65 +55,6 @@ public sealed class SidecarAuthProvider : ITailscaleAuthProvider
     public async Task SubmitAuthKeyAsync(string authKey, CancellationToken cancellationToken = default)
     {
         await _host.SubmitAuthKeyAsync(authKey, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <inheritdoc/>
-    /// <remarks>
-    /// The sidecar host polls internally every 2 seconds. This method reads the latest
-    /// cached state and applies heuristics:
-    /// 1. If NeedsAuth but AuthUrl is cleared → report Connecting (auth completed, transitioning).
-    /// 2. If NeedsAuth with same authUrl for too many polls → assume auth completed but sidecar
-    ///    is lagging, report Connecting so the wizard isn't stuck forever.
-    /// 3. If Connected → report Connected (sidecar confirmed).
-    /// </remarks>
-    public Task<TailscaleState> PollStatusAsync(CancellationToken cancellationToken = default)
-    {
-        var state = _host.State;
-
-        // If already connected, reset stale counter and return immediately.
-        if (state == TailscaleState.Connected)
-        {
-            _staleAuthUrlPolls = 0;
-            _lastAuthUrl = null;
-            return Task.FromResult(state);
-        }
-
-        // Heuristic 1: NeedsAuth but authUrl cleared → auth succeeded, transitioning.
-        if (state == TailscaleState.NeedsAuth && string.IsNullOrEmpty(_host.AuthUrl))
-        {
-            _staleAuthUrlPolls = 0;
-            _lastAuthUrl = null;
-            return Task.FromResult(TailscaleState.Connecting);
-        }
-
-        // Heuristic 2: NeedsAuth with a non-empty authUrl — track how long it's been stale.
-        // After the user authenticates in the browser, the sidecar may take many seconds to
-        // notice (its own control-plane poll + internal processing). If we've seen the same
-        // authUrl for StaleAuthUrlThreshold consecutive polls, assume auth completed.
-        if (state == TailscaleState.NeedsAuth && !string.IsNullOrEmpty(_host.AuthUrl))
-        {
-            if (_host.AuthUrl == _lastAuthUrl)
-            {
-                _staleAuthUrlPolls++;
-                if (_staleAuthUrlPolls >= StaleAuthUrlThreshold)
-                {
-                    // Assume auth completed — the sidecar just hasn't caught up yet.
-                    return Task.FromResult(TailscaleState.Connecting);
-                }
-            }
-            else
-            {
-                // New authUrl — reset counter (fresh auth attempt).
-                _lastAuthUrl = _host.AuthUrl;
-                _staleAuthUrlPolls = 1;
-            }
-        }
-        else
-        {
-            _staleAuthUrlPolls = 0;
-        }
-
-        return Task.FromResult(state);
     }
 
     /// <summary>

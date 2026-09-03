@@ -99,6 +99,30 @@ public sealed class ImportStationDialog : Form
         _nameBox.TextChanged += (_, _) => Validate();
     }
 
+    /// <summary>
+    /// Constructs the dialog pre-filled for EDITING an existing station entry. The name box
+    /// is pre-filled with <paramref name="existing"/>.Name and the paste box with the
+    /// "IP|Key" string, the title becomes "Edit Station", and validation runs immediately so
+    /// OK is enabled. The name remains fully editable.
+    /// </summary>
+    public ImportStationDialog(StationEntry existing) : this()
+    {
+        Init(existing);
+    }
+
+    /// <summary>
+    /// Pre-fills the dialog for editing an existing <see cref="StationEntry"/>. Sets the name
+    /// and "IP|Key" paste fields, switches the title to "Edit Station", and runs validation so
+    /// OK is enabled immediately. Name stays editable.
+    /// </summary>
+    public void Init(StationEntry existing)
+    {
+        Text = "Edit Station";
+        _nameBox.Text = existing.Name;
+        _pasteBox.Text = $"{existing.TailscaleIp}|{existing.PairingKey}";
+        Validate();
+    }
+
     private void Validate()
     {
         string name = _nameBox.Text.Trim();

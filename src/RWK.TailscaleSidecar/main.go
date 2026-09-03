@@ -199,6 +199,14 @@ func main() {
 				case <-shutdown.Done():
 					return
 				case <-ticker.C:
+					// Do not kill the sidecar while it is waiting for the user to complete
+					// an interactive browser login. srv.Up() blocks for the whole login, during
+					// which the .NET side may not be polling — but the node is healthy and must
+					// stay alive so the user can finish authenticating. Killing here caused the
+					// auth wizard to briefly show then die with the tailnet in FAULT.
+					if node.LoginPending() {
+						continue
+					}
 					if idle := api.IdleFor(); idle > cfg.Watchdog {
 						logf("watchdog: no IPC request for %v (limit %v)", idle.Round(time.Millisecond), cfg.Watchdog)
 						stop("watchdog")

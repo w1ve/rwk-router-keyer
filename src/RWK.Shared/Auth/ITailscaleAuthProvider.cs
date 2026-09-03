@@ -20,6 +20,16 @@ namespace RWK.Shared.Auth;
 /// </remarks>
 public interface ITailscaleAuthProvider
 {
+    /// <summary>
+    /// Raised when the underlying sidecar host observes a Tailscale state transition.
+    /// The wizard subscribes to this event to drive its state machine instead of running
+    /// its own <c>/v1/status</c> poll timer, keeping the host-owned poller the single
+    /// source of truth (see bugfix Requirements 2.1, 2.2). Reuses the same
+    /// <see cref="TailscaleStateChangedEventArgs"/> raised by
+    /// <see cref="Net.ITsnetSidecarHost.StateChanged"/>.
+    /// </summary>
+    event EventHandler<TailscaleStateChangedEventArgs>? StateChanged;
+
     /// <summary>Current Tailscale connection state.</summary>
     TailscaleState CurrentState { get; }
 
@@ -50,13 +60,4 @@ public interface ITailscaleAuthProvider
     /// <param name="authKey">The Tailscale auth key to submit.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     Task SubmitAuthKeyAsync(string authKey, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Polls the sidecar for the latest status and returns the current state.
-    /// The implementation should update <see cref="CurrentState"/>, <see cref="AuthUrl"/>,
-    /// <see cref="SelfAddress"/>, and <see cref="SelfDnsName"/> as side effects.
-    /// </summary>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The current state after polling.</returns>
-    Task<TailscaleState> PollStatusAsync(CancellationToken cancellationToken = default);
 }

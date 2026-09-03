@@ -15,6 +15,16 @@ Free, open-source CW remoting, SSB PTT control, and port forwarding for amateur 
 
 ---
 
+## Recent Bug Fixes (Tailscale login + pairing)
+
+The newest v1.0.5 builds fix three connection problems reported from the field:
+
+- **Tailscale auth wizard hung after a successful browser login.** On a first-time login the sidecar blocked while waiting for the tailnet to come up and, if the interactive login took longer than the start timeout, it tore the freshly-authenticated node down — so the wizard sat forever and the tailnet showed FAULT despite a good login. The sidecar now reports live backend state throughout the login (it no longer goes "blind" while you sign in) and never abandons a node that is still legitimately completing login. The login flow was also collapsed onto a single modal wizard and a single status poller: the old yellow login panel and the competing "waiting" overlay are gone, and the wizard is driven by the sidecar's state events instead of a second poll timer, eliminating the dueling-poller loop.
+- **A failed pairing dropped the whole Tailscale link.** Pairing configures the sidecar's edge peer before the handshake. If you paired to a Station whose Tailscale IP had changed (a stale entry), the handshake failed but the dead peer stayed configured — the sidecar kept probing it, crossed the fault threshold after a few seconds, and reported "Path lost" even though the tailnet was healthy. The edge peer is now cleared whenever there is no active session (failed/abandoned pair, Station-initiated unpair, or user disconnect), so a pairing attempt can never fault the link. A failed pair now shows a toast reminding you to check the Station's pairing info and leaves the tailnet connected and ready to retry.
+- **No way to fix or remove a saved Station.** A Station's Tailscale IP changes on every re-auth, so a saved entry can go stale. The Pair panel now has **Edit...** and **Delete** buttons next to the Station dropdown (enabled once a station is selected). Edit re-opens the import dialog pre-filled with the station's name, IP, and key so you can paste fresh info; Delete removes the entry after a confirmation.
+
+---
+
 ## Recent Bug Fixes (later v1.0.5 builds)
 
 A round of **safety and reliability** fixes shipped in later v1.0.5 builds:

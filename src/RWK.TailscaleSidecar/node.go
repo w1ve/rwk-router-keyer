@@ -238,39 +238,144 @@ func (n *Node) bringUp(authKey string) {
 		return
 	}
 
-	// The LocalClient is usable as soon as Start() succeeds — before the blocking
-	// Up() returns. Grab it now so we can observe backend state DURING an interactive
-	// browser login. Without this, backend stays "Starting" and authURL stays stale for
-	// the whole login window (Up blocks), so the C# side never sees "Running"/cleared
-	// authURL and the auth wizard hangs on "Waiting for browser login...".
-	lc, err := srv.LocalClient()
-	if err != nil {
-		fail("local client", err)
+	// ── LOGIN-HANG ROOT CAUSE & FIX ──────────────────────────────────────────
+	// Historically the status poll loop (n.poll → n.refresh → lc.Status) was only
+	// started AFTER srv.Up(ctx) returned. But srv.Up() BLOCKS for the entire
+	// interactive browser login (open browser, sign in, approve device), which for
+	// a first-time login routinely exceeds StartTimeout (default 90s). During that
+	// whole window the sidecar was BLIND: n.backend was never refreshed, /v1/status
+	// returned stale state, and on an Up() timeout the recovery code checked
+	// lc.Status() exactly ONCE for "Running" — which is usually false right after
+	// login (backend is still NeedsLogin/NeedsMachineAuth/Starting) — then called
+	// fail(), closing the server and tearing the node down. The .NET wizard then
+	// never saw Connected and hung forever.
+	//
+	// The fix makes bringUp non-blocking and status-driven:
+	//   1. Grab LocalClient EARLY and set n.lc + start the poll loop IMMEDIATELY,
+	//      so n.refresh()/lc.Status() keeps n.backend, authURL, self/peer fields
+	//      live throughout the login window (this is exactly what must run DURING
+	//      login, not after).
+	//   2. Run srv.Up(ctx) to actually drive the tailnet up. On an Up() timeout we
+	//      DO NOT tear the node down while the backend is legitimately progressing
+	//      (NeedsLogin/NeedsMachineAuth/Starting/Running) — we let the poll loop
+	//      promote it to Running when login completes.
+	//   3. Once a valid IPv4 is available, run the post-up setup (loopback,
+	//      edge UDP listener, edge attach, self DNS) exactly once — this preserves
+	//      the fast/non-interactive path behavior byte-for-byte.
+
+	lc, lcErr := srv.LocalClient()
+	if lcErr != nil {
+		fail("local client", lcErr)
 		return
 	}
+
+	// Start the poll loop NOW, before Up() has a chance to block. n.refresh reads
+	// n.lc under lock and returns early if nil, so n.lc must be set first. The poll
+	// loop keeps /v1/status live (and the IPC watchdog fed) for the whole login.
+	pollCtx, pollCancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	n.mu.Lock()
+	n.lc = lc
+	n.started = true
+	n.starting = false
+	n.pollCancel = pollCancel
+	n.pollDone = done
+	// Leave n.backend as "Starting"; the poll loop's refresh() will update it from
+	// the real BackendState (and set everRunning/clear authURL on "Running").
+	n.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		n.poll(pollCtx)
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), n.cfg.StartTimeout)
 	defer cancel()
 
-	// Watch backend state while Up() blocks. When the user completes browser login the
-	// backend transitions to "Running": reflect that (and clear the interactive authURL)
-	// immediately so the wizard advances, rather than waiting for Up() to return.
-	upWatchStop := make(chan struct{})
-	go n.watchBackendDuringUp(ctx, lc, upWatchStop)
-
 	st, err := srv.Up(ctx)
-	close(upWatchStop) // Up() returned (success or failure) — stop the interim watcher.
+
 	if err != nil {
-		fail("tailnet up", err)
-		return
+		// tsnet.Up can report "context deadline exceeded" even when the backend
+		// actually reached Running, and — more importantly for first-time logins —
+		// it times out while the backend is still legitimately progressing through
+		// the interactive login. Decide whether to tear down based on the CURRENT
+		// backend state, not on Up()'s return value.
+		backend := ""
+		if cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second); true {
+			if cst, cerr := lc.Status(cctx); cerr == nil && cst != nil {
+				backend = cst.BackendState
+				if cst.BackendState == "Running" {
+					st = cst
+				}
+			}
+			ccancel()
+		}
+
+		progressing := backend == "Running" || backend == "Starting" ||
+			backend == "NeedsLogin" || backend == "NeedsMachineAuth"
+		timeout := errors.Is(err, context.DeadlineExceeded)
+
+		if backend == "Running" {
+			n.logf("tsnet.Up returned %q but backend is Running — recovering", err)
+		} else if timeout && progressing {
+			// The user is still completing the interactive browser login. Do NOT
+			// fail()/tear down — the poll loop is already live and will promote the
+			// node to Running once login finishes. Wait (poll-driven) for a valid
+			// IPv4 before doing the edge/loopback setup below.
+			n.logf("tsnet.Up timed out while backend is %q (login in progress) — keeping node alive and waiting", backend)
+		} else {
+			// Genuine, non-recoverable start error (backend Stopped/NoState/empty
+			// and not progressing). Tear down as before.
+			fail("tailnet up", err)
+			return
+		}
 	}
 
+	// Wait for a valid IPv4 to be assigned. On the fast/non-interactive path this is
+	// already true the moment Up() returns, so this loop exits immediately. On the
+	// slow interactive path we may have gotten here on an Up() timeout while login is
+	// still finishing; keep waiting (the poll loop keeps status/authURL live) until
+	// the backend reaches Running and an address is assigned, bounded by a generous
+	// overall cap so a truly wedged backend still gets torn down eventually.
 	ip4, ip6 := srv.TailscaleIPs()
 	if !ip4.IsValid() {
-		fail("tailscale address", errors.New("no IPv4 address assigned"))
-		return
+		const loginWaitCap = 10 * time.Minute
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), loginWaitCap)
+		wticker := time.NewTicker(1 * time.Second)
+	waitLoop:
+		for !ip4.IsValid() {
+			select {
+			case <-waitCtx.Done():
+				break waitLoop
+			case <-pollCtx.Done():
+				// Node was stopped/closed while waiting for login; nothing to do,
+				// teardown is handled by Stop().
+				wticker.Stop()
+				waitCancel()
+				return
+			case <-wticker.C:
+				ip4, ip6 = srv.TailscaleIPs()
+			}
+		}
+		wticker.Stop()
+		waitCancel()
+
+		if !ip4.IsValid() {
+			// Login never completed within the generous cap — treat as a genuine failure.
+			fail("tailscale address", errors.New("no IPv4 address assigned (login not completed)"))
+			return
+		}
+		// Refresh st so self DNS reflects the now-Running backend.
+		if cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second); true {
+			if cst, cerr := lc.Status(cctx); cerr == nil && cst != nil {
+				st = cst
+			}
+			ccancel()
+		}
 	}
 
+	// ── POST-UP SETUP (fast and slow paths converge here with a valid IPv4) ──
 	// Loopback SOCKS5 proxy plus LocalAPI, both credential protected by tsnet.
 	// Exposed for the C# side; the ports are chosen by tsnet so nothing is
 	// hardcoded.
@@ -286,9 +391,9 @@ func (n *Node) bringUp(authKey string) {
 	// True UDP over the mesh: gVisor gives a real PacketConn, so edge datagram
 	// boundaries survive end to end (requirement 5.6).
 	listenAddr := netip.AddrPortFrom(ip4, uint16(n.cfg.EdgeTailnetPort)).String()
-	pc, err := srv.ListenPacket("udp4", listenAddr)
-	if err != nil {
-		fail("edge udp listen", err)
+	pc, listenErr := srv.ListenPacket("udp4", listenAddr)
+	if listenErr != nil {
+		fail("edge udp listen", listenErr)
 		return
 	}
 	edgePort := portOf(pc.LocalAddr())
@@ -298,78 +403,24 @@ func (n *Node) bringUp(authKey string) {
 		selfDNS = strings.TrimSuffix(st.Self.DNSName, ".")
 	}
 
-	pollCtx, pollCancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-
 	n.mu.Lock()
-	n.lc = lc
-	n.started = true
-	n.starting = false
 	n.everRunning = true
 	n.backend = "Running"
 	n.selfV4 = ip4
 	n.selfV6 = ip6
-	n.selfDNS = selfDNS
+	if selfDNS != "" {
+		n.selfDNS = selfDNS
+	}
 	n.socks = socks
 	n.localAPI = lapi
-	n.pollCancel = pollCancel
-	n.pollDone = done
+	// The user has finished login (or never needed it); drop any interactive URL.
+	n.authURL = ""
 	n.mu.Unlock()
 
 	n.edge.AttachTailnet(pc, edgePort)
 	n.applyPeerToEdge()
 
 	n.logf("joined tailnet as %s (%s); edge udp on %s:%d", selfDNS, ip4, ip4, edgePort)
-
-	go func() {
-		defer close(done)
-		n.poll(pollCtx)
-	}()
-}
-
-// watchBackendDuringUp polls the local backend state while srv.Up() is blocking (which it
-// does for the entire duration of an interactive browser login). It mirrors lc.Status()'s
-// BackendState into n.backend and clears the interactive authURL once the backend reaches
-// "Running", so the C# side (and the auth wizard) can observe success promptly instead of
-// waiting for Up() to return. It exits when stop is closed (Up returned) or ctx is done.
-func (n *Node) watchBackendDuringUp(ctx context.Context, lc *local.Client, stop <-chan struct{}) {
-	if lc == nil {
-		return
-	}
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-stop:
-			return
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			sctx, cancel := context.WithTimeout(ctx, 3*time.Second)
-			st, err := lc.Status(sctx)
-			cancel()
-			if err != nil || st == nil {
-				continue
-			}
-
-			n.mu.Lock()
-			// Only advance backend state; never regress a real "Running" that the main
-			// poll may have already set.
-			if n.backend != "Running" {
-				n.backend = st.BackendState
-			}
-			if st.BackendState == "Running" {
-				n.everRunning = true
-				n.authURL = ""
-			} else if st.BackendState != "NeedsLogin" && st.BackendState != "NeedsMachineAuth" {
-				// Once login is no longer pending (e.g. "Starting" after the browser step,
-				// or "Authenticated"), drop the stale interactive URL so the wizard advances.
-				n.authURL = ""
-			}
-			n.mu.Unlock()
-		}
-	}
 }
 
 func (n *Node) userLogf(format string, args ...any) {
@@ -458,10 +509,35 @@ func (n *Node) Close() {
 // edgePort is the peer's tailnet UDP port for edges, which the applications
 // exchange over the control channel; 0 leaves outbound edges undeliverable and
 // is reported as dropNoPeer in the status document.
+//
+// An EMPTY spec CLEARS the peer. This is deliberate and load-bearing: the Client
+// configures a peer for a pairing ATTEMPT (before the HMAC handshake), and when
+// that attempt fails against a stale/dead station IP the peer must be removed.
+// If it were left configured, the poll loop would keep probing the dead peer,
+// n.probeFailures would climb past FaultAfter, and deriveState would report
+// Fault (because BackendState=="Running" && PeerConfigured && failures>=FaultAfter),
+// which drops the link display and drives the Station's F9. Clearing the peer
+// makes PeerConfigured=false, so a failed/abandoned pair can never fault the node.
 func (n *Node) SetPeer(spec string, edgePort int) error {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
-		return errors.New("peer address or hostname is required")
+		// Clear the peer entirely: no spec, no address, no probe history. With
+		// peerSpec empty, Status() reports PeerConfigured=false and deriveState
+		// ignores probe failures, so an unpaired node stays Connected.
+		n.mu.Lock()
+		n.peerSpec = ""
+		n.peerEdgePort = 0
+		n.peerAddr = netip.Addr{}
+		n.peerDNS = ""
+		n.peerOnline = false
+		n.probe = probeSample{}
+		n.probeFailures = 0
+		n.mu.Unlock()
+
+		// Drop the edge relay peer so outbound edges are dropped as dropNoPeer
+		// and no inbound source is accepted until a new peer is configured.
+		n.edge.ClearPeer()
+		return nil
 	}
 	if edgePort < 0 || edgePort > 65535 {
 		return fmt.Errorf("edgePort %d out of range", edgePort)
@@ -491,6 +567,17 @@ func (n *Node) SetPeer(spec string, edgePort int) error {
 		go n.refresh(context.Background())
 	}
 	return nil
+}
+
+// LoginPending reports whether the node is currently waiting for the user to complete an
+// interactive browser login (an auth URL has been emitted and the node has never reached
+// Running). The IPC watchdog uses this to avoid killing a healthy sidecar during the login
+// window: srv.Up() blocks for the whole browser login, during which the .NET side may not
+// be polling, but the sidecar must stay alive so the user can finish authenticating.
+func (n *Node) LoginPending() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.authURL != "" && !n.everRunning
 }
 
 func (n *Node) applyPeerToEdge() {

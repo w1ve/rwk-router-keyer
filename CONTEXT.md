@@ -618,3 +618,53 @@ Set-Content -Path artifacts\release\version.txt -Value $v -NoNewline
 If the running build is NEWER than `version.txt` (dev machine ahead of the release), no
 banner shows — correct. If `version.txt` is missing from a release, the checker simply
 never flags an update (fail-safe, no error).
+
+## Session Update — v1.0.5.x rapid bug-fix cycle (September 2026)
+
+**Branch:** `v1.0.5-ipv6` (still the working branch). Version stays **1.0.5** with an
+auto-incrementing build number (arithmetic `DayOfYear*100 + Hour` in `Directory.Build.props`;
+one-hour resolution — bump VersionPrefix if two builds land in the same UTC hour).
+
+**Release repo/state:** `w1ve/rwk-router-keyer`, remote `rwk-router-keyer`. The old
+`w1ve/rwk.git` (remote `origin`) was DELETED; local `origin` remote removed. `gh` CLI at
+`C:\tools\gh\bin\gh.exe` (auth as w1ve). Go toolchain at `E:\go\bin\go.exe` (1.26.5).
+
+### Build/release recipe (unchanged, AV-lock aware)
+1. `dotnet publish` client + station: `-c Release -r win-x64 --self-contained true -p:PublishSingleFile=true` to `artifacts/release/publish-{client,station}`.
+2. Copy `RWKClient.exe`, `RWKStation.exe`, `Wizard/radios.json` to `artifacts/release/staging/`.
+3. If the sidecar changed: `cd src/RWK.TailscaleSidecar; E:\go\bin\go.exe build -o rwk-tailscale-sidecar.exe .` then copy it to `artifacts/release/staging/` (this makes the installer ~58 MB vs ~51 MB with the old sidecar).
+4. Generate **version.txt** (REQUIRED release asset for the update checker):
+   `$v = ([System.Diagnostics.FileVersionInfo]::GetVersionInfo("artifacts\release\publish-client\RWKClient.exe")).FileVersion; Set-Content artifacts\release\version.txt -Value $v -NoNewline`
+5. ISCC compile to a **temp name** then rename (AV locks the output; error 110/EndUpdateResource means retry with a new tmp name after a few seconds):
+   `& "C:\Users\gerry\AppData\Local\Programs\Inno Setup 6\ISCC.exe" build\installer\rwk-setup.iss /O"artifacts\release" /FRWK-Setup-tmpN` then `Move-Item RWK-Setup-tmpN.exe RWK-Setup.exe`.
+6. Release refresh: `git tag -f v1.0.5 <commit>; git push rwk-router-keyer refs/tags/v1.0.5 --force`, then `gh release upload v1.0.5 RWK-Setup.exe version.txt --clobber` and `gh release edit v1.0.5 --notes-file ... --latest`.
+
+### Fixes COMMITTED + PUSHED to main this cycle
+- Keyer slider layout / weight-slider / WPM z-order (MainForm.Designer + runtime LayoutKeyerSliders).
+- PTT hot key + keyboard paddle now EAT keystrokes (return IntPtr(1)); Set Hot Key ↔ Clear Hot Key.
+- Station phantom keying when not armed: `IsKeyingAllowed = Armed && !SafeLatched` gates OnEdgeReceived/ProcessJitterQueue/ApplyKeyState/ptt_assert; FlushKeyingQueue on SAFE.
+- Session box always reflects pairing: ConnectionRejected event (not SessionEnded) for busy/fail/timeout; ReconcileSessionBox() on 50ms tick; control-channel-loss ends session.
+- Keying + logger port open retry + MessageBox (VSPE hint).
+- Client imports persist to `%AppData%\RWK Client\stations.json` (was Program Files).
+- CW timing: HybridWaiter coarse phase Thread.Sleep(1) not Sleep(0) (was busy-spinning at HIGHEST, glitching CW).
+- Logs moved to `%LocalAppData%\RWK Router Keyer\logs`; View Logs menu (Notepad) in both apps.
+- Station auto-sets PTT to (None) when PTT line == Key line.
+- In-app update checker (UpdateChecker.cs) + bottom banner; version-mismatch-on-pair warning (Station sends station_version; Client compares major.minor.patch; watchdog for older/unknown Station).
+- Sidecar auth commit `4e3cf73` (watchBackendDuringUp) — LATER REVERTED, see below.
+
+### UNCOMMITTED on branch (built into installer 1.0.5.24502, awaiting user test)
+- **Auth-wizard hang ROOT CAUSE FOUND (evidence in sidecar.log):** Station `OnControllerAuthUrlAvailable` used synchronous `Invoke` to marshal to UI, then opened the MODAL auth wizard (ShowDialog). ShowDialog blocks until login completes, so the synchronous Invoke FROZE the sidecar status-poll thread for the whole login. No `/v1/status` polls → sidecar's 15s IPC watchdog killed the healthy, just-logged-in node (log: "joined tailnet as rwk-station-1" at 22:10:28, then "watchdog: no IPC request for 23.974s" at 22:10:31 → FAULT; a new `-1` node registered each attempt). **FIX: Station handler now uses `BeginInvoke` (async) — matches the Client, which already did.** THIS is the real fix.
+  - File: `src/RWK.Station/MainForm.cs` OnControllerAuthUrlAvailable.
+- Sidecar (defense-in-depth, node.go/main.go): reverted the bad `watchBackendDuringUp`; added `LoginPending()` watchdog exemption; `srv.Up()` timeout recovery (if Up errors but `lc.Status().BackendState=="Running"`, treat as success instead of FAULT). Sidecar rebuilt (9:57 PM, 30.9 MB) and staged.
+- "Waiting for Tailscale..." overlay now stays up BEHIND the modal wizard until Connected (both apps); relabeled from "Wait... Connecting to Tailscale".
+- Failed pair no longer appears to drop tailnet: ClientController.AbandonPairingAttempt() cleans up control stream without touching the link; OnConnectClick catch re-asserts UpdateStatusForState(TailscaleState) so status returns to "Connected".
+- GitHub "error 103" is a Tailscale control-plane/identity error surfaced via srv.Up — NOT our code. These fixes stop masking/hanging on it but won't resolve an actual GitHub auth rejection (usually non-admin login or device-approval).
+
+### KNOWN PENDING
+- Bad sidecar commit `4e3cf73` (watchBackendDuringUp) is still on main; the uncommitted revert + real fixes supersede it and must be committed/pushed once the user confirms auth works.
+- Flaky Go test `TestEdgeRelayOutbound` (UDP loopback timing; passes on retry) — unrelated to these changes.
+- Pre-existing test failures (environmental, verified via stash baseline): RWK.Client Audio default tests (3), RWK.Shared PortForwardManagerBind (IP bind), RWK.Station SessionManagerTests.SecondConnectionGetsBusy (test reads 4 bytes before consuming the 32-byte nonce — a test bug), RWK.Integration timing test.
+
+### NEXT STEPS
+1. User tests installer 1.0.5.24502: Station Tailscale auth (Google login) should now stay alive through login and dismiss on Connect, with NO duplicate `-1` nodes; failed pair returns to "connected, ready to pair".
+2. On confirmation: commit all uncommitted changes, push main, `git tag -f v1.0.5` to the new commit, refresh the GitHub release with RWK-Setup.exe (1.0.5.24502) + version.txt, and update README "Recent Bug Fixes" list.

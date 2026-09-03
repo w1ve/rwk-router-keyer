@@ -19,16 +19,18 @@ namespace RWK.Client.Auth;
 /// Replaces the fragile login panel that was prone to auto-dismiss races.
 /// </summary>
 /// <remarks>
-/// The wizard owns its own polling loop (2-second timer) and never auto-dismisses.
-/// It drives all transitions through <see cref="AuthWizardStateMachine"/>, keeping
-/// the UI logic minimal and the state logic testable.
+/// The wizard never runs its own poll timer. It subscribes to
+/// <see cref="ITailscaleAuthProvider.StateChanged"/> (forwarded from the host-owned
+/// single poller) and drives all transitions through <see cref="AuthWizardStateMachine"/>,
+/// keeping the host the single source of truth (Requirements 2.1, 2.2) and never
+/// auto-dismissing. State-change events raised on the poll thread are marshalled onto
+/// the UI thread with <c>BeginInvoke</c> (Requirement 2.6).
 /// </remarks>
 public sealed class TailscaleAuthWizard : Form
 {
     private readonly AuthWizardStateMachine _stateMachine;
     private readonly ITailscaleAuthProvider _provider;
-    private System.Windows.Forms.Timer? _pollTimer;
-    private CancellationTokenSource? _cts;
+    private bool _seeded;
 
     // Controls
     private Label _titleLabel = null!;
@@ -146,6 +148,52 @@ public sealed class TailscaleAuthWizard : Form
         FormClosing += OnFormClosing;
     }
 
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+
+        // Subscribe to the host-owned poller's state-change events. Subscribing on Load
+        // guarantees the form handle exists before any BeginInvoke marshaling occurs.
+        _provider.StateChanged += OnProviderStateChanged;
+
+        // One-time seed: a state that already arrived before the wizard opened must not be
+        // missed. Evaluate the current host snapshot once and refresh the step if it moved.
+        if (!_seeded)
+        {
+            _seeded = true;
+            bool transitioned = _stateMachine.EvaluateState(_provider.CurrentState);
+            _statusLabel.Text = _stateMachine.StatusMessage;
+            if (transitioned)
+            {
+                ShowStep(_stateMachine.CurrentStep);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Handles host state-change events. Raised on the host poll thread, so marshal to the
+    /// UI thread with <c>BeginInvoke</c> (never synchronous <c>Invoke</c>) to avoid blocking
+    /// the poll thread during the interactive login window (Requirement 2.6).
+    /// </summary>
+    private void OnProviderStateChanged(object? sender, TailscaleStateChangedEventArgs e)
+    {
+        if (InvokeRequired)
+        {
+            if (IsHandleCreated)
+            {
+                BeginInvoke(new Action(() => OnProviderStateChanged(sender, e)));
+            }
+            return;
+        }
+
+        bool transitioned = _stateMachine.EvaluateState(e.State);
+        _statusLabel.Text = _stateMachine.StatusMessage;
+        if (transitioned)
+        {
+            ShowStep(_stateMachine.CurrentStep);
+        }
+    }
+
     private void ShowStep(AuthWizardStep step)
     {
         _progressBar.Visible = false;
@@ -185,7 +233,6 @@ public sealed class TailscaleAuthWizard : Form
                 _primaryButton.Text = "Open Browser";
                 _progressBar.Visible = true;
                 _statusLabel.Text = "Waiting for browser login...";
-                StartPolling();
                 break;
 
             case AuthWizardStep.Verifying:
@@ -223,7 +270,6 @@ public sealed class TailscaleAuthWizard : Form
                 break;
 
             case AuthWizardStep.Success:
-                StopPolling();
                 _titleLabel.Text = "\u2713 Connected Successfully";
                 string selfAddr = _provider.SelfAddress ?? "unknown";
                 string selfDns = _provider.SelfDnsName ?? "unknown";
@@ -332,7 +378,7 @@ public sealed class TailscaleAuthWizard : Form
         _secondaryButton.Enabled = false;
         _statusLabel.Text = "Submitting auth key...";
 
-        string? error = await _stateMachine.SubmitAuthKeyAsync(key, _cts?.Token ?? CancellationToken.None);
+        string? error = await _stateMachine.SubmitAuthKeyAsync(key, CancellationToken.None);
 
         if (error is not null)
         {
@@ -345,58 +391,16 @@ public sealed class TailscaleAuthWizard : Form
         }
     }
 
-    private void StartPolling()
-    {
-        _cts = new CancellationTokenSource();
-        _pollTimer = new System.Windows.Forms.Timer { Interval = 1500 };
-        _pollTimer.Tick += OnPollTick;
-        _pollTimer.Start();
-    }
-
-    private void StopPolling()
-    {
-        _pollTimer?.Stop();
-        _pollTimer?.Dispose();
-        _pollTimer = null;
-        _cts?.Cancel();
-        _cts?.Dispose();
-        _cts = null;
-    }
-
-    private async void OnPollTick(object? sender, EventArgs e)
-    {
-        if (_cts is null || _cts.IsCancellationRequested) return;
-
-        try
-        {
-            bool transitioned = await _stateMachine.PollAndTransitionAsync(_cts.Token);
-            _statusLabel.Text = _stateMachine.StatusMessage;
-
-            if (transitioned)
-            {
-                ShowStep(_stateMachine.CurrentStep);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Wizard closing — ignore
-        }
-        catch (Exception ex)
-        {
-            _statusLabel.Text = $"Poll error: {ex.Message}";
-        }
-    }
-
     private void OnFormClosing(object? sender, FormClosingEventArgs e)
     {
-        StopPolling();
+        _provider.StateChanged -= OnProviderStateChanged;
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
-            StopPolling();
+            _provider.StateChanged -= OnProviderStateChanged;
         }
         base.Dispose(disposing);
     }

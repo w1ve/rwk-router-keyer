@@ -178,6 +178,16 @@ func (r *edgeRelay) SetPeer(ep netip.AddrPort) {
 	r.peer = ep
 }
 
+// ClearPeer removes the configured peer. A zero AddrPort is !IsValid(), which
+// both pumps already treat as "no peer": outbound edges are counted as
+// dropNoPeer and inbound source filtering is skipped. Used when a pairing
+// attempt is abandoned so a dead peer is not left to be probed.
+func (r *edgeRelay) ClearPeer() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.peer = netip.AddrPort{}
+}
+
 func (r *edgeRelay) Peer() netip.AddrPort {
 	r.mu.Lock()
 	defer r.mu.Unlock()

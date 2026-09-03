@@ -1931,16 +1931,9 @@ public partial class MainForm : Form
     //  Interactive Tailscale Login
     // ──────────────────────────────────────────────────────────────────────────────
 
-    private Panel? _loginPanel;
-    private Label? _loginMessageLabel;
-    private Button? _openBrowserButton;
-    private Button? _pasteKeyButton;
-    private TextBox? _authKeyTextBox;
-    private Button? _submitKeyButton;
-    private Label? _loginStatusLabel;
     private string? _pendingAuthUrl;
 
-    private bool _loginDismissed; // Once dismissed, never show again in this session
+    private bool _loginDismissed; // Wizard open-once guard (see Task 6.2)
 
     private static bool HasPersistedTailscaleState()
     {
@@ -1967,8 +1960,11 @@ public partial class MainForm : Form
 
         _pendingAuthUrl = authUrl;
 
-        // Show the Auth Wizard instead of the old login panel.
-        // The wizard is modal and owns its own polling — no dismiss races.
+        // Open-once guard (Change 6): OnControllerAuthUrlAvailable is the SINGLE entry point that
+        // opens the wizard in the Client — there is no proactive NeedsAuth open path (the NeedsAuth
+        // branch of UpdateStatusForState only updates the link indicator). Setting the guard here
+        // before ShowAuthWizard, together with the early-return above, ensures the wizard opens at
+        // most once. On user Cancel the guard is cleared in ShowAuthWizard so it can re-open.
         _loginDismissed = true; // Prevent re-entry while wizard is open
         ShowAuthWizard();
     }
@@ -1977,7 +1973,10 @@ public partial class MainForm : Form
     {
         if (_controller is null) return;
 
-        DismissWaitOverlay(); // Remove overlay before showing wizard
+        // Single-surface auth: dismiss any pre-wizard overlay (e.g. the startup "Waiting for
+        // Tailscale" / "PLEASE WAIT" overlay) BEFORE showing the modal wizard so the wizard is
+        // the only visible auth surface. The wizard no longer sits behind a competing overlay.
+        DismissWaitOverlay();
 
         var provider = new RWK.Shared.Auth.SidecarAuthProvider(_controller.SidecarHost);
         using var wizard = new Auth.TailscaleAuthWizard(provider);
@@ -1989,175 +1988,10 @@ public partial class MainForm : Form
         }
         else
         {
-            // User cancelled — allow re-showing if auth URL appears again
+            // User cancelled — clear the open-once guard so the wizard can re-open if the
+            // auth URL reappears (see OnControllerAuthUrlAvailable).
             _loginDismissed = false;
             _logService.Info("Tailscale auth wizard cancelled by user.");
-        }
-    }
-
-    private void ShowLoginPanel(string authUrl)
-    {
-        if (_loginPanel is not null)
-        {
-            // Already showing — just update the URL.
-            _pendingAuthUrl = authUrl;
-            return;
-        }
-
-        _loginPanel = new Panel
-        {
-            Size = new Size(460, 200),
-            BackColor = SystemColors.Info,
-            BorderStyle = BorderStyle.FixedSingle,
-            Anchor = AnchorStyles.None
-        };
-        _loginPanel.Location = new Point(
-            (ClientSize.Width - _loginPanel.Width) / 2,
-            (ClientSize.Height - _loginPanel.Height) / 2);
-
-        _loginMessageLabel = new Label
-        {
-            Text = "Sign in with Tailscale to connect.\nA browser window will open.",
-            ForeColor = SystemColors.InfoText,
-            Font = new Font(Font.FontFamily, 9.5f),
-            AutoSize = false,
-            Size = new Size(420, 44),
-            Location = new Point(20, 12),
-            TextAlign = ContentAlignment.MiddleLeft
-        };
-
-        _openBrowserButton = new Button
-        {
-            Text = "Open Browser",
-            Size = new Size(130, 34),
-            Location = new Point(20, 62),
-            UseVisualStyleBackColor = true
-        };
-        _openBrowserButton.Click += OnOpenBrowserClick;
-
-        _pasteKeyButton = new Button
-        {
-            Text = "Paste Auth Key",
-            Size = new Size(140, 34),
-            Location = new Point(165, 62),
-            UseVisualStyleBackColor = true
-        };
-        _pasteKeyButton.Click += OnPasteKeyInsteadClick;
-
-        _authKeyTextBox = new TextBox
-        {
-            Size = new Size(290, 26),
-            Location = new Point(20, 108),
-            Visible = false,
-            PlaceholderText = "tskey-auth-..."
-        };
-
-        _submitKeyButton = new Button
-        {
-            Text = "Submit",
-            Size = new Size(80, 26),
-            Location = new Point(320, 108),
-            UseVisualStyleBackColor = true,
-            Visible = false
-        };
-        _submitKeyButton.Click += OnSubmitAuthKeyClick;
-
-        _loginStatusLabel = new Label
-        {
-            Text = "Waiting for browser login...",
-            ForeColor = SystemColors.InfoText,
-            Font = new Font(Font.FontFamily, 8.5f),
-            AutoSize = true,
-            Location = new Point(20, 150)
-        };
-
-        _loginPanel.Controls.AddRange(new Control[]
-        {
-            _loginMessageLabel, _openBrowserButton, _pasteKeyButton,
-            _authKeyTextBox, _submitKeyButton!, _loginStatusLabel
-        });
-
-        Controls.Add(_loginPanel);
-        _loginPanel.BringToFront();
-    }
-
-    private void DismissLoginPanel()
-    {
-        // Always mark as dismissed so the panel can never reappear in this session,
-        // even if called before the panel was shown (e.g. Connecting state arrives
-        // before AuthUrlAvailable event is processed).
-        _loginDismissed = true;
-
-        if (_loginPanel is null) return;
-
-        Controls.Remove(_loginPanel);
-        _loginPanel.Dispose();
-        _loginPanel = null;
-        _loginMessageLabel = null;
-        _openBrowserButton = null;
-        _pasteKeyButton = null;
-        _authKeyTextBox = null;
-        _submitKeyButton = null;
-        _loginStatusLabel = null;
-        _pendingAuthUrl = null;
-    }
-
-    private void OnOpenBrowserClick(object? sender, EventArgs e)
-    {
-        if (string.IsNullOrEmpty(_pendingAuthUrl))
-        {
-            if (_loginStatusLabel is not null)
-                _loginStatusLabel.Text = "Waiting for sidecar to provide login URL...";
-            return;
-        }
-
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = _pendingAuthUrl,
-                UseShellExecute = true
-            });
-            if (_loginStatusLabel is not null)
-                _loginStatusLabel.Text = "Browser opened — complete login there, then return here.";
-        }
-        catch (Exception ex)
-        {
-            // Fallback: show the URL for manual copy
-            if (_loginStatusLabel is not null)
-                _loginStatusLabel.Text = $"Could not open browser ({ex.Message}). Copy this URL:\n{_pendingAuthUrl}";
-        }
-    }
-
-    private void OnPasteKeyInsteadClick(object? sender, EventArgs e)
-    {
-        if (_authKeyTextBox is not null)
-            _authKeyTextBox.Visible = true;
-        if (_submitKeyButton is not null)
-            _submitKeyButton.Visible = true;
-        if (_loginStatusLabel is not null)
-            _loginStatusLabel.Text = "Paste your auth key and click Submit.";
-    }
-
-    private async void OnSubmitAuthKeyClick(object? sender, EventArgs e)
-    {
-        string key = _authKeyTextBox?.Text?.Trim() ?? "";
-        if (string.IsNullOrEmpty(key)) return;
-
-        try
-        {
-            if (_loginStatusLabel is not null)
-                _loginStatusLabel.Text = "Submitting auth key...";
-
-            await _controller!.SubmitAuthKeyAsync(key).ConfigureAwait(true);
-
-            if (_loginStatusLabel is not null)
-                _loginStatusLabel.Text = "Key accepted — connecting...";
-        }
-        catch (Exception ex)
-        {
-            if (_loginStatusLabel is not null)
-                _loginStatusLabel.Text = $"Failed: {ex.Message}";
         }
     }
 
@@ -2171,7 +2005,6 @@ public partial class MainForm : Form
                 _linkIndicator.ForeColor = Color.LimeGreen;
                 _linkIndicator.Text = "\u25CF";
                 _pathLabel.Text = "Connected";
-                DismissLoginPanel();
                 DismissWaitOverlay();
                 if (_lastToastedState != TailscaleState.Connected)
                     ShowToast("Connected to the Tailnet");
@@ -2227,7 +2060,7 @@ public partial class MainForm : Form
 
         var label = new Label
         {
-            Text = "Wait... Connecting to Tailscale",
+            Text = "Waiting for Tailscale...",
             Font = new Font("Segoe UI", 14f, FontStyle.Bold),
             ForeColor = Color.Black,
             AutoSize = true,
@@ -2382,14 +2215,38 @@ public partial class MainForm : Form
         }
         catch (Exception ex)
         {
+            // A failed PAIR must not look like a lost Tailscale link. The link is still up;
+            // only the pairing attempt failed. Show the error, reset the Pair button, and
+            // then restore the status label to the live Tailscale state so the app returns
+            // to "connected, ready to pair".
             string msg = ex.InnerException?.Message ?? ex.Message;
-            _pathLabel.Text = $"Connect failed: {msg}";
             try { RotatingFileLog.Append("client.log", $"CONNECT ERROR: {ex}"); } catch { }
+
             _connectButton.Text = "Pair";
             _connectButton.BackColor = Color.FromArgb(200, 40, 40);
             _connectButton.ForeColor = Color.White;
             _connectButton.FlatStyle = FlatStyle.Flat;
             _connectButton.Enabled = true;
+
+            // A stale imported Tailscale IP is the most common cause here (the Station's IP
+            // changes on every re-auth). Make that explicit and reassure the operator that the
+            // tailnet itself is untouched — only the pairing attempt failed.
+            _ = msg; // real exception already written to client.log above
+            ShowToast(
+                "Pairing failed — check the Station's pairing info (its Tailscale IP may have changed). Tailnet is still connected.",
+                ToolTipIcon.Warning);
+
+            // ALWAYS re-assert the real link state. The pairing failure path never drops the
+            // tailnet (AbandonPairingAttempt only disposes the control stream and leaves the
+            // inert edge peer as-is), so force the status back to the live Tailscale state.
+            // For Connected this also clears any lingering "PLEASE WAIT" overlay so the label
+            // reads "Connected".
+            if (_controller is not null)
+            {
+                UpdateStatusForState(_controller.TailscaleState);
+                if (_controller.TailscaleState == TailscaleState.Connected)
+                    DismissWaitOverlay();
+            }
         }
     }
 
@@ -2459,6 +2316,64 @@ public partial class MainForm : Form
         _logService.Info($"Station imported: {entry.Name} → {entry.TailscaleIp}");
     }
 
+    private void OnEditStationClick(object? sender, EventArgs e)
+    {
+        if (_stationCombo.SelectedItem is not RWK.Shared.Config.StationEntry entry)
+            return;
+
+        using var dlg = new RWK.Client.Controls.ImportStationDialog(entry);
+        if (dlg.ShowDialog(this) != DialogResult.OK || dlg.Result is null)
+            return;
+
+        var edited = dlg.Result;
+
+        // Persist: remove the OLD entry (matched by its original name), add the edited one.
+        var stations = RWK.Client.Controls.StationListStore.Load();
+        stations.RemoveAll(s => s.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+        stations.Add(edited);
+        RWK.Client.Controls.StationListStore.Save(stations);
+
+        // Reselect the edited station. The next Pair uses the (possibly changed) IP — no auto-pair.
+        RefreshStationDropdown(stations, edited.Name);
+
+        _logService.Info($"Station edited: {entry.Name} → {edited.Name} ({edited.TailscaleIp}).");
+    }
+
+    private void OnDeleteStationClick(object? sender, EventArgs e)
+    {
+        if (_stationCombo.SelectedItem is not RWK.Shared.Config.StationEntry entry)
+            return;
+
+        var confirm = MessageBox.Show(this,
+            $"Delete station '{entry.Name}'?",
+            "Delete Station", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (confirm != DialogResult.Yes)
+            return;
+
+        // If we're currently paired to this station, unpair first (mirror OnStationComboChanged).
+        if (_connectButton.Text == "Unpair" && _controller is not null)
+        {
+            _controller.Disconnect();
+            _connectButton.Text = "Pair with Station";
+            _connectButton.BackColor = Color.FromArgb(200, 40, 40);
+            _connectButton.ForeColor = Color.White;
+            _connectButton.FlatStyle = FlatStyle.Flat;
+            _keySetIndicator.ForeColor = Color.FromArgb(200, 0, 0);
+            _flexEnableCheck.Enabled = false;
+            DisablePttForSession();
+            _logService.Info("Unpaired (station deleted while paired).");
+        }
+
+        var stations = RWK.Client.Controls.StationListStore.Load();
+        stations.RemoveAll(s => s.Name.Equals(entry.Name, StringComparison.OrdinalIgnoreCase));
+        RWK.Client.Controls.StationListStore.Save(stations);
+
+        // Reselect (None).
+        RefreshStationDropdown(stations);
+
+        _logService.Info($"Station deleted: {entry.Name}.");
+    }
+
     private void RefreshStationDropdown(List<RWK.Shared.Config.StationEntry>? stations = null, string? selectName = null)
     {
         stations ??= RWK.Client.Controls.StationListStore.Load();
@@ -2487,6 +2402,9 @@ public partial class MainForm : Form
         bool stationSelected = _stationCombo.SelectedIndex > 0; // index 0 = "(None)"
         _connectButton.Enabled = stationSelected;
         _keySetIndicator.Visible = stationSelected;
+
+        // Edit/Delete only make sense when a real station (not "(None)") is selected.
+        _editStationBtn.Enabled = _deleteStationBtn.Enabled = stationSelected;
     }
 
     private void OnStationComboChanged(object? sender, EventArgs e)

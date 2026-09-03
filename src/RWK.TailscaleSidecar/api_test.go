@@ -100,14 +100,25 @@ func TestStatusDocumentContract(t *testing.T) {
 	}
 }
 
-func TestPeerRequiresAddress(t *testing.T) {
-	api, _ := newTestAPI(t)
+func TestPeerSetAndClear(t *testing.T) {
+	api, node := newTestAPI(t)
 
-	if got := do(t, api, "POST", "/v1/peer", "test-token", `{"address":"","edgePort":41000}`).Code; got != http.StatusBadRequest {
-		t.Fatalf("empty address: got %d, want 400", got)
-	}
+	// Setting a valid peer succeeds and reports PeerConfigured via PeerSpec.
 	if got := do(t, api, "POST", "/v1/peer", "test-token", `{"address":"100.64.0.9","edgePort":41000}`).Code; got != http.StatusOK {
 		t.Fatalf("valid peer: got %d, want 200", got)
+	}
+	if node.Status().PeerSpec == "" {
+		t.Fatalf("after setting a peer, PeerSpec should be non-empty")
+	}
+
+	// An EMPTY address is no longer an error: it CLEARS the peer so an
+	// abandoned/failed pairing attempt cannot leave a dead peer to be probed
+	// (which would drive the node to Fault). PeerConfigured becomes false.
+	if got := do(t, api, "POST", "/v1/peer", "test-token", `{"address":"","edgePort":0}`).Code; got != http.StatusOK {
+		t.Fatalf("empty address should clear the peer: got %d, want 200", got)
+	}
+	if node.Status().PeerSpec != "" {
+		t.Fatalf("after clearing, PeerSpec should be empty, got %q", node.Status().PeerSpec)
 	}
 }
 

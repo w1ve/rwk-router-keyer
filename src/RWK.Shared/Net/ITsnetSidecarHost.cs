@@ -159,4 +159,20 @@ public interface ITsnetSidecarHost : IDisposable
     /// <param name="edgePort">The edge UDP port on the peer (0 = use default from handshake).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     Task SetPeerAsync(string peerAddress, int edgePort = 0, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Clears the configured edge peer via POST /v1/peer with an empty address, so the
+    /// sidecar stops probing it. Used after a FAILED or abandoned pairing attempt: a peer
+    /// is configured before the HMAC handshake, and if it were left set against a stale/dead
+    /// station IP the sidecar would keep probing it, cross the fault threshold, and report
+    /// Fault — dropping the link display even though the tailnet is healthy. Clearing the
+    /// peer makes PeerConfigured=false so a failed pair can never fault the node.
+    /// </summary>
+    /// <remarks>
+    /// Best-effort cleanup: this method never throws and never faults the link on a transient
+    /// failure. A non-success response or transport error is swallowed (logged), because
+    /// clearing the peer is cleanup that must not itself disrupt an otherwise healthy link.
+    /// </remarks>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task ClearPeerAsync(CancellationToken cancellationToken = default);
 }

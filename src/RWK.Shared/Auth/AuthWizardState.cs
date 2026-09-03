@@ -74,19 +74,11 @@ public sealed class AuthWizardStateMachine
     }
 
     /// <summary>
-    /// Polls the provider and determines the next step based on the current state.
-    /// Called on a timer (every 2 seconds) while on BrowserAuth or Verifying steps.
-    /// </summary>
-    /// <returns>True if a step transition occurred.</returns>
-    public async Task<bool> PollAndTransitionAsync(CancellationToken ct = default)
-    {
-        var state = await _provider.PollStatusAsync(ct).ConfigureAwait(false);
-        return EvaluateState(state);
-    }
-
-    /// <summary>
     /// Evaluates the current provider state and transitions steps as needed.
-    /// Separated from polling for testability.
+    /// This is the single event-driven entry point: the wizard subscribes to the
+    /// host-owned poller's <see cref="ITailscaleAuthProvider.StateChanged"/> event and
+    /// feeds each reported state here, keeping the host poller the sole source of truth
+    /// (Requirement 2.2). There is no self-poll driver.
     /// </summary>
     /// <param name="state">The current Tailscale state.</param>
     /// <returns>True if a step transition occurred.</returns>
