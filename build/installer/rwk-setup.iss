@@ -4,7 +4,15 @@
 ; required for Windows Firewall rule creation).
 
 #define MyAppName "RWK Router/Keyer"
-#define MyAppVersion "1.0.5"
+; MyAppVersion may be overridden from the command line, e.g.
+;   ISCC.exe /DMyAppVersion=1.0.6.24601 rwk-setup.iss
+; so the installer's displayed/registered version matches the packaged binaries.
+; publish.ps1 passes the verified staged FileVersion here.
+; Fallback must be four-part (x.x.x.x) because VersionInfoVersion requires it.
+; publish.ps1 always overrides this with the verified staged FileVersion.
+#ifndef MyAppVersion
+  #define MyAppVersion "1.0.5.0"
+#endif
 #define MyAppPublisher "Gerry Hull, W1VE"
 #define MyAppURL "https://github.com/w1ve/rwk-router-keyer"
 
@@ -16,7 +24,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppCopyright=Copyright (c) 2026 Gerry Hull, W1VE. MIT License.
-VersionInfoVersion=1.0.5.0
+VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany=W1VE
 VersionInfoCopyright=Copyright (c) 2026 Gerry Hull, W1VE
 VersionInfoProductName=RWK Router/Keyer
@@ -84,19 +92,34 @@ Filename: "{app}\RWKClient.exe"; Description: "Launch RWK Client"; Components: c
 Filename: "{app}\RWKStation.exe"; Description: "Launch RWK Station"; Components: station; Flags: nowait postinstall skipifsilent unchecked
 
 [Code]
-function InitializeSetup(): Boolean;
+function FindPreviousUninstaller(var UninstallString: String): Boolean;
 var
   UninstallKey: String;
+begin
+  UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{A7F3B2E1-4D5C-4A8B-9E2F-1C3D5E7F9A0B}_is1';
+  // This installer runs elevated (PrivilegesRequired=admin), so an all-users install
+  // records its uninstall key under HKLM, not HKCU. Check HKLM first (64-bit view via
+  // HKLM64), then fall back to the 32-bit view and finally HKCU for installs made by an
+  // older per-user build. Missing any of these must NOT abort setup.
+  Result :=
+    RegQueryStringValue(HKLM64, UninstallKey, 'UninstallString', UninstallString) or
+    RegQueryStringValue(HKLM,   UninstallKey, 'UninstallString', UninstallString) or
+    RegQueryStringValue(HKCU,   UninstallKey, 'UninstallString', UninstallString);
+end;
+
+function InitializeSetup(): Boolean;
+var
   UninstallString: String;
   ResultCode: Integer;
 begin
   Result := True;
-  // Check if a previous version is installed by looking for the uninstall registry key.
-  UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{A7F3B2E1-4D5C-4A8B-9E2F-1C3D5E7F9A0B}_is1';
-  if RegQueryStringValue(HKCU, UninstallKey, 'UninstallString', UninstallString) then
+  // Uninstall any previous version first so stale files/shortcuts can't linger and so a
+  // relocated install directory is cleaned. The uninstall key lives in HKLM for this
+  // admin installer; see FindPreviousUninstaller.
+  if FindPreviousUninstaller(UninstallString) then
   begin
-    // Run the uninstaller silently before proceeding.
-    Exec(RemoveQuotes(UninstallString), '/SILENT /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    // Run the uninstaller silently and wait for it to finish before laying down new files.
+    Exec(RemoveQuotes(UninstallString), '/SILENT /NORESTART /SUPPRESSMSGBOXES', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;
 

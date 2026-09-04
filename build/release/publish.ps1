@@ -19,7 +19,9 @@
     .\publish.ps1 -Version 2.1.0
 #>
 param(
-    [string]$Version = "2.0.0"
+    [string]$Version = "2.0.0",
+    # When set, skip building RWK-Setup.exe (zip only). The installer step requires ISCC.exe.
+    [switch]$NoInstaller
 )
 
 Set-StrictMode -Version Latest
@@ -59,6 +61,11 @@ $GoExe = if (Get-Command go -ErrorAction SilentlyContinue) {
 # ---------------------------------------------------------------------------
 function Write-Step([string]$msg) {
     Write-Host "`n:: $msg" -ForegroundColor Cyan
+}
+
+function Get-ExeVersion([string]$path) {
+    if (-not (Test-Path $path)) { throw "Cannot read version: file not found: $path" }
+    return (Get-Item $path).VersionInfo.FileVersion
 }
 
 function Assert-SingleFile([string]$publishDir, [string]$expectedExe) {
@@ -238,6 +245,53 @@ Write-Step "Copying release README"
 Copy-Item $ReadmeSource (Join-Path $StagingDir "README.md")
 Write-Host "  -> README.md staged"
 
+# splash.png — shown in the About dialog and required by both the zip manifest and the
+# installer's [Files] section. Sourced from the repo root.
+$SplashSource = Join-Path $RepoRoot "splash.png"
+if (-not (Test-Path $SplashSource)) {
+    throw "splash.png not found at repo root: $SplashSource"
+}
+Copy-Item $SplashSource (Join-Path $StagingDir "splash.png")
+Write-Host "  -> splash.png staged"
+
+# ---------------------------------------------------------------------------
+# Step 4.5: Version-consistency gate (prevents shipping mismatched builds)
+#
+# Root cause of the v1.0.5 update failure: the installer was packaged with a
+# 24601 Client but a stale 24516 Station, so the Station could never update.
+# The publish step now refuses to continue unless BOTH staged executables carry
+# the same FileVersion. This makes a mismatched release impossible to build.
+# ---------------------------------------------------------------------------
+Write-Step "Verifying staged executable versions match"
+
+$stagedClient  = Join-Path $StagingDir $ClientExeName
+$stagedStation = Join-Path $StagingDir $StationExeName
+$clientVersion  = Get-ExeVersion $stagedClient
+$stationVersion = Get-ExeVersion $stagedStation
+
+Write-Host "  $ClientExeName  : $clientVersion"
+Write-Host "  $StationExeName : $stationVersion"
+
+if ([string]::IsNullOrWhiteSpace($clientVersion) -or [string]::IsNullOrWhiteSpace($stationVersion)) {
+    throw "Could not read FileVersion from one or both staged executables. Aborting: a release must carry versioned binaries."
+}
+if ($clientVersion -ne $stationVersion) {
+    throw ("Version mismatch between staged executables: " +
+           "$ClientExeName=$clientVersion but $StationExeName=$stationVersion. " +
+           "This is the exact defect that broke the v1.0.5 auto-update. " +
+           "Both apps must be published in the same build. Re-run publish.ps1 from clean.")
+}
+
+# The single, verified version that the installer and version.txt must both carry.
+$ReleaseFileVersion = $clientVersion
+Write-Host "  -> Verified release version: $ReleaseFileVersion"
+
+# Write version.txt so the GitHub 'latest release' update check compares against the
+# actual packaged build, not a hand-edited value.
+$VersionTxtPath = Join-Path $ArtifactsDir "version.txt"
+Set-Content -Path $VersionTxtPath -Value $ReleaseFileVersion -NoNewline -Encoding ASCII
+Write-Host "  -> version.txt written: $VersionTxtPath"
+
 # ---------------------------------------------------------------------------
 # Step 5: Assemble zip archive (Task 31.4)
 # Requirements: 16.1, 16.2, 16.4, 16.6
@@ -280,6 +334,53 @@ try {
 
 if (-not (Test-Path $ZipPath)) {
     throw "Failed to create zip archive at: $ZipPath"
+}
+
+# ---------------------------------------------------------------------------
+# Step 6: Build the Inno Setup installer (RWK-Setup.exe)
+#
+# Packaging is now coupled to this verified build. The installer reads the same
+# staging directory the gate just checked, and we pass the verified version into
+# the .iss so the installer's registered/displayed version matches the binaries.
+# ---------------------------------------------------------------------------
+if (-not $NoInstaller) {
+    Write-Step "Building installer (RWK-Setup.exe)"
+
+    $IssPath = Join-Path $RepoRoot "build\installer\rwk-setup.iss"
+    if (-not (Test-Path $IssPath)) {
+        throw "Installer script not found: $IssPath"
+    }
+
+    $Iscc = if (Get-Command ISCC.exe -ErrorAction SilentlyContinue) {
+        (Get-Command ISCC.exe).Source
+    } elseif (Test-Path "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") {
+        "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+    } elseif (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") {
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+    } else {
+        $null
+    }
+
+    if (-not $Iscc) {
+        throw ("ISCC.exe (Inno Setup 6) not found. Install it, or re-run with -NoInstaller to " +
+               "build the zip only. Looked in PATH, %LOCALAPPDATA%\Programs\Inno Setup 6, and Program Files (x86).")
+    }
+
+    Write-Host "  ISCC    : $Iscc"
+    Write-Host "  Script  : $IssPath"
+    Write-Host "  Version : $ReleaseFileVersion"
+
+    & $Iscc "/DMyAppVersion=$ReleaseFileVersion" $IssPath
+    if ($LASTEXITCODE -ne 0) { throw "ISCC failed to build the installer (exit code $LASTEXITCODE)." }
+
+    $SetupPath = Join-Path $ArtifactsDir "RWK-Setup.exe"
+    if (-not (Test-Path $SetupPath)) {
+        throw "Installer build reported success but RWK-Setup.exe was not produced at: $SetupPath"
+    }
+    Write-Host "  -> RWK-Setup.exe built: $SetupPath"
+}
+else {
+    Write-Step "Skipping installer build (-NoInstaller)"
 }
 
 # ---------------------------------------------------------------------------
