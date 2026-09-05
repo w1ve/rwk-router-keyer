@@ -132,6 +132,14 @@ public sealed class StationController : IDisposable
     /// <summary>Raised when the sidecar failure handler reports a state change.</summary>
     public event EventHandler<SidecarFailureStateChangedEventArgs>? SidecarFailureStateChanged;
 
+    /// <summary>
+    /// Raised when the control-channel inbound forward (tailnet:7373) registration state changes.
+    /// Fired with <see cref="ControlForwardStateChangedEventArgs.IsRegistered"/> false when
+    /// registration ultimately fails so the UI can surface "ARMED — control link down" and offer a
+    /// recovery action, and true once it succeeds (including after an operator re-attempt).
+    /// </summary>
+    public event EventHandler<ControlForwardStateChangedEventArgs>? ControlForwardStateChanged;
+
     /// <summary>Raised when a startup component fails. Message identifies the specific failure.</summary>
     public event EventHandler<StationStartupFailedEventArgs>? StartupFailed;
 
@@ -380,11 +388,15 @@ public sealed class StationController : IDisposable
             if (string.IsNullOrEmpty(_config.Tailscale.PairingSecret))
                 _diagnostics?.Invoke("Using default pairing secret (no custom secret configured).");
 
+            // Create the control-forward registrar bound to this sidecar. It latches only on a
+            // successful registration and retries transient failures with bounded backoff.
+            _controlForwardRegistrar = new ControlForwardRegistrar(
+                _sidecarHost, DefaultControlPort, DefaultControlPort, _diagnostics);
+
             // Inbound forward is registered once Tailscale connects (see OnTailscaleStateChanged).
             // If already connected (persisted state), register immediately.
             if (_sidecarHost.State == TailscaleState.Connected && !_inboundForwardRegistered)
             {
-                _inboundForwardRegistered = true;
                 await RegisterInboundForwardAsync().ConfigureAwait(false);
             }
 
@@ -457,6 +469,13 @@ public sealed class StationController : IDisposable
             _tailscaleNode.Dispose();
             _tailscaleNode = null;
         }
+
+        // Stop the control-forward re-check timer and clear registration state so a fresh
+        // arm cycle re-registers.
+        StopControlForwardRecheck();
+        _inboundForwardRegistered = false;
+        _controlForwardRegistrar?.Reset();
+        _controlForwardRegistrar = null;
 
         // Stop the sidecar host.
         if (_sidecarHost is not null)
@@ -727,6 +746,9 @@ public sealed class StationController : IDisposable
 
         // Avoid deadlock: don't sync-over-async on a UI thread.
         // Kill the sidecar process directly and clean up synchronously.
+        try { StopControlForwardRecheck(); } catch { /* best effort */ }
+        _controlForwardRegistrar = null;
+
         try { _sidecarHost?.Dispose(); } catch { /* best effort */ }
         _sidecarHost = null;
 
@@ -1150,7 +1172,6 @@ public sealed class StationController : IDisposable
         // Register the inbound forward once the tailnet is up.
         if (e.State == TailscaleState.Connected && !_inboundForwardRegistered)
         {
-            _inboundForwardRegistered = true;
             _ = RegisterInboundForwardAsync();
         }
 
@@ -1166,23 +1187,93 @@ public sealed class StationController : IDisposable
     }
 
     private bool _inboundForwardRegistered;
+    private ControlForwardRegistrar? _controlForwardRegistrar;
+    private System.Threading.Timer? _controlForwardRecheckTimer;
+    private int _controlForwardRegistering; // 0/1 guard so overlapping re-checks don't stack.
 
+    /// <summary>
+    /// Registers the control-channel inbound forward through <see cref="ControlForwardRegistrar"/>.
+    /// The registrar latches success only after the sidecar call returns and retries transient
+    /// failures with bounded backoff. On ultimate failure the state is surfaced via
+    /// <see cref="ControlForwardStateChanged"/> and a periodic re-check is started so the operator
+    /// (or the automatic timer) can recover without an application restart.
+    /// </summary>
     private async Task RegisterInboundForwardAsync()
     {
+        var registrar = _controlForwardRegistrar;
+        if (registrar is null) return;
+
+        // Guard against overlapping attempts (arm-time, state-change, timer, operator click).
+        if (Interlocked.CompareExchange(ref _controlForwardRegistering, 1, 0) != 0)
+            return;
+
         try
         {
-            await _sidecarHost!.CreateInboundForwardAsync(DefaultControlPort, DefaultControlPort)
-                .ConfigureAwait(false);
-            _diagnostics?.Invoke($"✓ Inbound forward OK: tailnet:{DefaultControlPort} → localhost:{DefaultControlPort}.");
-        }
-        catch (HttpRequestException ex)
-        {
-            _diagnostics?.Invoke($"✗ INBOUND FORWARD HTTP ERROR: {ex.StatusCode} {ex.Message}");
+            var result = await registrar.TryRegisterAsync().ConfigureAwait(false);
+            if (result.Registered)
+            {
+                _inboundForwardRegistered = true;
+                StopControlForwardRecheck();
+                ControlForwardStateChanged?.Invoke(
+                    this, new ControlForwardStateChangedEventArgs(IsRegistered: true, Error: null));
+            }
+            else
+            {
+                _inboundForwardRegistered = false;
+                ControlForwardStateChanged?.Invoke(
+                    this, new ControlForwardStateChangedEventArgs(IsRegistered: false, Error: result.Error));
+                StartControlForwardRecheck();
+            }
         }
         catch (Exception ex)
         {
-            _diagnostics?.Invoke($"✗ INBOUND FORWARD EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+            _inboundForwardRegistered = false;
+            _diagnostics?.Invoke($"\u2717 INBOUND FORWARD EXCEPTION: {ex.GetType().Name}: {ex.Message}");
+            ControlForwardStateChanged?.Invoke(
+                this, new ControlForwardStateChangedEventArgs(IsRegistered: false, Error: ex.Message));
+            StartControlForwardRecheck();
         }
+        finally
+        {
+            Interlocked.Exchange(ref _controlForwardRegistering, 0);
+        }
+    }
+
+    /// <summary>
+    /// Operator-triggered re-attempt of control-forward registration. Safe to call while
+    /// ARMED-and-unpaired; requires no session and no application restart. Idempotent — a no-op if
+    /// the forward is already registered.
+    /// </summary>
+    public Task RetryControlForwardAsync()
+    {
+        if (_inboundForwardRegistered) return Task.CompletedTask;
+        _diagnostics?.Invoke("Operator requested control-link repair (re-registering inbound forward).");
+        return RegisterInboundForwardAsync();
+    }
+
+    /// <summary>
+    /// Starts a periodic re-check that re-attempts registration while the Station is ARMED and the
+    /// control forward is not yet registered. Stops itself on success or when no longer armed.
+    /// </summary>
+    private void StartControlForwardRecheck()
+    {
+        if (_controlForwardRecheckTimer is not null) return;
+
+        _controlForwardRecheckTimer = new System.Threading.Timer(_ =>
+        {
+            if (_disposed || _inboundForwardRegistered || _state != StationControllerState.Armed)
+            {
+                StopControlForwardRecheck();
+                return;
+            }
+            _ = RegisterInboundForwardAsync();
+        }, null, dueTime: 15_000, period: 15_000);
+    }
+
+    private void StopControlForwardRecheck()
+    {
+        _controlForwardRecheckTimer?.Dispose();
+        _controlForwardRecheckTimer = null;
     }
 
     /// <summary>
@@ -1564,6 +1655,18 @@ public enum StationControllerState
 public record StationControllerStateChangedEventArgs(
     StationControllerState OldState,
     StationControllerState NewState);
+
+/// <summary>
+/// Event args describing the control-channel inbound forward (tailnet:7373) registration state.
+/// </summary>
+/// <param name="IsRegistered">
+/// True when the forward is registered and the control channel is reachable; false when
+/// registration ultimately failed (the UI should surface "ARMED — control link down").
+/// </param>
+/// <param name="Error">The failure reason when <paramref name="IsRegistered"/> is false, else null.</param>
+public record ControlForwardStateChangedEventArgs(
+    bool IsRegistered,
+    string? Error);
 
 /// <summary>
 /// Event args when a startup sequence fails.

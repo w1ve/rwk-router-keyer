@@ -124,6 +124,7 @@ RWK v2.0 is a Client/Station CW (Morse code) remoting and port forwarding system
 - **.NET 9.0**, Windows x64, WinForms
 - **Go 1.26.5** toolchain at E:\go for sidecar
 - **Inno Setup 6** at `C:\Users\gerry\AppData\Local\Programs\Inno Setup 6\ISCC.exe` — per-user install, build with `/O<dir> /FRWK-Setup` flags
+- **GitHub CLI (gh)** at `C:\tools\gh\bin\gh.exe` (v2.89.0, authed as w1ve, `repo` scope) — used for release publish/refresh (`gh release upload/edit`). Not on PATH; call by full path.
 - **Single-file publish** (self-contained, no .NET runtime needed on target)
 - **Tailscale via tsnet** (userspace, no system Tailscale install required)
 - **True UDP datagrams** for edge data and port forwarding
