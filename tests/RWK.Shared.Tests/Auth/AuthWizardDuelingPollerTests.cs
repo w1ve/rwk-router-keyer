@@ -81,6 +81,8 @@ public sealed class AuthWizardDuelingPollerTests
         public Task StopAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<IPEndPoint> CreateOutboundForwardAsync(string peerAddress, int port, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
+        public Task CreateInboundForwardAsync(int tailnetPort, int localPort, string? targetAddress = null, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
         public Task RegisterEdgeCallbackAsync(string callbackAddress, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
         public Task SetPeerAsync(string peerAddress, int edgePort = 0, CancellationToken cancellationToken = default)

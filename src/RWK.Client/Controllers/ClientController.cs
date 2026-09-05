@@ -1187,8 +1187,24 @@ public sealed class ClientController : IDisposable
         LogDebug($"Peer set to {stationAddress}:{EdgePort} on sidecar.");
 
         // Open a TCP control channel to the Station's SessionManager port.
-        _controlStream = await _tailscaleNode.ConnectControlAsync(stationAddress, DefaultControlPort)
-            .ConfigureAwait(false);
+        try
+        {
+            _controlStream = await _tailscaleNode.ConnectControlAsync(stationAddress, DefaultControlPort)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsConnectionRefused(ex))
+        {
+            // A refused dial means the tailnet path reached the Station host but nothing is
+            // listening on the control port — typically the Station's control-forward failed to
+            // register even though it shows "ARMED". This is distinct from a Tailscale
+            // not-logged-in condition, so give the operator an actionable, specific message.
+            AbandonPairingAttempt();
+            throw new InvalidOperationException(
+                $"Station refused the control connection on port {DefaultControlPort}. " +
+                "The tailnet path is up but the Station's control link is not listening. " +
+                "On the Station, use Re-Arm to repair the control link (this is not a Tailscale login problem).",
+                ex);
+        }
 
         string response;
         try
@@ -1305,6 +1321,24 @@ public sealed class ClientController : IDisposable
                 $"Station rejected connection: {response}. " +
                 "Check that the Station Key matches (RWK menu → Show Pairing Key on Station).");
         }
+    }
+
+    /// <summary>
+    /// Returns true when the exception chain indicates the control dial was refused (the tailnet
+    /// path reached the host but nothing was listening on the port), as opposed to a timeout, a
+    /// reset, or a Tailscale-not-logged-in condition.
+    /// </summary>
+    private static bool IsConnectionRefused(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is System.Net.Sockets.SocketException se &&
+                se.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionRefused)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>

@@ -137,6 +137,21 @@ public interface ITsnetSidecarHost : IDisposable
     Task<IPEndPoint> CreateOutboundForwardAsync(string peerAddress, int port, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Creates an inbound TCP forward via POST /v1/forwards: the sidecar listens on the
+    /// tailnet at <paramref name="tailnetPort"/> and dials the local target on
+    /// <paramref name="localPort"/>. Used by the Station to expose its SessionManager control
+    /// channel to incoming tailnet connections. Throws on a non-success response so callers can
+    /// retry.
+    /// </summary>
+    /// <param name="tailnetPort">The port the sidecar listens on over the tailnet.</param>
+    /// <param name="localPort">The local port the sidecar dials on the Station side.</param>
+    /// <param name="targetAddress">
+    /// The address the sidecar dials on the Station side. Null/empty means loopback (127.0.0.1).
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task CreateInboundForwardAsync(int tailnetPort, int localPort, string? targetAddress = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Submits an auth key to a running sidecar via POST /v1/start. Used as a fallback
     /// when the user chooses to paste an auth key instead of completing interactive login.
     /// </summary>
