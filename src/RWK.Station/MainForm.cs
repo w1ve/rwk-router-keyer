@@ -28,12 +28,17 @@ public partial class MainForm : Form
 {
     private static readonly Color ArmedGreen = Color.FromArgb(0, 128, 0);
     private static readonly Color SafeRed = Color.FromArgb(180, 0, 0);
+    private static readonly Color ControlLinkDownAmber = Color.FromArgb(150, 90, 0);
 
     /// <summary>Gets the application version string from the assembly.</summary>
     internal static string AppVersion =>
         typeof(MainForm).Assembly.GetName().Version?.ToString() ?? "1.0.0";
 
     private bool _isSafeLatched;
+
+    // True when the Station is ARMED but the control-channel inbound forward failed to register.
+    // In this state the Re-Arm button acts as a "repair control link" affordance.
+    private bool _isControlLinkDown;
     private readonly ToolTip _toolTip;
     private StationController? _controller;
     private System.Windows.Forms.Timer? _portPollTimer;
@@ -161,6 +166,7 @@ public partial class MainForm : Form
         _controller.ReplayerStateChanged += OnControllerReplayerStateChanged;
         _controller.TailscaleStateChanged += OnControllerTailscaleStateChanged;
         _controller.SidecarFailureStateChanged += OnControllerSidecarFailureStateChanged;
+        _controller.ControlForwardStateChanged += OnControllerControlForwardStateChanged;
         _controller.StartupFailed += OnControllerStartupFailed;
         _controller.AuthUrlAvailable += OnControllerAuthUrlAvailable;
         _controller.ForwardRulesReceived += OnForwardRulesReceived;
@@ -775,6 +781,36 @@ public partial class MainForm : Form
         }
     }
 
+    private void OnControllerControlForwardStateChanged(object? sender, ControlForwardStateChangedEventArgs e)
+    {
+        if (InvokeRequired) { BeginInvoke(() => OnControllerControlForwardStateChanged(sender, e)); return; }
+
+        _isControlLinkDown = !e.IsRegistered;
+
+        if (_isControlLinkDown)
+        {
+            // Do NOT show a plain green "ARMED" that implies reachability. Surface the failure and
+            // enable the Re-Arm button so the operator can repair the control link without a
+            // restart and without a paired session.
+            _safeBannerPanel.BackColor = ControlLinkDownAmber;
+            _safeBannerLabel.Text = "ARMED \u2014 CONTROL LINK DOWN";
+            _reArmButton.Enabled = true;
+            _linkIndicatorStatus.Text = "\u25CF Link: Control forward down";
+            _linkIndicatorStatus.ForeColor = Color.Orange;
+            SetStatusText(
+                $"Control link not registered: {e.Error ?? "unknown error"}. Click Re-Arm to retry.");
+        }
+        else
+        {
+            // Recovered: only clear the control-link-down presentation if we are not SAFE-latched.
+            if (!_isSafeLatched)
+                SetSafeState(latched: false);
+            _linkIndicatorStatus.Text = "\u25CF Link: Up";
+            _linkIndicatorStatus.ForeColor = Color.LimeGreen;
+            SetStatusText("Control link registered.");
+        }
+    }
+
     private void OnControllerStartupFailed(object? sender, StationStartupFailedEventArgs e)
     {
         if (InvokeRequired) { BeginInvoke(() => OnControllerStartupFailed(sender, e)); return; }
@@ -798,6 +834,14 @@ public partial class MainForm : Form
             _safeBannerLabel.Text = "SAFE \u2014 KEY LOCKED";
             _reArmButton.Enabled = true;
         }
+        else if (_isControlLinkDown)
+        {
+            // Not SAFE-latched, but the control link is down: keep the distinct presentation and
+            // keep Re-Arm enabled as the repair affordance rather than falling back to plain green.
+            _safeBannerPanel.BackColor = ControlLinkDownAmber;
+            _safeBannerLabel.Text = "ARMED \u2014 CONTROL LINK DOWN";
+            _reArmButton.Enabled = true;
+        }
         else
         {
             _safeBannerPanel.BackColor = ArmedGreen;
@@ -812,6 +856,12 @@ public partial class MainForm : Form
         {
             _controller?.ClearSafeLatch();
             SetSafeState(latched: false);
+        }
+        else if (_isControlLinkDown)
+        {
+            // Repair the control link without an app restart or a paired session.
+            SetStatusText("Repairing control link\u2026");
+            _ = _controller?.RetryControlForwardAsync();
         }
     }
 
