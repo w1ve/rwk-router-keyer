@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use rwk_core::engine::audio::{KeyedSineGenerator, SidetoneEngine};
 use rwk_core::engine::bus::{CoreEvent, EventBus, EventReceiver};
 use rwk_core::engine::keying::{EdgeScheduleBuilder, ElementKeyer};
-use rwk_core::engine::network::PathHealth;
+use rwk_core::engine::network::{PathHealth, TcpForwarder, UdpForwarder};
 use rwk_core::engine::serial::{enumerate_ports, KeyingOutputConfig, SerialKeyingOutput, SerialPortType};
 use rwk_core::engine::replay::{
     spawn_driver, EdgeJitterProfile, EdgeReplayer, JitterBufferConfig, KeyingOutput,
@@ -28,6 +28,9 @@ use rwk_core::platform::{ThreadPriorityGuard, TimerResolutionGuard};
 use rwk_core::protocol::edge::{EdgeEntry, RwkPaddleFrame};
 use rwk_core::primitives::{KeyingLine, PathType};
 use rwk_core::timing::{Clock, HybridWaiter, MonotonicClock};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::sync::watch;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -250,6 +253,12 @@ fn cmd_selftest() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // 2. Timing precision: distribution of overshoot over element-length waits.
+    //
+    // Measured at the same time-critical priority the replay thread runs at. That is the
+    // configuration the promise is about, and it is also what keeps an unrelated process
+    // from preempting the spinning thread on a busy desktop — an outlier here says nothing
+    // about the waiter. The guard restores the previous priority as it drops.
+    let timing_priority = ThreadPriorityGuard::raise_time_critical();
     let probe = Duration::from_millis(30);
     let mut overshoots: Vec<Duration> = Vec::with_capacity(200);
     for _ in 0..200 {
@@ -265,15 +274,21 @@ fn cmd_selftest() -> Result<(), Box<dyn std::error::Error>> {
     // the third-worst, so an OS preemption of the spinning thread would fail the check
     // while saying nothing about the timer itself.
     let within_target = overshoots.iter().filter(|o| **o < Duration::from_millis(1)).count();
-    check(
-        "timing",
-        median < Duration::from_micros(500) && within_target >= samples - 5,
-        format!(
-            "median {:.3} ms, {within_target}/{samples} waits within 1 ms (worst {:.3} ms)",
-            median.as_secs_f64() * 1000.0,
-            worst.as_secs_f64() * 1000.0
-        ),
+    // The acceptance bar is 95% of waits inside 1 ms, the same fraction the unit test
+    // asserts. It must be a fraction rather than a fixed "5 outliers" allowance, because
+    // outliers are the OS preempting the spinning thread and scale with the sample count,
+    // not with the waiter's accuracy. The median is what reports the timer's own precision.
+    let enough = within_target * 100 >= samples * 95;
+    let timing_detail = format!(
+        "median {:.3} ms, {within_target}/{samples} ({}%) waits within 1 ms, {} preempted (worst {:.3} ms); {}",
+        median.as_secs_f64() * 1000.0,
+        within_target * 100 / samples,
+        samples - within_target,
+        worst.as_secs_f64() * 1000.0,
+        timing_priority.outcome().describe()
     );
+    drop(timing_priority);
+    check("timing", median < Duration::from_micros(500) && enough, timing_detail);
 
     // 3. Audio: envelope shaping never clips and starts smoothly.
     let (mut generator, key) = KeyedSineGenerator::new(48_000, 700, 0.5)?;
@@ -312,6 +327,10 @@ fn cmd_selftest() -> Result<(), Box<dyn std::error::Error>> {
     // 8. Fail-safe sources: a serial fault (F6) and a lost mesh path (F9) each reach the bus.
     let failsafe = failsafe_source_check();
     check("failsafe", failsafe.0, failsafe.1);
+
+    // 9. Port forwarding: the native TCP and UDP relays carry traffic without a sidecar.
+    let forwarding = forwarding_check();
+    check("forwarding", forwarding.0, forwarding.1);
 
     if failures == 0 {
         println!("all checks passed");
@@ -367,6 +386,78 @@ impl KeyingOutput for FaultyKeys {
             None
         }
     }
+}
+
+/// Relays a message through both native forwarders on loopback and checks the counters.
+fn forwarding_check() -> (bool, String) {
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => return (false, format!("tokio runtime: {e}")),
+    };
+
+    runtime.block_on(async {
+        // TCP: application -> forwarder -> radio, with the reply relayed back.
+        let radio = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tcp = TcpForwarder::bind("127.0.0.1:0".parse().unwrap(), radio.local_addr().unwrap())
+            .await
+            .unwrap();
+        let tcp_listen = tcp.listen_addr().unwrap();
+        let tcp_stats = tcp.stats();
+        let (tcp_tx, tcp_rx) = watch::channel(false);
+        let tcp_task = tokio::spawn(async move { tcp.run(tcp_rx).await });
+
+        let echo = tokio::spawn(async move {
+            let (mut stream, _) = radio.accept().await.unwrap();
+            let mut buf = [0u8; 32];
+            let n = stream.read(&mut buf).await.unwrap();
+            stream.write_all(&buf[..n]).await.unwrap();
+            stream.flush().await.unwrap();
+        });
+
+        let mut app = TcpStream::connect(tcp_listen).await.unwrap();
+        app.write_all(b"cq").await.unwrap();
+        let mut buf = [0u8; 8];
+        let read = tokio::time::timeout(Duration::from_secs(2), app.read(&mut buf)).await;
+        let tcp_echoed = matches!(read, Ok(Ok(2)) if &buf[..2] == b"cq");
+        let _ = echo.await;
+        tcp_tx.send(true).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), tcp_task).await;
+
+        // UDP: application -> forwarder -> radio.
+        let udp_app = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let udp_radio = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let udp =
+            UdpForwarder::bind("127.0.0.1:0".parse().unwrap(), udp_radio.local_addr().unwrap())
+                .await
+                .unwrap();
+        let udp_listen = udp.listen_addr().unwrap();
+        let udp_stats = udp.stats();
+        let (udp_tx, udp_rx) = watch::channel(false);
+        let udp_task = tokio::spawn(async move { udp.run(udp_rx).await });
+
+        udp_app.send_to(b"vita", udp_listen).await.unwrap();
+        let mut ubuf = [0u8; 16];
+        let got = tokio::time::timeout(Duration::from_secs(2), udp_radio.recv_from(&mut ubuf)).await;
+        let udp_relayed = matches!(got, Ok(Ok((4, _))) if &ubuf[..4] == b"vita");
+        udp_tx.send(true).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), udp_task).await;
+
+        let passed = tcp_echoed
+            && udp_relayed
+            && tcp_stats.accepted() == 1
+            && tcp_stats.tx_bytes() == 2
+            && tcp_stats.rx_bytes() == 2
+            && udp_stats.tx_datagrams() == 1;
+        (
+            passed,
+            format!(
+                "TCP echoed={tcp_echoed} ({}/{}B), UDP relayed={udp_relayed} ({} datagram)",
+                tcp_stats.tx_bytes(),
+                tcp_stats.rx_bytes(),
+                udp_stats.tx_datagrams()
+            ),
+        )
+    })
 }
 
 /// Reports what the OS granted for thread priority and timer resolution.

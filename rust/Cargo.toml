@@ -10,7 +10,7 @@ authors = ["Gerry Hull, W1VE"]
 repository = "https://github.com/w1ve/rwk-router-keyer"
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time"] }
 serialport = "4"
 cpal = "0.15"
 spin_sleep = "1"

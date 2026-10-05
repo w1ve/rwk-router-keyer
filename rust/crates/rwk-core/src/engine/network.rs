@@ -6,7 +6,10 @@
 //! * the **edge relay** — moving [`RwkPaddleFrame`] datagrams between the keying engine
 //!   and the peer (the sidecar's loopback UDP ↔ tailnet relay); and
 //! * the **UDP port forwarder** — the sidecar's `out-udp` / `in-udp` kinds, used for
-//!   Flex SmartSDR command (`4992/udp`) and VITA-49 (`4991/udp`) traffic.
+//!   Flex SmartSDR command (`4992/udp`) and VITA-49 (`4991/udp`) traffic; and
+//! * the **TCP port forwarder** — the sidecar's `out` / `in` kinds, the latency-sensitive
+//!   control channel the Client dials on loopback and the Station accepts, preserving
+//!   `TCP_NODELAY` and half-close propagation.
 //!
 //! ## What replaces Tailscale (research spike)
 //!
@@ -26,10 +29,13 @@
 //! whatever tunnel implementation lands, so the keying path is ready before the mesh is.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
-use tokio::net::UdpSocket;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{watch, Mutex};
 
 use crate::primitives::{ForwardDirection, ForwardProtocol};
@@ -51,6 +57,15 @@ pub const UDP_FORWARD_IDLE_SECONDS: u64 = 60;
 /// a run of them means the route is gone. This is deliberately a *sustained* signal,
 /// so a station never trips F9 on one hiccup.
 pub const MAX_CONSECUTIVE_SEND_ERRORS: u32 = 3;
+
+/// Copy buffer for one direction of a TCP forward, in bytes.
+///
+/// Sized so each direction of a connection holds one modest allocation, while still
+/// amortising the syscall over a typical burst of control-channel traffic.
+pub const TCP_FORWARD_BUFFER: usize = 16 * 1024;
+
+/// Pause after a failed `accept`, so descriptor exhaustion cannot spin the accept loop.
+pub const TCP_ACCEPT_BACKOFF: Duration = Duration::from_millis(20);
 
 /// A one-way flag that any mesh/tunnel layer can raise when the path to the peer is lost.
 ///
@@ -423,10 +438,185 @@ impl UdpForwarder {
     }
 }
 
+/// Connection counters for a TCP forwarder, mirroring the sidecar's `forwardInfo`.
+///
+/// Deliberately separate from [`EdgeStats`]: a connection-oriented forward counts
+/// connections, not datagrams, and the UI presents the two differently.
+#[derive(Debug, Default)]
+pub struct TcpForwardStats {
+    accepted: AtomicU64,
+    active: AtomicI64,
+    errors: AtomicU64,
+    tx_bytes: AtomicU64,
+    rx_bytes: AtomicU64,
+}
+
+impl TcpForwardStats {
+    /// Connections accepted since the forwarder started.
+    #[must_use]
+    pub fn accepted(&self) -> u64 {
+        self.accepted.load(Ordering::Relaxed)
+    }
+
+    /// Connections currently being relayed.
+    #[must_use]
+    pub fn active(&self) -> i64 {
+        self.active.load(Ordering::Relaxed)
+    }
+
+    /// Failed dials, failed accepts, and failed copies.
+    #[must_use]
+    pub fn errors(&self) -> u64 {
+        self.errors.load(Ordering::Relaxed)
+    }
+
+    /// Bytes copied from the local listener side to the target.
+    #[must_use]
+    pub fn tx_bytes(&self) -> u64 {
+        self.tx_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Bytes copied from the target back to the local listener side.
+    #[must_use]
+    pub fn rx_bytes(&self) -> u64 {
+        self.rx_bytes.load(Ordering::Relaxed)
+    }
+}
+
+/// A TCP forwarder: listens on one address and relays every accepted connection to
+/// `target`, copying bytes both ways and propagating a half-close per direction.
+///
+/// This is the in-process replacement for the sidecar's `out` / `in` relays. Once the
+/// tailnet stack is gone both kinds reduce to the same shape — bind a listener, dial the
+/// other end, pump — so a single type serves both; the rule's [`ForwardDirection`]
+/// decides which address ends up bound and which is dialed.
+///
+/// Unlike [`UdpForwarder`], this is inherently multi-connection: a Station control channel
+/// can stay open for hours, so each accepted connection is pumped on its own task and
+/// never blocks a new one.
+pub struct TcpForwarder {
+    listen: TcpListener,
+    target: SocketAddr,
+    stats: Arc<TcpForwardStats>,
+}
+
+impl TcpForwarder {
+    /// Binds `listen_addr`; every accepted connection is relayed to `target`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates `std::io::Error` if the listener cannot be bound.
+    pub async fn bind(listen_addr: SocketAddr, target: SocketAddr) -> Result<Self> {
+        let listen = TcpListener::bind(listen_addr).await?;
+        Ok(Self { listen, target, stats: Arc::new(TcpForwardStats::default()) })
+    }
+
+    /// The address the application should connect to.
+    ///
+    /// # Errors
+    ///
+    /// Propagates `std::io::Error` if the local address cannot be read.
+    pub fn listen_addr(&self) -> Result<SocketAddr> {
+        Ok(self.listen.local_addr()?)
+    }
+
+    /// Shared connection counters.
+    #[must_use]
+    pub fn stats(&self) -> Arc<TcpForwardStats> {
+        Arc::clone(&self.stats)
+    }
+
+    /// Accepts and relays connections until `shutdown` flips to `true`.
+    ///
+    /// Returning on shutdown stops *new* connections; connections already being relayed
+    /// drain on their own, exactly as the sidecar's did. A transient `accept` failure is
+    /// counted and retried rather than tearing the forward down.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible for a bound listener: failures are counted, not propagated.
+    pub async fn run(self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
+        loop {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    // A closed or flipped channel both mean "stop".
+                    if changed.is_err() || *shutdown.borrow() {
+                        return Ok(());
+                    }
+                }
+                accepted = self.listen.accept() => {
+                    match accepted {
+                        Ok((stream, _peer)) => {
+                            self.stats.accepted.fetch_add(1, Ordering::Relaxed);
+                            self.stats.active.fetch_add(1, Ordering::Relaxed);
+                            let target = self.target;
+                            let stats = Arc::clone(&self.stats);
+                            tokio::spawn(async move {
+                                relay_connection(stream, target, &stats).await;
+                                stats.active.fetch_sub(1, Ordering::Relaxed);
+                            });
+                        }
+                        Err(_) => {
+                            // `accept` rarely fails transiently (e.g. EMFILE); back off
+                            // briefly instead of spinning on a descriptor storm.
+                            self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                            tokio::time::sleep(TCP_ACCEPT_BACKOFF).await;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Relays one accepted connection to `target` until both directions have ended.
+async fn relay_connection(inbound: TcpStream, target: SocketAddr, stats: &TcpForwardStats) {
+    // The control channel is low-volume and latency sensitive, so Nagle must not batch
+    // small writes on either leg.
+    let _ = inbound.set_nodelay(true);
+    let outbound = match TcpStream::connect(target).await {
+        Ok(stream) => stream,
+        Err(_) => {
+            stats.errors.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    };
+    let _ = outbound.set_nodelay(true);
+
+    let (in_read, in_write) = inbound.into_split();
+    let (out_read, out_write) = outbound.into_split();
+
+    // `join!`, not `select!`: a half-close in one direction must not cut the other short,
+    // so a client that finishes sending can still read the reply.
+    tokio::join!(
+        pump(in_read, out_write, &stats.tx_bytes),
+        pump(out_read, in_write, &stats.rx_bytes),
+    );
+}
+
+/// Copies one direction of a relay, then half-closes the destination's write side.
+async fn pump(mut src: OwnedReadHalf, mut dst: OwnedWriteHalf, counter: &AtomicU64) {
+    let mut buf = vec![0u8; TCP_FORWARD_BUFFER];
+    loop {
+        match src.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if dst.write_all(&buf[..n]).await.is_err() {
+                    break;
+                }
+                counter.fetch_add(n as u64, Ordering::Relaxed);
+            }
+        }
+    }
+    // Propagate the FIN so the peer sees end-of-stream; the reverse direction stays open.
+    let _ = dst.shutdown().await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::protocol::edge::EdgeEntry;
+    use std::time::Instant;
 
     #[tokio::test]
     async fn edge_frame_round_trips_over_loopback() {
@@ -579,5 +769,180 @@ mod tests {
 
         assert_eq!(stats.tx_datagrams(), 1);
         assert_eq!(stats.rx_datagrams(), 1);
+    }
+
+    #[tokio::test]
+    async fn tcp_forwarder_relays_both_directions() {
+        // "app" is the local application; "radio" plays the station-LAN target.
+        let radio = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let radio_addr = radio.local_addr().unwrap();
+        let forwarder = TcpForwarder::bind("127.0.0.1:0".parse().unwrap(), radio_addr)
+            .await
+            .unwrap();
+        let listen = forwarder.listen_addr().unwrap();
+        let stats = forwarder.stats();
+
+        let (tx, rx) = watch::channel(false);
+        let task = tokio::spawn(async move { forwarder.run(rx).await });
+
+        // The radio accepts one connection and echoes the datagram it reads.
+        let echo = tokio::spawn(async move {
+            let (mut stream, _) = radio.accept().await.unwrap();
+            let mut buf = [0u8; 64];
+            let n = stream.read(&mut buf).await.unwrap();
+            stream.write_all(&buf[..n]).await.unwrap();
+            stream.flush().await.unwrap();
+            n
+        });
+
+        let mut app = TcpStream::connect(listen).await.unwrap();
+        app.write_all(b"hello morse").await.unwrap();
+        let mut buf = [0u8; 64];
+        let n = tokio::time::timeout(Duration::from_secs(2), app.read(&mut buf))
+            .await
+            .expect("app read timed out")
+            .unwrap();
+        assert_eq!(&buf[..n], b"hello morse");
+        assert_eq!(echo.await.unwrap(), 11);
+
+        tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("forwarder did not stop")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(stats.accepted(), 1);
+        assert_eq!(stats.errors(), 0);
+        assert_eq!(stats.tx_bytes(), 11);
+        assert_eq!(stats.rx_bytes(), 11);
+    }
+
+    #[tokio::test]
+    async fn tcp_forwarder_propagates_half_close() {
+        let radio = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let radio_addr = radio.local_addr().unwrap();
+        let forwarder = TcpForwarder::bind("127.0.0.1:0".parse().unwrap(), radio_addr)
+            .await
+            .unwrap();
+        let listen = forwarder.listen_addr().unwrap();
+
+        let (tx, rx) = watch::channel(false);
+        let task = tokio::spawn(async move { forwarder.run(rx).await });
+
+        // The radio reads to EOF — proving the FIN crossed the forwarder — then answers on
+        // the still-open reverse direction.
+        let radio_task = tokio::spawn(async move {
+            let (mut stream, _) = radio.accept().await.unwrap();
+            let mut got = Vec::new();
+            stream.read_to_end(&mut got).await.unwrap();
+            stream.write_all(b"roger").await.unwrap();
+            stream.flush().await.unwrap();
+            got
+        });
+
+        let mut app = TcpStream::connect(listen).await.unwrap();
+        app.write_all(b"cq test").await.unwrap();
+        app.shutdown().await.unwrap(); // the application's half-close
+
+        let received = tokio::time::timeout(Duration::from_secs(2), radio_task)
+            .await
+            .expect("radio never saw end-of-stream")
+            .unwrap();
+        assert_eq!(received, b"cq test");
+
+        let mut buf = [0u8; 16];
+        let n = tokio::time::timeout(Duration::from_secs(2), app.read(&mut buf))
+            .await
+            .expect("app read timed out")
+            .unwrap();
+        assert_eq!(&buf[..n], b"roger", "a half-close must not cut the reply direction");
+
+        tx.send(true).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+    }
+
+    #[tokio::test]
+    async fn tcp_forwarder_counts_a_failed_dial() {
+        // A closed *loopback* port is not usable here: a host firewall can swallow the
+        // RST, leaving the dial in SYN retransmit for the whole test. The unspecified
+        // address is instead rejected locally and instantly, on both Windows and Linux.
+        let dead_addr: SocketAddr = "0.0.0.0:1".parse().unwrap();
+
+        let forwarder = TcpForwarder::bind("127.0.0.1:0".parse().unwrap(), dead_addr)
+            .await
+            .unwrap();
+        let listen = forwarder.listen_addr().unwrap();
+        let stats = forwarder.stats();
+        let (tx, rx) = watch::channel(false);
+        let task = tokio::spawn(async move { forwarder.run(rx).await });
+
+        let mut app = TcpStream::connect(listen).await.unwrap();
+        // The relay cannot dial, so it drops the inbound connection and the app sees EOF.
+        let mut buf = [0u8; 8];
+        let n = tokio::time::timeout(Duration::from_secs(2), app.read(&mut buf))
+            .await
+            .expect("relay did not close the connection")
+            .unwrap();
+        assert_eq!(n, 0, "a failed dial must close the inbound connection");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while stats.errors() == 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(stats.accepted(), 1);
+        assert_eq!(stats.errors(), 1);
+        assert_eq!(stats.tx_bytes(), 0);
+
+        tx.send(true).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+    }
+
+    #[tokio::test]
+    async fn tcp_forwarder_handles_concurrent_connections() {
+        let radio = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let radio_addr = radio.local_addr().unwrap();
+        let forwarder = TcpForwarder::bind("127.0.0.1:0".parse().unwrap(), radio_addr)
+            .await
+            .unwrap();
+        let listen = forwarder.listen_addr().unwrap();
+        let stats = forwarder.stats();
+        let (tx, rx) = watch::channel(false);
+        let task = tokio::spawn(async move { forwarder.run(rx).await });
+
+        // Three long-lived sessions at once: the second must not wait for the first.
+        let radio_task = tokio::spawn(async move {
+            let mut handles = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = radio.accept().await.unwrap();
+                handles.push(tokio::spawn(async move {
+                    let mut buf = [0u8; 32];
+                    let n = stream.read(&mut buf).await.unwrap();
+                    stream.write_all(&buf[..n]).await.unwrap();
+                    stream.flush().await.unwrap();
+                }));
+            }
+            for h in handles {
+                h.await.unwrap();
+            }
+        });
+
+        for i in 0..3u8 {
+            let mut app = TcpStream::connect(listen).await.unwrap();
+            app.write_all(&[i]).await.unwrap();
+            let mut buf = [0u8; 1];
+            tokio::time::timeout(Duration::from_secs(2), app.read_exact(&mut buf))
+                .await
+                .expect("concurrent session timed out")
+                .unwrap();
+            assert_eq!(buf[0], i);
+        }
+        radio_task.await.unwrap();
+
+        assert_eq!(stats.accepted(), 3);
+        assert_eq!(stats.errors(), 0);
+
+        tx.send(true).unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
     }
 }

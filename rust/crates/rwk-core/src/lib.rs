@@ -11,7 +11,7 @@
 //!   and the WinKeyer command-byte set ([`protocol::winkeyer`]).
 //! * [`engine`] — hardware and OS integration: [`engine::serial`] (DTR/RTS keying),
 //!   [`engine::audio`] (keyed sine sidetone), [`engine::keying`] (Morse element
-//!   scheduling), [`engine::network`] (UDP edge transport and port forwarding) and
+//!   scheduling), [`engine::network`] (UDP edge transport and UDP/TCP port forwarding) and
 //!   [`engine::bus`] (a `tokio::sync::broadcast` event bus feeding the UI).
 //! * [`timing`] — the sub-millisecond sleep/spin waiter and the injectable clock.
 //! * [`platform`] — the single OS-FFI seam: thread priority and timer resolution.

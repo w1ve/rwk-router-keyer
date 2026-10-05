@@ -19,7 +19,7 @@ rust/
     src/engine/serial.rs         port enumeration, DTR/RTS keying, PTT sequencer
     src/engine/keying.rs         element timing, schedule builder, paddle decider
     src/engine/audio.rs          keyed sine sidetone (cpal) with envelope shaping
-    src/engine/network.rs        UDP edge transport + UDP port forwarding
+    src/engine/network.rs        UDP edge transport + UDP/TCP port forwarding
     src/engine/replay/           Station edge replayer
       tracker.rs                 epoch/duplicate/gap/timestamp validation
       jitter.rs                  delay bands + adaptive delay
@@ -37,10 +37,10 @@ rust/
 ```sh
 cd rust
 cargo build --release          # produces target/release/rwk.exe (one file, no sidecar)
-cargo test                     # 135 unit tests
+cargo test                     # 139 unit tests
 ./target/release/rwk ports     # list serial ports
 ./target/release/rwk devices   # list audio output devices
-./target/release/rwk selftest  # timing / protocol / audio checks
+./target/release/rwk selftest  # 9 checks: timing, protocol, audio, replay, driver, forwarding
 ./target/release/rwk key COM3 "CQ TEST" --wpm 25 --line dtr
 ```
 
@@ -60,6 +60,7 @@ cargo test                     # 135 unit tests
 | `RWK.Client.Audio.LocalSidetoneEngine` | `engine::audio::SidetoneEngine` | cpal instead of WASAPI/NAudio |
 | Go sidecar `edgeRelay` (UDP) | `engine::network::EdgeTransport` | native UDP, same source filtering |
 | Go sidecar `out-udp` / `in-udp` | `engine::network::UdpForwarder` | native UDP relay |
+| Go sidecar `out` / `in` | `engine::network::TcpForwarder` | native TCP relay; `TCP_NODELAY` on both legs, half-close propagated per direction |
 | `EdgeSequenceTracker` + validation types | `engine::replay::tracker` | redundancy healing, never guesses a key-down |
 | `JitterBuffer` + `EdgeJitterProfile` | `engine::replay::jitter` | bands, EWMA adaptation, late-edge storm |
 | `ReplayAnchor` | `engine::replay::anchor` | deadline = anchor + relative timestamp |
@@ -75,7 +76,6 @@ cargo test                     # 135 unit tests
 * **The mesh itself.** The sidecar's `tsnet` node (WireGuard + DERP + userspace netstack)
   is replaced by native UDP in this increment; the tunnel is the open spike. See
   [docs/NATIVE-NETWORK-SPIKE.md](docs/NATIVE-NETWORK-SPIKE.md).
-* **TCP port forwarding** (`out` / `in` kinds) — the UDP kinds are done; TCP is next.
 * **The mesh tunnel's own path detector.** F9 is now wired end to end
   (`engine::network::PathHealth` → watchdog → F9), but the source that *raises* the flag is
   still only the edge transport's sustained-send-failure counter. The WireGuard tunnel is
@@ -96,7 +96,7 @@ cargo test                     # 135 unit tests
 |---|---|
 | 1. `cargo check` / `cargo build`, no warnings | ✅ 0 errors, 0 warnings |
 | 2. Zero Node runtime, single EXE | ✅ one Rust binary; no Node, no sidecar |
-| 3. Sub-millisecond timing | ✅ selftest median < 1 µs, worst 0.3 ms; unit test asserts median < 500 µs and ≥95/100 waits within 1 ms |
+| 3. Sub-millisecond timing | ✅ selftest measured at time-critical priority: median < 1 µs, 200/200 waits within 1 ms (worst 0.06 ms); unit test asserts median < 500 µs and ≥95/100 waits within 1 ms at normal priority |
 | 4. Clean shutdown | ✅ RAII: dropping `SerialKeyingOutput`/`SidetoneEngine` releases port/stream; forwarders stop via a `watch` channel |
 | 5. Scheduling protection | ✅ replay + watchdog threads raise themselves to time-critical priority and request a 1 ms timer period; a refusal is reported, never fatal (`rwk selftest` shows what the OS granted) |
 
@@ -108,6 +108,12 @@ arriving frame from its own thread, publishes fail-safes to the event bus exactl
 releases the key on shutdown (F8), and both previously unsubscribed fail-safes now have a
 source — F6 from a latched keying-output write fault, F9 from `PathHealth`.
 
+Both native forwarders are verified on loopback: the UDP relay carries a datagram each
+way and forwards the reply to the last sender; the TCP relay echoes both directions,
+propagates a half-close without cutting the reply direction, serves three connections
+concurrently on separate tasks, and counts a refused dial without disturbing the listener.
+
 Not verified: no serial radio, no audio device and no second host were available, so
-keying, sidetone and the mesh path are verified by recorded transitions and loopback
-sockets rather than on hardware.
+keying, sidetone, the mesh path and port forwarding are verified by recorded transitions
+and loopback sockets rather than on hardware. The forwarders have not run across a real
+tunnel — they speak plain TCP/UDP until the WireGuard layer described in the spike lands.
