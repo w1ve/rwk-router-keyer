@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/rwk-core", "crates/rwk"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Gerry Hull, W1VE"]
+repository = "https://github.com/w1ve/rwk-router-keyer"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time"] }
+serialport = "4"
+cpal = "0.15"
+spin_sleep = "1"
+thiserror = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1

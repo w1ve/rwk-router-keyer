@@ -1,0 +1,16 @@
+[package]
+name = "rwk"
+description = "RWK Router Keyer — single self-contained executable (no sidecar)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rwk"
+path = "src/main.rs"
+
+[dependencies]
+rwk-core = { path = "../rwk-core" }
+tokio = { workspace = true }
