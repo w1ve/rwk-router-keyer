@@ -72,18 +72,45 @@ against plain UDP, so they will ride over whichever transport lands:
   datagram counters (`tx/rx`, `dropNoPeer`, `dropForeign`).
 * `UdpForwarder` — the sidecar's `out-udp` / `in-udp` relays, used for Flex SmartSDR
   command (`4992/udp`) and VITA-49 (`4991/udp`).
+* `TcpForwarder` — the sidecar's `out` / `in` relays, the client↔station control channel,
+  with `TCP_NODELAY` on both legs and half-close propagation per direction.
 * `ForwardRule` — the persisted rule shape from `config.json`, including the
   loopback-only bind default.
+* `tunnel::WireGuardTunnel` — the **WireGuard half of the transport**. boringtun driven over
+  a UDP socket: static-keyed peers, handshake, keepalives, a roaming endpoint, and its own
+  `PathHealth` so a dead tunnel raises F9. It hands up *inner IP packets* only; the netstack
+  that turns those into sockets is the piece still missing (below).
 
-Both are covered by loopback integration tests, so when the WireGuard layer arrives it
-is substituted beneath an already-verified keying path.
+All of these are covered by loopback integration tests — including a real WireGuard
+handshake and a byte-exact inner-packet round trip — so the remaining transport work is
+substituted beneath an already-verified keying path.
+
+## Progress
+
+| Increment | State |
+|---|---|
+| 1. WireGuard transport (`tunnel::WireGuardTunnel`) | ✅ done — real handshake, encrypted inner packets, F9 source |
+| 2. Userspace netstack (`smoltcp`) | ⬜ next — turns inner IP packets into UDP/TCP sockets |
+| 3. DERP relay client | ⬜ after the netstack — NAT-traversal fallback |
+| 4. Key and address plumbing | ⬜ generate an identity, persist a peer in `config.json` |
+
+Note that the UDP and TCP forwarders, and `EdgeTransport`, are written against **plain
+sockets** today. They keep working over a LAN or a hardware VPN unchanged; only step 2 makes
+them ride the tunnel.
 
 ## Recommendation
 
-For the **Windows MVP**: implement `boringtun` + static pre-shared peers + `smoltcp`,
-sourced from the operator-supplied station address. Defer DERP. This satisfies
-"one EXE, no sidecar" for the single-peer topology the app actually uses, and keeps
-the door open to a full control-plane client later.
+The chosen direction is **full `tsnet` parity**: our own WireGuard mesh *plus* a DERP relay
+client, so the app keeps `tsnet`'s zero-install, no-admin, NAT-traversing behaviour without
+Tailscale. Steps 1–4 above are that plan in order; the ordering matters because each step is
+useful on its own and none requires revisiting an earlier one.
+
+Being explicit about what this costs, since it is not just an architecture swap: a
+boringtun node **cannot join an existing tailnet** — Tailscale's coordination server issues
+the keys its peers accept, and there is no "bring your own WireGuard key" path. Adopting this
+plan means leaving Tailscale, and losing tailnet interop (reaching the station from a phone's
+Tailscale app, or sharing the node with a friend's tailnet). It also means the DERP client
+must be written before NAT traversal works at all, since step 3 is the whole of it.
 
 For **Linux x64 / ARM (RasPi)**: the same stack is portable, but prefer the kernel
 WireGuard interface (`wg`) where available for power efficiency on the Pi, falling

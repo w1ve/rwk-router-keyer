@@ -20,6 +20,7 @@ rust/
     src/engine/keying.rs         element timing, schedule builder, paddle decider
     src/engine/audio.rs          keyed sine sidetone (cpal) with envelope shaping
     src/engine/network.rs        UDP edge transport + UDP/TCP port forwarding
+    src/engine/tunnel.rs         native WireGuard transport (static peers, no Tailscale)
     src/engine/replay/           Station edge replayer
       tracker.rs                 epoch/duplicate/gap/timestamp validation
       jitter.rs                  delay bands + adaptive delay
@@ -37,10 +38,10 @@ rust/
 ```sh
 cd rust
 cargo build --release          # produces target/release/rwk.exe (one file, no sidecar)
-cargo test                     # 139 unit tests
+cargo test                     # 146 unit tests
 ./target/release/rwk ports     # list serial ports
 ./target/release/rwk devices   # list audio output devices
-./target/release/rwk selftest  # 9 checks: timing, protocol, audio, replay, driver, forwarding
+./target/release/rwk selftest  # 10 checks: timing, protocol, audio, replay, driver, forwarding, tunnel
 ./target/release/rwk key COM3 "CQ TEST" --wpm 25 --line dtr
 ```
 
@@ -61,6 +62,8 @@ cargo test                     # 139 unit tests
 | Go sidecar `edgeRelay` (UDP) | `engine::network::EdgeTransport` | native UDP, same source filtering |
 | Go sidecar `out-udp` / `in-udp` | `engine::network::UdpForwarder` | native UDP relay |
 | Go sidecar `out` / `in` | `engine::network::TcpForwarder` | native TCP relay; `TCP_NODELAY` on both legs, half-close propagated per direction |
+| `tsnet` WireGuard (wireguard-go) | `engine::tunnel::WireGuardTunnel` | boringtun; static-keyed peer, handshake, keepalives, roaming endpoint |
+| Tailscale coordination server (keys, peers, ACLs) | `engine::tunnel::TunnelPeer` | by design nothing to discover: one client, one station, operator-supplied key + address |
 | `EdgeSequenceTracker` + validation types | `engine::replay::tracker` | redundancy healing, never guesses a key-down |
 | `JitterBuffer` + `EdgeJitterProfile` | `engine::replay::jitter` | bands, EWMA adaptation, late-edge storm |
 | `ReplayAnchor` | `engine::replay::anchor` | deadline = anchor + relative timestamp |
@@ -69,17 +72,20 @@ cargo test                     # 139 unit tests
 | `EdgeReplayer` + `EdgeReplayerTelemetry` | `engine::replay::replayer` | synchronous, timestamp-explicit core |
 | `EdgeReplayer`'s replay thread + monitor/watchdog threads | `engine::replay::driver` | dedicated std threads, `HybridWaiter` deadlines, F8 on shutdown |
 | .NET `THREAD_PRIORITY_TIME_CRITICAL` + `timeBeginPeriod(1)` | `platform` | RAII guards: Win32 `SetThreadPriority`/`timeBeginPeriod`, Linux `sched_setscheduler`/`nice`, no-op fallback |
-| Go sidecar mesh path state (for F9) | `engine::network::PathHealth` | shared flag; sustained send failures raise it |
+| Go sidecar mesh path state (for F9) | `engine::network::PathHealth` | shared flag; the edge transport *and* the WireGuard tunnel raise it on sustained send failures |
 
 ## What is not ported yet
 
-* **The mesh itself.** The sidecar's `tsnet` node (WireGuard + DERP + userspace netstack)
-  is replaced by native UDP in this increment; the tunnel is the open spike. See
+* **The userspace netstack.** `engine::tunnel::WireGuardTunnel` carries *inner IP packets*,
+  but nothing yet turns those into the UDP/TCP sockets the keying path and the forwarders
+  want. That is the `smoltcp` increment, and it is what `EdgeTransport` must sit on; until it
+  lands the tunnel is a verified transport rather than a socket provider. See
   [docs/NATIVE-NETWORK-SPIKE.md](docs/NATIVE-NETWORK-SPIKE.md).
-* **The mesh tunnel's own path detector.** F9 is now wired end to end
-  (`engine::network::PathHealth` → watchdog → F9), but the source that *raises* the flag is
-  still only the edge transport's sustained-send-failure counter. The WireGuard tunnel is
-  expected to raise it directly once it exists.
+* **DERP relay fallback.** `tsnet`'s NAT-traversal behaviour (a relay both ends can reach) is
+  not implemented, so both ends of a link need a reachable endpoint. The next increment
+  after the netstack.
+* **Key and address plumbing.** `StaticIdentity` and `TunnelPeer` are configured in code;
+  there is no CLI or config-file path yet for generating an identity and persisting a peer.
 * **Linux scheduling verified on paper only.** The Linux backend compiles and follows the
   POSIX contract (`sched_setscheduler(SCHED_FIFO)` with a `nice` fallback), but it has not
   run on a Raspberry Pi or any Linux host yet.
@@ -96,9 +102,10 @@ cargo test                     # 139 unit tests
 |---|---|
 | 1. `cargo check` / `cargo build`, no warnings | ✅ 0 errors, 0 warnings |
 | 2. Zero Node runtime, single EXE | ✅ one Rust binary; no Node, no sidecar |
-| 3. Sub-millisecond timing | ✅ selftest measured at time-critical priority: median < 1 µs, 200/200 waits within 1 ms (worst 0.06 ms); unit test asserts median < 500 µs and ≥95/100 waits within 1 ms at normal priority |
+| 3. Sub-millisecond timing | ✅ both the selftest and the unit test measure at the time-critical priority the engine runs at: selftest median < 1 µs, 200/200 waits within 1 ms (worst 0.06 ms); unit test asserts median < 500 µs and ≥95/100 waits within 1 ms |
 | 4. Clean shutdown | ✅ RAII: dropping `SerialKeyingOutput`/`SidetoneEngine` releases port/stream; forwarders stop via a `watch` channel |
 | 5. Scheduling protection | ✅ replay + watchdog threads raise themselves to time-critical priority and request a 1 ms timer period; a refusal is reported, never fatal (`rwk selftest` shows what the OS granted) |
+| 6. Native encrypted transport, no Tailscale | ✅ boringtun userspace WireGuard: two static peers handshake and carry an encrypted inner packet with no control plane; DERP fallback and the netstack above it are not yet implemented |
 
 Station replay safety, verified by unit tests: redundancy heals a lost datagram; a key-up
 behind an unhealed gap is applied; a key-down behind one forces key-up and latches SAFE
@@ -113,7 +120,16 @@ way and forwards the reply to the last sender; the TCP relay echoes both directi
 propagates a half-close without cutting the reply direction, serves three connections
 concurrently on separate tasks, and counts a refused dial without disturbing the listener.
 
+The tunnel is verified with real cryptography over loopback: two peers derived from
+independent static keys complete a WireGuard handshake and round-trip an inner IPv4 packet
+byte for byte; a peer configured with the wrong key cannot establish a session and its
+datagram is counted as undecryptable; an oversized inner packet is refused; sending before
+the handshake fails immediately instead of blocking the keying path; and a sustained run of
+send failures raises `PathHealth`, so the tunnel is its own F9 source. `Debug` output is
+asserted to print the public key only — never the private or pre-shared key.
+
 Not verified: no serial radio, no audio device and no second host were available, so
-keying, sidetone, the mesh path and port forwarding are verified by recorded transitions
-and loopback sockets rather than on hardware. The forwarders have not run across a real
-tunnel — they speak plain TCP/UDP until the WireGuard layer described in the spike lands.
+keying, sidetone and port forwarding are verified by recorded transitions and loopback
+sockets rather than on hardware. The tunnel's two peers also both live in one process, so
+the handshake has never crossed a real network. The forwarders have not run across the
+tunnel — they speak plain TCP/UDP until the `smoltcp` netstack lands.

@@ -119,11 +119,13 @@ mod tests {
     fn wait_until_respects_deadline_within_sub_millisecond() {
         // Acceptance criterion 3: deterministic sub-millisecond precision.
         //
-        // Measure the distribution, not a single sample: a test harness runs many of
-        // these in parallel, and an occasional millisecond-scale outlier is the OS
-        // preempting the spinning thread rather than the waiter missing its target.
-        // The claim being verified is that the timer itself is sub-millisecond, so we
-        // assert on the median and the 99th percentile and report the worst case.
+        // Measured at the time-critical priority the replay thread actually runs at, and
+        // which criterion 5 exists to obtain. At normal priority a spinning thread is at the
+        // mercy of every other process — including this harness's own parallel test threads —
+        // so a poor score reports the scheduler, not the waiter. The claim being verified is
+        // the timer's precision in the configuration the engine uses, so the measurement is
+        // taken there; the guard restores the previous priority as it drops.
+        let priority = crate::platform::ThreadPriorityGuard::raise_time_critical();
         const SAMPLES: usize = 100;
         let probe = Duration::from_millis(20);
         let mut overshoots = Vec::with_capacity(SAMPLES);
@@ -143,10 +145,13 @@ mod tests {
         // many samples at once rather than one outlier.
         let within_target = overshoots.iter().filter(|o| **o < Duration::from_millis(1)).count();
 
+        // The median is the timer's own precision and holds on any machine; the count is the
+        // jitter claim, made at the priority above.
         assert!(median < Duration::from_micros(500), "median overshoot {median:?} exceeded 500us");
         assert!(
             within_target >= SAMPLES - 5,
-            "only {within_target}/{SAMPLES} waits landed within 1ms (worst {worst:?})"
+            "only {within_target}/{SAMPLES} waits landed within 1ms (worst {worst:?}); {}",
+            priority.outcome().describe()
         );
     }
 

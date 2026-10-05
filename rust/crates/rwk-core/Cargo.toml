@@ -13,6 +13,8 @@ serialport = { workspace = true }
 cpal = { workspace = true }
 spin_sleep = { workspace = true }
 thiserror = { workspace = true }
+boringtun = { workspace = true }
+getrandom = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

@@ -20,6 +20,7 @@ use rwk_core::engine::audio::{KeyedSineGenerator, SidetoneEngine};
 use rwk_core::engine::bus::{CoreEvent, EventBus, EventReceiver};
 use rwk_core::engine::keying::{EdgeScheduleBuilder, ElementKeyer};
 use rwk_core::engine::network::{PathHealth, TcpForwarder, UdpForwarder};
+use rwk_core::engine::tunnel::{StaticIdentity, TunnelPeer, WireGuardTunnel};
 use rwk_core::engine::serial::{enumerate_ports, KeyingOutputConfig, SerialKeyingOutput, SerialPortType};
 use rwk_core::engine::replay::{
     spawn_driver, EdgeJitterProfile, EdgeReplayer, JitterBufferConfig, KeyingOutput,
@@ -332,6 +333,10 @@ fn cmd_selftest() -> Result<(), Box<dyn std::error::Error>> {
     let forwarding = forwarding_check();
     check("forwarding", forwarding.0, forwarding.1);
 
+    // 10. Tunnel: a real WireGuard handshake and an encrypted inner packet, no Tailscale.
+    let tunnel = tunnel_check();
+    check("tunnel", tunnel.0, tunnel.1);
+
     if failures == 0 {
         println!("all checks passed");
         Ok(())
@@ -455,6 +460,99 @@ fn forwarding_check() -> (bool, String) {
                 tcp_stats.tx_bytes(),
                 tcp_stats.rx_bytes(),
                 udp_stats.tx_datagrams()
+            ),
+        )
+    })
+}
+
+/// Brings up a real WireGuard link between two static peers and sends an inner packet.
+fn tunnel_check() -> (bool, String) {
+    let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => return (false, format!("tokio runtime: {e}")),
+    };
+
+    runtime.block_on(async {
+        let a_id = match StaticIdentity::generate() {
+            Ok(id) => id,
+            Err(e) => return (false, format!("key generation failed: {e}")),
+        };
+        let b_id = match StaticIdentity::generate() {
+            Ok(id) => id,
+            Err(e) => return (false, format!("key generation failed: {e}")),
+        };
+
+        let mut a = match WireGuardTunnel::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            &a_id,
+            &TunnelPeer {
+                public_key: b_id.public_bytes(),
+                preshared_key: None,
+                endpoint: "127.0.0.1:9".parse().unwrap(),
+                persistent_keepalive: None,
+            },
+        )
+        .await
+        {
+            Ok(tunnel) => tunnel,
+            Err(e) => return (false, format!("bind failed: {e}")),
+        };
+        let mut b = match WireGuardTunnel::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            &b_id,
+            &TunnelPeer {
+                public_key: a_id.public_bytes(),
+                preshared_key: None,
+                endpoint: a.local_addr().unwrap(),
+                persistent_keepalive: None,
+            },
+        )
+        .await
+        {
+            Ok(tunnel) => tunnel,
+            Err(e) => return (false, format!("bind failed: {e}")),
+        };
+        a.set_peer(b.local_addr().unwrap());
+
+        // Initiation, response, then the keepalive that confirms the responder's session.
+        let exchange = async {
+            a.initiate().await?;
+            b.poll().await?;
+            a.poll().await?;
+            b.poll().await?;
+            Ok::<(), rwk_core::Error>(())
+        }
+        .await;
+        if let Err(e) = exchange {
+            return (false, format!("handshake failed: {e}"));
+        }
+        let established = a.is_established() && b.is_established();
+
+        // A minimal but well-formed IPv4 packet, standing in for keying traffic.
+        let payload = b"RWK-PADDLE";
+        let mut inner = vec![0u8; 20];
+        inner[0] = 0x45;
+        inner[2..4].copy_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
+        inner[8] = 64;
+        inner[9] = 17;
+        inner[12..16].copy_from_slice(&[10, 0, 0, 1]);
+        inner[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        inner.extend_from_slice(payload);
+
+        if let Err(e) = a.send_inner(&inner).await {
+            return (false, format!("send failed: {e}"));
+        }
+        let round_trip = matches!(
+            b.poll().await,
+            Ok(Some(packet)) if packet.bytes() == inner.as_slice()
+        );
+
+        (
+            established && round_trip,
+            format!(
+                "handshake={established}, {}-byte inner packet round-tripped={round_trip}, {} wire datagram(s) received",
+                inner.len(),
+                b.stats().received_datagrams()
             ),
         )
     })
