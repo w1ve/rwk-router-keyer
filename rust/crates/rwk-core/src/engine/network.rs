@@ -26,7 +26,7 @@
 //! whatever tunnel implementation lands, so the keying path is ready before the mesh is.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::net::UdpSocket;
@@ -45,6 +45,52 @@ pub const MAX_FORWARD_DATAGRAM: usize = 4096;
 /// Idle timeout for a UDP forwarding session, in seconds.
 pub const UDP_FORWARD_IDLE_SECONDS: u64 = 60;
 
+/// Consecutive outbound failures that add up to a lost path.
+///
+/// A single UDP send failure is usually transient and must not tear the radio down;
+/// a run of them means the route is gone. This is deliberately a *sustained* signal,
+/// so a station never trips F9 on one hiccup.
+pub const MAX_CONSECUTIVE_SEND_ERRORS: u32 = 3;
+
+/// A one-way flag that any mesh/tunnel layer can raise when the path to the peer is lost.
+///
+/// This is the missing event source for fail-safe **F9**: the edge transport and the
+/// future WireGuard tunnel each hold a clone, so a detection anywhere becomes an F9 at the
+/// replay driver's watchdog. It is shared by `Arc`, so cloning is cheap and every holder
+/// observes the same flag.
+///
+/// The flag is *latching until consumed*: [`Self::take_lost`] clears it, which is exactly
+/// the audit trail F9's auto-clearing latch policy expects — each reported loss raises F9
+/// once, and traffic resuming re-arms the session.
+#[derive(Debug, Clone, Default)]
+pub struct PathHealth {
+    lost: Arc<AtomicBool>,
+}
+
+impl PathHealth {
+    /// Creates a healthy path flag.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Raises the flag. Call from the layer that detects the loss.
+    pub fn report_lost(&self) {
+        self.lost.store(true, Ordering::SeqCst);
+    }
+
+    /// Reads the flag without clearing it.
+    #[must_use]
+    pub fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
+    }
+
+    /// Drains the flag: returns `true` at most once per reported loss.
+    pub fn take_lost(&self) -> bool {
+        self.lost.swap(false, Ordering::SeqCst)
+    }
+}
+
 /// Counters for a network path, surfaced to the UI's packet-statistics panel.
 #[derive(Debug, Default)]
 pub struct EdgeStats {
@@ -55,6 +101,7 @@ pub struct EdgeStats {
     drop_no_peer: AtomicU64,
     drop_foreign: AtomicU64,
     errors: AtomicU64,
+    consecutive_send_errors: AtomicU32,
 }
 
 impl EdgeStats {
@@ -99,6 +146,12 @@ impl EdgeStats {
     pub fn errors(&self) -> u64 {
         self.errors.load(Ordering::Relaxed)
     }
+
+    /// Outbound failures since the last successful send.
+    #[must_use]
+    pub fn consecutive_send_errors(&self) -> u32 {
+        self.consecutive_send_errors.load(Ordering::Relaxed)
+    }
 }
 
 /// A UDP endpoint that carries [`RwkPaddleFrame`]s to and from one peer.
@@ -110,6 +163,7 @@ pub struct EdgeTransport {
     socket: UdpSocket,
     peer: Mutex<Option<SocketAddr>>,
     stats: Arc<EdgeStats>,
+    health: PathHealth,
 }
 
 impl EdgeTransport {
@@ -121,7 +175,12 @@ impl EdgeTransport {
     /// bound.
     pub async fn bind(bind: SocketAddr) -> Result<Self> {
         let socket = UdpSocket::bind(bind).await?;
-        Ok(Self { socket, peer: Mutex::new(None), stats: Arc::new(EdgeStats::default()) })
+        Ok(Self {
+            socket,
+            peer: Mutex::new(None),
+            stats: Arc::new(EdgeStats::default()),
+            health: PathHealth::new(),
+        })
     }
 
     /// The local address the transport is bound to.
@@ -137,6 +196,12 @@ impl EdgeTransport {
     #[must_use]
     pub fn stats(&self) -> Arc<EdgeStats> {
         Arc::clone(&self.stats)
+    }
+
+    /// The path-health flag, so a caller can hand it to the replay driver's F9 source.
+    #[must_use]
+    pub fn health(&self) -> PathHealth {
+        self.health.clone()
     }
 
     /// Sets the outbound peer and the only accepted inbound source.
@@ -172,10 +237,18 @@ impl EdgeTransport {
             Ok(n) => {
                 self.stats.tx_datagrams.fetch_add(1, Ordering::Relaxed);
                 self.stats.tx_bytes.fetch_add(n as u64, Ordering::Relaxed);
+                self.stats.consecutive_send_errors.store(0, Ordering::Relaxed);
                 Ok(n)
             }
             Err(e) => {
                 self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                // A run of failures means the route is gone, not that one datagram was
+                // unlucky; only then is F9 raised, so a station never drops the key on a
+                // single transient error.
+                let consecutive = self.stats.consecutive_send_errors.fetch_add(1, Ordering::Relaxed) + 1;
+                if consecutive >= MAX_CONSECUTIVE_SEND_ERRORS {
+                    self.health.report_lost();
+                }
                 Err(e.into())
             }
         }
@@ -382,6 +455,43 @@ mod tests {
         let frame = RwkPaddleFrame::try_new(1, &[EdgeEntry::key_down_at(0, 0, 0)]).unwrap();
         assert_eq!(a.send_frame(&frame).await.unwrap(), 0);
         assert_eq!(a.stats().drop_no_peer(), 1);
+    }
+
+    #[tokio::test]
+    async fn sustained_send_failures_raise_path_loss_once_per_run() {
+        // An IPv4 socket sending to an IPv6 peer fails deterministically with an address
+        // family mismatch, which gives the detector a real failure to react to.
+        let a = EdgeTransport::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        a.set_peer("[::1]:9".parse().unwrap()).await;
+        let health = a.health();
+        let frame = RwkPaddleFrame::try_new(1, &[EdgeEntry::key_down_at(0, 0, 0)]).unwrap();
+
+        for i in 1..MAX_CONSECUTIVE_SEND_ERRORS {
+            assert!(a.send_frame(&frame).await.is_err());
+            assert!(!health.is_lost(), "must not trip after {i} failure(s)");
+        }
+        assert!(a.send_frame(&frame).await.is_err());
+        assert!(health.is_lost(), "a sustained failure run must raise path loss");
+        assert!(health.take_lost(), "the flag is consumable");
+        assert!(!health.is_lost(), "taking it clears it");
+        assert_eq!(a.stats().consecutive_send_errors(), MAX_CONSECUTIVE_SEND_ERRORS);
+        assert_eq!(a.stats().errors(), u64::from(MAX_CONSECUTIVE_SEND_ERRORS));
+    }
+
+    #[tokio::test]
+    async fn a_successful_send_resets_the_failure_run() {
+        let a = EdgeTransport::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let b = EdgeTransport::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let frame = RwkPaddleFrame::try_new(1, &[EdgeEntry::key_down_at(0, 0, 0)]).unwrap();
+
+        a.set_peer("[::1]:9".parse().unwrap()).await;
+        assert!(a.send_frame(&frame).await.is_err());
+        assert_eq!(a.stats().consecutive_send_errors(), 1);
+
+        a.set_peer(b.local_addr().unwrap()).await;
+        assert!(a.send_frame(&frame).await.is_ok());
+        assert_eq!(a.stats().consecutive_send_errors(), 0);
+        assert!(!a.health().is_lost(), "a successful send proves the path is back");
     }
 
     #[tokio::test]

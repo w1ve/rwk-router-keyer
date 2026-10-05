@@ -13,6 +13,8 @@
 //!   [`engine::audio`] (keyed sine sidetone), [`engine::keying`] (Morse element
 //!   scheduling), [`engine::network`] (UDP edge transport and port forwarding) and
 //!   [`engine::bus`] (a `tokio::sync::broadcast` event bus feeding the UI).
+//! * [`timing`] — the sub-millisecond sleep/spin waiter and the injectable clock.
+//! * [`platform`] — the single OS-FFI seam: thread priority and timer resolution.
 //!
 //! ## Design rules
 //!
@@ -25,11 +27,15 @@
 //!    an `.await`.
 //! 4. **Clean shutdown.** Every hardware handle is RAII-managed; dropping the
 //!    owning value releases the port/stream/task.
+//! 5. **`unsafe` is quarantined.** The crate denies `unsafe_code`; [`platform`] is the
+//!    only module that lifts that deny, so every other module is provably FFI-free.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod engine;
+#[allow(unsafe_code)]
+pub mod platform;
 pub mod primitives;
 pub mod protocol;
 pub mod timing;

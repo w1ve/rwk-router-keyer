@@ -25,7 +25,9 @@ pub mod replayer;
 pub mod tracker;
 
 pub use anchor::ReplayAnchor;
-pub use driver::{spawn as spawn_driver, DriverHandle, InboundPacket, SerialKeyingAdapter};
+pub use driver::{
+    spawn as spawn_driver, DriverDiagnostics, DriverHandle, InboundPacket, SerialKeyingAdapter,
+};
 pub use failsafe::{
     EdgeReplayerState, FailSafeCondition, FailSafeMonitor, LatchPolicy, ReplaySnapshot,
     SchedulerWatchdog,

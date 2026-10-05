@@ -49,6 +49,21 @@ pub trait KeyingOutput {
     fn set_key(&mut self, key_down: bool);
     /// Asserts or releases the PTT line. The default is a no-op for outputs with no PTT.
     fn set_ptt(&mut self, _asserted: bool) {}
+
+    /// Returns and clears a fault the output recorded since the last call.
+    ///
+    /// Most outputs cannot fail, so the default is [`None`]. A serial port can fail
+    /// *asynchronously* — a control-line write error or a device removal mid-session — and
+    /// those errors land in `set_key`, which has no error channel. The output therefore
+    /// latches the first fault for the replay driver to poll, which is how **F6** gets an
+    /// event source.
+    ///
+    /// The fault surfaces on the *next write*, exactly as it does on real hardware: a port
+    /// that vanishes while the key is idle produces no write to fail, and that case is
+    /// covered instead by the F1/F2 heartbeat watchdogs.
+    fn take_fault(&mut self) -> Option<String> {
+        None
+    }
 }
 
 /// A point-in-time snapshot of the replayer's counters and timing.
@@ -433,6 +448,28 @@ impl EdgeReplayer {
     pub fn mark_degraded(&mut self) {
         if self.session_active && !self.safe_latched {
             self.set_state(EdgeReplayerState::Degraded);
+        }
+    }
+
+    /// Applies a condition some other layer already detected and announced.
+    ///
+    /// Identical in effect to [`Self::latch_safe`] / [`Self::report_fail_safe`], but it
+    /// records **no** [`ReplayEvent::FailSafe`], so a condition is announced exactly once.
+    /// The driver's watchdog owns publication for everything it detects, because it also
+    /// has to work when this thread is stalled — which is precisely the F10 case — and the
+    /// replay thread announces the conditions only it can see (F4, F5, F6, F8).
+    pub fn apply_condition_quiet(&mut self, condition: FailSafeCondition, keying: &mut dyn KeyingOutput) {
+        match condition.latch_policy() {
+            LatchPolicy::ManualReArm => {
+                self.safe_latched = true;
+                self.force_key_up(keying);
+                self.set_state(EdgeReplayerState::SafeLatched);
+            }
+            LatchPolicy::AutoClear => {
+                self.force_key_up(keying);
+                self.mark_degraded();
+            }
+            LatchPolicy::None => self.force_key_up(keying),
         }
     }
 
@@ -846,6 +883,39 @@ mod tests {
         rp.process_datagram(&frame(1, &[EdgeEntry::key_up_at(4, 200, 0)]), 300 * MS);
         rp.tick(400 * MS, &mut out);
         assert_eq!(rp.telemetry().edges_replayed, 2);
+    }
+
+    #[test]
+    fn quiet_condition_application_latches_without_emitting_an_event() {
+        // The watchdog publishes what it detects; the replayer must apply it without
+        // also announcing it, or the operator sees every fail-safe twice.
+        let mut rp = replayer();
+        let mut out = RecordingOutput::default();
+        rp.begin_session(1);
+        rp.process_datagram(&frame(1, &[EdgeEntry::key_down_at(1, 0, 0)]), 0);
+        rp.tick(60 * MS, &mut out);
+        assert!(rp.is_key_down());
+        let _ = rp.take_events();
+
+        rp.apply_condition_quiet(FailSafeCondition::F6, &mut out);
+        assert!(rp.is_safe_latched(), "F6 latches SAFE");
+        assert!(!rp.is_key_down(), "F6 forces the key up");
+        assert!(
+            !rp.take_events().iter().any(|e| matches!(e, ReplayEvent::FailSafe { .. })),
+            "a quietly applied condition must not re-announce itself"
+        );
+
+        // An auto-clearing condition degrades without latching either.
+        let mut rp2 = replayer();
+        let mut out2 = RecordingOutput::default();
+        rp2.begin_session(1);
+        rp2.process_datagram(&frame(1, &[EdgeEntry::key_down_at(1, 0, 0)]), 0);
+        rp2.tick(60 * MS, &mut out2);
+        let _ = rp2.take_events();
+        rp2.apply_condition_quiet(FailSafeCondition::F9, &mut out2);
+        assert!(!rp2.is_safe_latched());
+        assert_eq!(rp2.state(), EdgeReplayerState::Degraded);
+        assert!(!rp2.take_events().iter().any(|e| matches!(e, ReplayEvent::FailSafe { .. })));
     }
 
     #[test]

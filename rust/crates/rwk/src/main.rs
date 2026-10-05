@@ -12,15 +12,19 @@
 //! ```
 
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rwk_core::engine::audio::{KeyedSineGenerator, SidetoneEngine};
+use rwk_core::engine::bus::{CoreEvent, EventBus, EventReceiver};
 use rwk_core::engine::keying::{EdgeScheduleBuilder, ElementKeyer};
+use rwk_core::engine::network::PathHealth;
 use rwk_core::engine::serial::{enumerate_ports, KeyingOutputConfig, SerialKeyingOutput, SerialPortType};
 use rwk_core::engine::replay::{
     spawn_driver, EdgeJitterProfile, EdgeReplayer, JitterBufferConfig, KeyingOutput,
 };
+use rwk_core::platform::{ThreadPriorityGuard, TimerResolutionGuard};
 use rwk_core::protocol::edge::{EdgeEntry, RwkPaddleFrame};
 use rwk_core::primitives::{KeyingLine, PathType};
 use rwk_core::timing::{Clock, HybridWaiter, MonotonicClock};
@@ -300,6 +304,15 @@ fn cmd_selftest() -> Result<(), Box<dyn std::error::Error>> {
     let driver = driver_check();
     check("driver", driver.0, driver.1);
 
+    // 7. Scheduling: the threads raise their own priority and timer resolution. A refusal
+    //    is reported, not failed — the engine is correct at normal priority.
+    let (scheduling_ok, scheduling_detail) = scheduling_check();
+    check("scheduling", scheduling_ok, scheduling_detail);
+
+    // 8. Fail-safe sources: a serial fault (F6) and a lost mesh path (F9) each reach the bus.
+    let failsafe = failsafe_source_check();
+    check("failsafe", failsafe.0, failsafe.1);
+
     if failures == 0 {
         println!("all checks passed");
         Ok(())
@@ -331,6 +344,117 @@ impl KeyingOutput for SharedKeys {
     }
 }
 
+/// Key transitions plus a switchable fault, standing in for a serial port whose next
+/// control-line write reports it has been unplugged.
+struct FaultyKeys {
+    keys: Arc<Mutex<Vec<bool>>>,
+    fail: Arc<AtomicBool>,
+    pending_faults: Arc<AtomicU32>,
+}
+
+impl KeyingOutput for FaultyKeys {
+    fn set_key(&mut self, key_down: bool) {
+        self.keys.lock().unwrap_or_else(|e| e.into_inner()).push(key_down);
+        if self.fail.load(Ordering::SeqCst) {
+            self.pending_faults.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn take_fault(&mut self) -> Option<String> {
+        if self.pending_faults.swap(0, Ordering::SeqCst) > 0 {
+            Some("simulated serial write failure".to_string())
+        } else {
+            None
+        }
+    }
+}
+
+/// Reports what the OS granted for thread priority and timer resolution.
+fn scheduling_check() -> (bool, String) {
+    let priority = ThreadPriorityGuard::raise_time_critical();
+    let timer = TimerResolutionGuard::raise(1);
+    let detail = format!(
+        "{}; timer {} ms {}",
+        priority.outcome().describe(),
+        timer.resolution_ms(),
+        if timer.applied() { "applied" } else { "not applicable on this platform" }
+    );
+    // The guard restores the previous priority as it drops here.
+    (true, detail)
+}
+
+/// Waits for a fail-safe with `code` on the bus within `timeout`.
+fn wait_for_fail_safe(rx: &mut EventReceiver, code: u8, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match rx.try_recv() {
+            Ok(CoreEvent::FailSafe { code: got, .. }) if got == code => return true,
+            Ok(_) => {}
+            Err(_) => std::thread::sleep(Duration::from_millis(5)),
+        }
+    }
+    false
+}
+
+/// Drives F6 (keying fault) and F9 (lost mesh path) through the driver and checks the bus.
+fn failsafe_source_check() -> (bool, String) {
+    let bus = EventBus::new();
+    let mut rx = bus.subscribe();
+    let keys = Arc::new(Mutex::new(Vec::new()));
+    let fail = Arc::new(AtomicBool::new(false));
+    let pending_faults = Arc::new(AtomicU32::new(0));
+    let health = PathHealth::new();
+
+    let config = JitterBufferConfig {
+        direct_delay: Duration::from_millis(30),
+        derp_delay: Duration::from_millis(30),
+        adaptive_mode: false,
+    };
+    let mut replayer =
+        EdgeReplayer::new(1_000_000_000, config, EdgeJitterProfile::PathAdaptive, PathType::Direct, None);
+    replayer.begin_session(1);
+
+    let mut handle = spawn_driver(
+        replayer,
+        Box::new(FaultyKeys {
+            keys: Arc::clone(&keys),
+            fail: Arc::clone(&fail),
+            pending_faults: Arc::clone(&pending_faults),
+        }),
+        Arc::new(MonotonicClock),
+        Some(bus),
+        Some(health.clone()),
+    );
+
+    // F9 first: a lost mesh path must reach the bus. Do this before the F6 latch, since a
+    // latched SAFE correctly suppresses further monitoring.
+    health.report_lost();
+    let f9 = wait_for_fail_safe(&mut rx, 9, Duration::from_secs(2));
+    let consumed = !health.is_lost();
+
+    // Then key down, break the port, and key up: the failed write must reach the bus as F6.
+    let down = RwkPaddleFrame::try_new(1, &[EdgeEntry::key_down_at(1, 0, 0)]).unwrap().to_vec();
+    handle.submit(down);
+    let keyed_by = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < keyed_by && !keys.lock().unwrap_or_else(|e| e.into_inner()).contains(&true) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let keyed = keys.lock().unwrap_or_else(|e| e.into_inner()).contains(&true);
+    fail.store(true, Ordering::SeqCst);
+    let up = RwkPaddleFrame::try_new(1, &[EdgeEntry::key_up_at(2, 50, 0)]).unwrap().to_vec();
+    handle.submit(up);
+    let f6 = wait_for_fail_safe(&mut rx, 6, Duration::from_secs(2));
+
+    handle.stop();
+    let released = keys.lock().unwrap_or_else(|e| e.into_inner()).last() == Some(&false);
+
+    let passed = keyed && f6 && f9 && consumed && released;
+    (
+        passed,
+        format!("F6={f6}, F9={f9}, keyed={keyed}, released={released}"),
+    )
+}
+
 /// Runs the threaded replay driver briefly and returns (passed, detail).
 fn driver_check() -> (bool, String) {
     let log = Arc::new(Mutex::new(Vec::new()));
@@ -346,6 +470,7 @@ fn driver_check() -> (bool, String) {
         replayer,
         Box::new(SharedKeys(Arc::clone(&log))),
         Arc::new(MonotonicClock),
+        None,
         None,
     );
 

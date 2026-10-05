@@ -15,6 +15,7 @@ pub mod replay;
 pub mod serial;
 
 pub use bus::{CoreEvent, EventBus, EventReceiver};
+pub use network::PathHealth;
 pub use keying::{
     EdgeEvent, EdgeSchedule, EdgeScheduleBuilder, ElementKeyer, KeyerElement, KeyerElementTiming,
     PaddleElementEngine, PaddleState,
