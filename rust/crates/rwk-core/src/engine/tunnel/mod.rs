@@ -29,6 +29,11 @@
 //!
 //! See `rust/docs/NATIVE-NETWORK-SPIKE.md` for the overall plan.
 
+pub mod connect;
+pub mod wire;
+
+pub use connect::{connect, connect_paired, Connected, Path};
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -38,7 +43,9 @@ use boringtun::noise::{Tunn, TunnResult};
 use boringtun::x25519::{PublicKey, StaticSecret};
 use tokio::net::UdpSocket;
 
+use crate::engine::relay::RelayClient;
 use crate::engine::network::{PathHealth, MAX_CONSECUTIVE_SEND_ERRORS};
+use wire::Wire;
 use crate::Result;
 
 /// Buffer size for a WireGuard datagram on the wire.
@@ -256,16 +263,16 @@ enum Step {
     Rejected,
 }
 
-/// One end of a point-to-point WireGuard link, driven over a UDP socket.
+/// One end of a point-to-point WireGuard link, driven over a UDP socket or the relay.
 ///
-/// The type owns both the crypto state ([`Tunn`]) and the socket, so a caller never has to
-/// reason about which datagrams are protocol traffic and which carry payload: [`Self::poll`]
-/// and [`Self::recv_inner`] answer protocol traffic on your behalf and return only inner
-/// packets.
+/// The type owns both the crypto state ([`Tunn`]) and the underlying transport ([`Wire`]), so
+/// a caller never has to reason about which datagrams are protocol traffic and which carry
+/// payload: [`Self::poll`] and [`Self::recv_inner`] answer protocol traffic on your behalf and
+/// return only inner packets. The same crypto drives either transport — [`Self::bind`] for a
+/// direct UDP path, [`Self::bind_relay`] for the NAT-traversal fallback.
 pub struct WireGuardTunnel {
     tunn: Tunn,
-    socket: UdpSocket,
-    peer: SocketAddr,
+    wire: Wire,
     health: PathHealth,
     stats: Arc<TunnelStats>,
 }
@@ -283,7 +290,37 @@ impl WireGuardTunnel {
         peer: &TunnelPeer,
     ) -> Result<Self> {
         let socket = UdpSocket::bind(local_addr).await?;
+        Ok(Self::with_wire(
+            identity,
+            peer,
+            Wire::Direct { socket, peer: peer.endpoint },
+        ))
+    }
 
+    /// Builds a direct tunnel over an **already-bound** UDP socket.
+    ///
+    /// This is the hole-punch path: a caller binds the socket first, learns its local port,
+    /// reports that port to the relay so the peer knows where to punch, and only then — once
+    /// the peer's key and address are known — wraps the same socket in a tunnel. Binding the
+    /// socket up front is what lets the reported port and the socket's NAT mapping be the same.
+    #[must_use]
+    pub fn from_socket(socket: UdpSocket, identity: &StaticIdentity, peer: &TunnelPeer) -> Self {
+        Self::with_wire(identity, peer, Wire::Direct { socket, peer: peer.endpoint })
+    }
+
+    /// Prepares a tunnel that reaches its peer through an already-connected relay.
+    ///
+    /// Use this when a direct path cannot be opened: the `client` is a
+    /// [`RelayClient`](crate::engine::relay::RelayClient) already connected to the relay,
+    /// registered under this node's key and scoped to the peer's key. The crypto is identical
+    /// to [`Self::bind`] — only the datagrams' route differs.
+    #[must_use]
+    pub fn bind_relay(identity: &StaticIdentity, peer: &TunnelPeer, client: RelayClient) -> Self {
+        Self::with_wire(identity, peer, Wire::Relay(client))
+    }
+
+    /// Shared constructor: builds the boringtun state and wraps the chosen transport.
+    fn with_wire(identity: &StaticIdentity, peer: &TunnelPeer, wire: Wire) -> Self {
         // WireGuard has no meaningful notion of a "well-known" session index; it only has to
         // be distinct per peer in this process. Deriving it from our public key makes it
         // stable across restarts and different for two identities on one host.
@@ -299,22 +336,28 @@ impl WireGuardTunnel {
             None,
         );
 
-        Ok(Self {
-            tunn,
-            socket,
-            peer: peer.endpoint,
-            health: PathHealth::new(),
-            stats: Arc::new(TunnelStats::default()),
-        })
+        Self { tunn, wire, health: PathHealth::new(), stats: Arc::new(TunnelStats::default()) }
     }
 
-    /// The local address the tunnel's socket is bound to.
+    /// The local address the tunnel's socket is bound to, for a direct path.
+    ///
+    /// Returns a relayed tunnel's error-free [`None`] via the inner `Ok(None)`; most callers
+    /// use this only on the direct path where they expect `Some`.
     ///
     /// # Errors
     ///
-    /// Propagates `std::io::Error` if the address cannot be read.
+    /// Propagates `std::io::Error` if a direct socket's address cannot be read.
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.socket.local_addr()?)
+        // Preserve the original contract for the direct path (the only caller today); a
+        // relayed tunnel has no peer-facing socket, so report that as an I/O error rather
+        // than inventing an address.
+        self.wire.local_addr()?.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "a relayed tunnel has no local peer socket",
+            )
+            .into()
+        })
     }
 
     /// Shared counters.
@@ -329,15 +372,16 @@ impl WireGuardTunnel {
         self.health.clone()
     }
 
-    /// The current peer endpoint.
+    /// The current peer endpoint on a direct path, or [`None`] for a relayed tunnel.
     #[must_use]
-    pub fn peer(&self) -> SocketAddr {
-        self.peer
+    pub fn peer(&self) -> Option<SocketAddr> {
+        self.wire.peer()
     }
 
-    /// Moves the peer endpoint, as a roaming peer would when its address changes.
+    /// Moves the peer endpoint, as a roaming peer would when its address changes. A no-op for
+    /// a relayed tunnel, which addresses by key and has no endpoint to roam.
     pub fn set_peer(&mut self, endpoint: SocketAddr) {
-        self.peer = endpoint;
+        self.wire.set_peer(endpoint);
     }
 
     /// Whether a session is current, so transport packets can flow.
@@ -398,30 +442,148 @@ impl WireGuardTunnel {
     /// Returns [`crate::Error::Config`] on timeout or a failed initiation, and propagates
     /// `std::io::Error` from the socket.
     pub async fn ensure_session(&mut self) -> Result<()> {
+        self.ensure_session_within(HANDSHAKE_TIMEOUT).await
+    }
+
+    /// Like [`Self::ensure_session`] but with a caller-chosen overall timeout.
+    ///
+    /// The relay-fallback path uses a longer window than the direct path: both ends leave
+    /// their hole-punch phase at nearly the same moment, so the initiator must keep trying
+    /// long enough for the responder's relay registration to settle, rather than giving up on
+    /// the short direct-path budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Config`] on timeout or a failed initiation, and propagates
+    /// `std::io::Error` from the socket.
+    pub async fn ensure_session_within(&mut self, timeout: Duration) -> Result<()> {
         if self.is_established() {
             return Ok(());
         }
 
-        self.initiate().await?;
+        // Re-initiate on an interval rather than once: on the paired/relay path the two ends
+        // leave their hole-punch phase at nearly the same instant, so the responder's relay
+        // registration can land a beat after the initiator's first handshake. A single
+        // initiation would be lost in that window and the initiator would wait out the whole
+        // timeout for a peer that is in fact there. Re-firing every `REINITIATE_EVERY` makes
+        // the handshake robust to the peer coming up slightly late, which is exactly the
+        // schedule WireGuard itself uses.
+        const REINITIATE_EVERY: Duration = Duration::from_millis(1000);
 
-        let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        let deadline = Instant::now() + timeout;
+        let mut next_initiation = Instant::now();
         while !self.is_established() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+            let now = Instant::now();
+            if now >= deadline {
                 return Err(crate::Error::Config(
                     "WireGuard handshake timed out; the peer did not answer".into(),
                 ));
             }
-            // The peer's response is protocol traffic, so `poll` may return no inner packet:
-            // the loop condition, not the packet, is what ends the handshake.
+            if now >= next_initiation {
+                self.initiate().await?;
+                next_initiation = now + REINITIATE_EVERY;
+            }
+
+            // Wait for protocol traffic, but never past the next scheduled re-initiation or
+            // the overall deadline. The peer's response is protocol traffic, so `poll` may
+            // return no inner packet: the loop condition, not the packet, ends the handshake.
+            let wake = next_initiation.min(deadline);
+            let remaining = wake.saturating_duration_since(now);
+            match tokio::time::timeout(remaining, self.poll()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e),
+                // A timeout here just means "no traffic yet"; loop back to re-initiate.
+                Err(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Waits for the peer to bring the link up, polling without ever initiating.
+    ///
+    /// This is the responder's counterpart to [`Self::ensure_session`]: the Station should not
+    /// initiate — it answers the Client's handshake. Polling alone drives that, since
+    /// [`Self::poll`] replies to the initiation and the confirming keepalive on its own. Waits
+    /// up to `timeout` for the session to establish.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Config`] on timeout, and propagates a transport error from the
+    /// socket or relay.
+    pub async fn await_session(&mut self, timeout: Duration) -> Result<()> {
+        if self.is_established() {
+            return Ok(());
+        }
+        let deadline = Instant::now() + timeout;
+        while !self.is_established() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(crate::Error::Config(
+                    "timed out waiting for the peer to open the WireGuard link".into(),
+                ));
+            }
             match tokio::time::timeout(remaining, self.poll()).await {
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => return Err(e),
                 Err(_) => {
                     return Err(crate::Error::Config(
-                        "WireGuard handshake timed out; the peer did not answer".into(),
+                        "timed out waiting for the peer to open the WireGuard link".into(),
                     ))
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Opens the link by NAT hole-punching: both ends initiate repeatedly while polling.
+    ///
+    /// Unlike [`Self::ensure_session`] (one initiator) and [`Self::await_session`] (one
+    /// responder), a punched direct path needs **both** ends to send outbound handshake
+    /// datagrams so each NAT opens a mapping for the other's address. So this re-initiates on
+    /// a short interval — each initiation is an outbound packet that punches our NAT — while
+    /// polling for the peer's reply, until the session establishes or `timeout` elapses. A
+    /// lost first packet (common mid-punch, before both mappings exist) is simply covered by
+    /// the next re-initiation.
+    ///
+    /// A send error during punching is *not* fatal: before the peer's NAT has a mapping, our
+    /// datagrams may bounce, which is expected. Only the timeout ends the attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Config`] if the link does not come up within `timeout`.
+    pub async fn punch_session(&mut self, timeout: Duration) -> Result<()> {
+        /// How often to re-fire an initiation while punching.
+        const REINITIATE_EVERY: Duration = Duration::from_millis(250);
+
+        if self.is_established() {
+            return Ok(());
+        }
+        let deadline = Instant::now() + timeout;
+        let mut next_initiate = Instant::now(); // fire immediately on entry
+
+        while !self.is_established() {
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(crate::Error::Config(
+                    "hole-punch handshake timed out; no direct path formed".into(),
+                ));
+            }
+            // Re-initiate on the interval; a send failure mid-punch is expected, not fatal.
+            if now >= next_initiate {
+                let _ = self.initiate().await;
+                next_initiate = now + REINITIATE_EVERY;
+            }
+            // Poll for the peer's handshake, but never longer than the next re-initiate tick
+            // (or the deadline), so re-initiations keep the NAT mapping fresh.
+            let wake = next_initiate.min(deadline);
+            let slice = wake.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(slice, self.poll()).await {
+                Ok(Ok(_)) => {}
+                // A transport error (e.g. ICMP port-unreachable before the peer is ready) is
+                // part of punching; keep trying until the deadline.
+                Ok(Err(_)) => {}
+                // The slice elapsed: loop to re-initiate.
+                Err(_) => {}
             }
         }
         Ok(())
@@ -485,16 +647,17 @@ impl WireGuardTunnel {
     ///
     /// Propagates `std::io::Error` when the socket read or a protocol reply fails.
     pub async fn poll(&mut self) -> Result<Option<TunnelPacket>> {
-        let mut buf = vec![0u8; MAX_WIREGUARD_DATAGRAM];
-        let (len, src) = match self.socket.recv_from(&mut buf).await {
+        let (datagram, src) = match self.wire.recv().await {
             Ok(received) => received,
             Err(e) => {
                 self.stats.receive_errors.fetch_add(1, Ordering::Relaxed);
-                return Err(e.into());
+                return Err(e);
             }
         };
         self.stats.received_datagrams.fetch_add(1, Ordering::Relaxed);
-        self.consume(Some(src.ip()), &buf[..len]).await
+        // `src` is the sender's socket address on the direct path and `None` over the relay;
+        // boringtun uses it only to learn a roaming endpoint, which the relay does not have.
+        self.consume(src, &datagram).await
     }
 
     /// Blocks until an inner packet arrives, answering protocol traffic as it goes.
@@ -585,7 +748,7 @@ impl WireGuardTunnel {
 
     /// Puts one datagram on the wire, maintaining the sustained-failure signal F9 reads.
     async fn send_on_wire(&mut self, datagram: &[u8]) -> Result<()> {
-        match self.socket.send_to(datagram, self.peer).await {
+        match self.wire.send(datagram).await {
             Ok(_) => {
                 self.stats.consecutive_send_errors.store(0, Ordering::Relaxed);
                 Ok(())
@@ -599,7 +762,7 @@ impl WireGuardTunnel {
                 if consecutive >= MAX_CONSECUTIVE_SEND_ERRORS {
                     self.health.report_lost();
                 }
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -822,5 +985,76 @@ mod tests {
         assert!(health.take_lost(), "the flag is consumable");
         assert!(!health.is_lost(), "taking it clears it");
         assert_eq!(a.stats().consecutive_send_errors(), MAX_CONSECUTIVE_SEND_ERRORS);
+    }
+
+    /// The NAT-traversal fallback end to end: a full WireGuard handshake and an encrypted
+    /// inner packet carried entirely **through the relay**, not over direct UDP. This is what
+    /// makes the relay a true drop-in transport — the identical crypto that the direct tests
+    /// exercise runs here with every datagram routed by public key through a `RelayServer`.
+    #[tokio::test]
+    async fn a_tunnel_handshakes_and_carries_a_packet_over_the_relay() {
+        use crate::engine::relay::{RelayClient, RelayServer};
+
+        let a_id = identity(31);
+        let b_id = identity(32);
+
+        // Stand up the relay on an ephemeral port.
+        let server = RelayServer::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let relay_addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+
+        // Each end connects to the relay, registering its own key and scoped to the peer's.
+        let a_client =
+            RelayClient::connect(relay_addr, a_id.public_bytes(), b_id.public_bytes()).await.unwrap();
+        let b_client =
+            RelayClient::connect(relay_addr, b_id.public_bytes(), a_id.public_bytes()).await.unwrap();
+
+        // Let both registrations reach the relay so the routes exist before the handshake.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut a = WireGuardTunnel::bind_relay(
+            &a_id,
+            &peer(b_id.public_bytes(), "127.0.0.1:9".parse().unwrap()),
+            a_client,
+        );
+        let mut b = WireGuardTunnel::bind_relay(
+            &b_id,
+            &peer(a_id.public_bytes(), "127.0.0.1:9".parse().unwrap()),
+            b_client,
+        );
+
+        // A relayed tunnel has no peer-facing local socket.
+        assert!(a.local_addr().is_err(), "a relayed tunnel exposes no local peer socket");
+        assert_eq!(a.peer(), None);
+
+        // The identical handshake exchange as the direct test, but every datagram is now
+        // relayed. `timeout` guards against a lost route hanging the test.
+        let exchange = async {
+            a.initiate().await?;
+            b.poll().await?;
+            a.poll().await?;
+            b.poll().await?;
+            Ok::<(), crate::Error>(())
+        };
+        tokio::time::timeout(Duration::from_secs(5), exchange)
+            .await
+            .expect("relayed handshake timed out")
+            .expect("relayed handshake failed");
+        assert!(a.is_established() && b.is_established(), "the link must come up over the relay");
+
+        // And an inner packet survives the relayed, encrypted path.
+        let payload = b"RWK-PADDLE";
+        let inner = ipv4_packet([10, 0, 0, 1], [10, 0, 0, 2], payload);
+        a.send_inner(&inner).await.unwrap();
+
+        let received = tokio::time::timeout(Duration::from_secs(5), b.poll())
+            .await
+            .expect("relayed inner packet timed out")
+            .unwrap()
+            .expect("an inner packet must arrive over the relay");
+        assert_eq!(received.bytes(), inner.as_slice(), "the inner packet must round-trip");
+        assert_eq!(b.stats().decapsulation_errors(), 0, "no datagram failed to decrypt");
     }
 }

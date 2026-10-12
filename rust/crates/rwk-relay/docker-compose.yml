@@ -1,0 +1,40 @@
+# RWK relay server — one container, run on a public host.
+#
+# TLS: terminated at the edge by Cloudflare (orange-cloud the DNS record for the dashboard
+# hostname → this host:8080). The container speaks plain HTTP internally; do not expose 8080
+# to the raw internet without Cloudflare (or another TLS proxy) in front, since the login
+# would otherwise travel in the clear.
+#
+# Usage:
+#   cd rust
+#   RWK_ADMIN_PASSWORD=... RWK_JWT_SECRET=... docker compose -f crates/rwk-relay/docker-compose.yml up -d --build
+
+services:
+  rwk-relay:
+    build:
+      context: ../..            # the rust/ workspace root
+      dockerfile: crates/rwk-relay/Dockerfile
+    image: rwk-relay:latest
+    container_name: rwk-relay
+    restart: unless-stopped
+    ports:
+      - "9000:9000"             # relay/rendezvous protocol — must be reachable from the internet
+      - "8080:8080"             # dashboard/API — front with Cloudflare for TLS
+    environment:
+      # --- required: no safe defaults ---
+      RWK_ADMIN_PASSWORD: "${RWK_ADMIN_PASSWORD:?set RWK_ADMIN_PASSWORD}"
+      RWK_JWT_SECRET: "${RWK_JWT_SECRET:?set RWK_JWT_SECRET}"
+      # --- optional: sensible defaults ---
+      RWK_ADMIN_USER: "${RWK_ADMIN_USER:-admin}"
+      RWK_RELAY_ADDR: "0.0.0.0:9000"
+      RWK_HTTP_ADDR: "0.0.0.0:8080"
+      RWK_MAX_REGISTRATIONS: "${RWK_MAX_REGISTRATIONS:-2000}"
+      RWK_PER_CONN_BYTES_PER_SEC: "${RWK_PER_CONN_BYTES_PER_SEC:-500000}"
+      RWK_SESSION_SECS: "${RWK_SESSION_SECS:-86400}"
+    healthcheck:
+      # Hits the unauthenticated liveness endpoint. `wget` is installed in the runtime image.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

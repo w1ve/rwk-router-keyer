@@ -1,0 +1,10 @@
+# Keep the Docker build context small and reproducible.
+# The Rust and web builds happen inside the image, so ship only sources.
+target/
+**/target/
+crates/rwk-relay/web/node_modules/
+crates/rwk-relay/web/dist/
+# Windows-only dev toolchain shim; irrelevant in the Linux build image.
+build-env.ps1
+**/*.log
+.git/

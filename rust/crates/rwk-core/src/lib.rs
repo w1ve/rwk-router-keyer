@@ -15,6 +15,7 @@
 //!   [`engine::bus`] (a `tokio::sync::broadcast` event bus feeding the UI).
 //! * [`timing`] — the sub-millisecond sleep/spin waiter and the injectable clock.
 //! * [`platform`] — the single OS-FFI seam: thread priority and timer resolution.
+//! * [`config`] — the persisted keys and addresses that bring a tunnel up.
 //!
 //! ## Design rules
 //!
@@ -33,6 +34,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod config;
 pub mod engine;
 #[allow(unsafe_code)]
 pub mod platform;

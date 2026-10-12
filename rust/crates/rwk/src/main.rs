@@ -19,8 +19,13 @@ use std::time::{Duration, Instant};
 use rwk_core::engine::audio::{KeyedSineGenerator, SidetoneEngine};
 use rwk_core::engine::bus::{CoreEvent, EventBus, EventReceiver};
 use rwk_core::engine::keying::{EdgeScheduleBuilder, ElementKeyer};
-use rwk_core::engine::network::{PathHealth, TcpForwarder, UdpForwarder};
+use rwk_core::config::{Config, Role};
+use rwk_core::engine::netstack::NetStack;
+use rwk_core::engine::netstack_driver::NetDriver;
+use rwk_core::engine::network::{EdgeTransport, PathHealth, TcpForwarder, UdpForwarder};
+use rwk_core::engine::relay::{RelayClient, RelayServer};
 use rwk_core::engine::tunnel::{StaticIdentity, TunnelPeer, WireGuardTunnel};
+use rwk_core::engine::tunnel_forward::TunnelTcpForward;
 use rwk_core::engine::serial::{enumerate_ports, KeyingOutputConfig, SerialKeyingOutput, SerialPortType};
 use rwk_core::engine::replay::{
     spawn_driver, EdgeJitterProfile, EdgeReplayer, JitterBufferConfig, KeyingOutput,
@@ -42,6 +47,11 @@ fn main() -> ExitCode {
         "devices" => cmd_devices(),
         "key" => cmd_key(&args[1..]),
         "selftest" => cmd_selftest(),
+        "keygen" => cmd_keygen(&args[1..]),
+        "pubkey" => cmd_pubkey(&args[1..]),
+        "relay" => cmd_relay(&args[1..]),
+        "connect" => cmd_connect(&args[1..]),
+        "keytest" => cmd_keytest(&args[1..]),
         "help" | "--help" | "-h" => {
             print_usage();
             Ok(())
@@ -72,6 +82,11 @@ fn print_usage() {
          devices                        List audio output devices\n  \
          key <port> <text> [options]    Key text on a serial control line\n  \
          selftest                       Run timing/protocol/audio checks\n  \
+         keygen <config> --role <r>     Create a config with a fresh identity\n  \
+         pubkey <config>                Print a config's public key\n  \
+         relay <addr>                   Run a relay server (NAT-traversal fallback)\n  \
+         connect <config>               Bring the tunnel up from a config (direct or relay)\n  \
+         keytest <config> [text]        Key CW over the tunnel and measure timing end to end\n  \
          help                           Show this help\n\n\
          KEY OPTIONS:\n  \
          --wpm <n>        Keying speed, 5-60 (default 25)\n  \
@@ -79,7 +94,20 @@ fn print_usage() {
          --line <dtr|rts> Keying line (default dtr)\n  \
          --tone <hz>      Sidetone frequency, 300-1500 (default 700)\n  \
          --volume <f>     Sidetone volume, 0.0-1.0 (default 0.5)\n  \
-         --no-sidetone    Key without local audio\n"
+         --no-sidetone    Key without local audio\n\n\
+         KEYGEN OPTIONS:\n  \
+         --role <client|station>  Which side this node is (required)\n  \
+         --relay <host:port>      Relay/rendezvous server (enables pairing + fallback)\n  \
+         --code <code>            Shared pairing code for zero-setup discovery\n\n\
+         CONNECT:\n  \
+         Reads <config> and brings the link up. With a relay + pairing code it finds the\n  \
+         peer by rendezvous (no key exchange); otherwise it uses the peer key/endpoint.\n  \
+         Prints the path that won (Direct or Relay) and holds the link until interrupted.\n\n\
+         KEYTEST:\n  \
+         Brings the link up like `connect`, then carries CW edges over the tunnel.\n  \
+         On a station config it replays received edges and reports the reconstructed\n  \
+         inter-edge timing error. On a client config it keys <text> (default \"PARIS\")\n  \
+         once the key is pressed; run the station end first, then the client.\n"
     );
 }
 
@@ -229,6 +257,304 @@ fn cmd_key(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// `rwk keygen <config> --role <client|station>` — create a config with a fresh identity.
+///
+/// Writes a new `config.json` with a generated WireGuard identity and prints the node's
+/// public key, which the operator hands to the other end (the same out-of-band exchange the
+/// Station address already uses). Refuses to overwrite an existing file, so a second run
+/// cannot silently discard a key the peer already trusts.
+fn cmd_keygen(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = args.first().ok_or(
+        "usage: rwk keygen <config> --role <client|station> [--relay <addr>] [--code <code>]",
+    )?;
+    let mut role: Option<Role> = None;
+    let mut relay: Option<String> = None;
+    let mut code: Option<String> = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--role" => {
+                let value = args.get(i + 1).ok_or("missing value for --role")?;
+                role = Some(match value.as_str() {
+                    "client" => Role::Client,
+                    "station" => Role::Station,
+                    other => return Err(format!("unknown role '{other}'").into()),
+                });
+                i += 2;
+            }
+            "--relay" => {
+                relay = Some(args.get(i + 1).ok_or("missing value for --relay")?.clone());
+                i += 2;
+            }
+            "--code" => {
+                code = Some(args.get(i + 1).ok_or("missing value for --code")?.clone());
+                i += 2;
+            }
+            other => return Err(format!("unknown option '{other}'").into()),
+        }
+    }
+    let role = role.ok_or("--role is required (client or station)")?;
+
+    if std::path::Path::new(path).exists() {
+        return Err(format!("{path} already exists; refusing to overwrite an existing key").into());
+    }
+
+    let mut config = Config::new(role)?;
+    if let Some(addr) = relay {
+        let address = addr
+            .parse()
+            .map_err(|e| format!("invalid --relay address '{addr}': {e}"))?;
+        config.relay = Some(rwk_core::config::RelayConfig { address });
+    }
+    if let Some(c) = code.clone() {
+        config.pairing_code = Some(c);
+    }
+    let public = config.identity.public_key_base64()?;
+    config.save(path)?;
+
+    println!("wrote {path} ({role:?})");
+    println!("this node's public key: {public}");
+    if config.pairing_code.is_some() && config.relay.is_some() {
+        // Zero-setup: both ends just need the same relay + code; no key exchange.
+        println!("pairing-ready: give the OTHER end the same --relay and --code, then run");
+        println!("  rwk connect {path}");
+        println!("on each. No public-key exchange needed.");
+    } else {
+        println!("give that key to the peer, and set this config's peer.public_key to the peer's.");
+        if config.pairing_code.is_some() {
+            println!("note: a --code was set but no --relay; pairing needs a relay to work.");
+        }
+    }
+    Ok(())
+}
+
+/// `rwk pubkey <config>` — print a config's own public key, for sharing with the peer.
+fn cmd_pubkey(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = args.first().ok_or("usage: rwk pubkey <config>")?;
+    let config = Config::load(path)?;
+    println!("{}", config.identity.public_key_base64()?);
+    Ok(())
+}
+
+/// `rwk relay <addr>` — run a relay server bound to `addr`.
+///
+/// The relay forwards opaque, already-encrypted WireGuard datagrams between nodes by public
+/// key; it holds no key that can read them. Run it on a host both ends can reach.
+fn cmd_relay(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let addr: std::net::SocketAddr = args
+        .first()
+        .ok_or("usage: rwk relay <addr>  (e.g. 0.0.0.0:9999)")?
+        .parse()
+        .map_err(|e| format!("invalid relay address: {e}"))?;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    runtime.block_on(async move {
+        let server = rwk_core::engine::relay::RelayServer::bind(addr).await?;
+        println!("relay listening on {}", server.local_addr()?);
+        println!("press Ctrl-C to stop");
+        server.run().await
+    })?;
+    Ok(())
+}
+
+/// `rwk connect <config>` — bring the tunnel up from a config, choosing direct or relay.
+///
+/// Loads the config, tries the peer's direct endpoint and falls back to the relay, prints the
+/// path that won, then keeps the link alive (answering handshake and keepalive traffic) until
+/// interrupted. This is the smallest end-to-end exercise of increments 1–4 together.
+fn cmd_connect(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = args.first().ok_or("usage: rwk connect <config>")?;
+    let config = Config::load(path)?;
+    println!("loaded {path} ({:?})", config.role);
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    runtime.block_on(async move {
+        let connected = rwk_core::engine::tunnel::connect(&config).await?;
+        println!("link established over {:?} path", connected.path);
+
+        // Hand the live tunnel to a session: it drives the netstack and starts every enabled
+        // forward rule, so the link actually carries traffic instead of just staying up.
+        let mut session = rwk_core::engine::session::Session::start(connected, &config)?;
+        let enabled = config.forwards.iter().filter(|r| r.enabled).count();
+        println!("session running: {} of {} forward rule(s) started", session.started(), enabled);
+        match config.role {
+            Role::Client => println!("forwards are listening on 127.0.0.1 for each rule"),
+            Role::Station => println!("forwards are dialing the configured LAN targets"),
+        }
+        println!("press Ctrl-C to stop");
+
+        tokio::signal::ctrl_c().await?;
+        println!("stopping");
+        session.shutdown().await;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })?;
+    Ok(())
+}
+
+/// The inner UDP port both ends open for the keying edge over the tunnel.
+const KEYTEST_EDGE_PORT: u16 = 5555;
+
+/// Carries CW keying over the live tunnel and measures end-to-end timing.
+///
+/// This is the real-hardware counterpart to the `keying_over_tunnel` integration test: it
+/// brings a link up exactly as `connect` does (direct or via the relay named in the
+/// config), then opens a UDP socket on the shared netstack and runs the keying edge over
+/// it. A station config replays the received edges through the real replay driver and
+/// reports the reconstructed inter-edge error; a client config keys the given text (or
+/// "PARIS" by default) and sends the frames.
+///
+/// To test against the live relay, run the station end first (`rwk keytest station.json`),
+/// then the client (`rwk keytest client.json "CQ TEST"`). Both configs must name the same
+/// relay and pairing code, or carry each other's peer keys.
+fn cmd_keytest(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let path = args.first().ok_or("usage: rwk keytest <config> [text]")?;
+    let text = args.get(1).cloned().unwrap_or_else(|| "PARIS".to_string());
+    let config = Config::load(path)?;
+    println!("loaded {path} ({:?})", config.role);
+
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    runtime.block_on(async move {
+        let connected = rwk_core::engine::tunnel::connect(&config).await?;
+        println!("link established over {:?} path", connected.path);
+
+        let session = rwk_core::engine::session::Session::start(connected, &config)?;
+        let handle = session.handle();
+
+        // Both ends open the same inner UDP port; the edge peer is the other role's inner
+        // address, matching the session's point-to-point addressing.
+        let conn = handle.open_udp(KEYTEST_EDGE_PORT).await?;
+        let transport = EdgeTransport::over_tunnel(conn);
+        let peer_inner = std::net::IpAddr::V4(config.role.peer_inner_address());
+        transport
+            .set_peer(std::net::SocketAddr::new(peer_inner, KEYTEST_EDGE_PORT))
+            .await;
+
+        match config.role {
+            Role::Station => keytest_station(transport).await?,
+            Role::Client => keytest_client(transport, &text).await?,
+        }
+
+        let mut session = session;
+        session.shutdown().await;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })?;
+    Ok(())
+}
+
+/// Station side of `keytest`: replays received edges and reports timing fidelity.
+async fn keytest_station(
+    transport: EdgeTransport,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use rwk_core::engine::edge_station::{pump_edges, tunnel_replayer};
+
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock);
+    let transitions: Arc<Mutex<Vec<(bool, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let mut replayer = tunnel_replayer(clock.as_ref(), EdgeJitterProfile::PathAdaptive, None);
+    replayer.begin_session(1);
+    let output = KeytestRecorder { clock: Arc::clone(&clock), transitions: Arc::clone(&transitions), last: None };
+    let driver = spawn_driver(replayer, Box::new(output), Arc::clone(&clock), None, None);
+
+    let transport = Arc::new(transport);
+    let pump = tokio::spawn(pump_edges(Arc::clone(&transport), driver));
+
+    println!("station ready: waiting for keyed edges over the tunnel (Ctrl-C to stop)");
+
+    // Report a running summary of the reconstructed timing as edges arrive.
+    let mut reported = 0usize;
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                let times: Vec<u64> = transitions.lock().unwrap().iter().map(|(_, t)| *t).collect();
+                if times.len() > reported {
+                    reported = times.len();
+                    println!("  received {reported} edge(s)");
+                }
+            }
+        }
+    }
+
+    let times: Vec<u64> = transitions.lock().unwrap().iter().map(|(_, t)| *t).collect();
+    println!("station stopped after {} edge(s)", times.len());
+    if times.len() >= 2 {
+        // Report the replayed inter-edge spacing. For a steady keyer these are the dit/dah
+        // and gap durations the Station reconstructed from the embedded timestamps; a clean
+        // run shows them tightly clustered on the keyer's unit, which is the end-to-end proof
+        // that the tunnel did not smear the timing.
+        let freq = clock.frequency() as f64;
+        let intervals: Vec<f64> = times.windows(2).map(|w| (w[1] - w[0]) as f64 / freq * 1000.0).collect();
+        let min = intervals.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = intervals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        println!(
+            "reconstructed inter-edge spacing: {} interval(s), {:.2}ms min, {:.2}ms max",
+            intervals.len(),
+            min,
+            max,
+        );
+    }
+    pump.abort();
+    Ok(())
+}
+
+/// Client side of `keytest`: keys `text` and sends redundant edge frames over the tunnel.
+async fn keytest_client(
+    transport: EdgeTransport,
+    text: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use rwk_core::engine::edge_sender::EdgeSender;
+    use rwk_core::engine::keying::{EdgeEvent, EdgeScheduleBuilder};
+    use rwk_core::primitives::EdgeSource;
+
+    let clock = MonotonicClock;
+    let session_start = clock.now();
+    let schedule = EdgeScheduleBuilder::build(text, 20, 50, session_start, clock.frequency())?;
+    let mut sender = EdgeSender::new(1, clock.frequency(), session_start);
+
+    println!("client keying \"{text}\" at 20 WPM ({} edges) over the tunnel", schedule.edges.len());
+
+    for edge in &schedule.edges {
+        // Pace to the scheduled tick, as a keyer thread would.
+        while clock.now() < edge.timestamp_ticks {
+            std::hint::spin_loop();
+        }
+        let event = EdgeEvent {
+            timestamp_ticks: edge.timestamp_ticks,
+            key_down: edge.key_down,
+            source: EdgeSource::Host,
+        };
+        transport.send_frame(&sender.frame_for(event)).await?;
+    }
+
+    let stats = transport.stats();
+    println!(
+        "client done: {} frame(s) sent, {} byte(s), {} drop(s)",
+        stats.tx_datagrams(),
+        stats.tx_bytes(),
+        stats.drop_no_peer(),
+    );
+    // Give the last frames time to cross before the session tears down.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    Ok(())
+}
+
+/// A keying output that timestamps each transition, for the station side of `keytest`.
+struct KeytestRecorder {
+    clock: Arc<dyn Clock>,
+    transitions: Arc<Mutex<Vec<(bool, u64)>>>,
+    last: Option<bool>,
+}
+
+impl KeyingOutput for KeytestRecorder {
+    fn set_key(&mut self, down: bool) {
+        if self.last == Some(down) {
+            return;
+        }
+        self.last = Some(down);
+        self.transitions.lock().unwrap().push((down, self.clock.now()));
+    }
+}
+
 fn cmd_selftest() -> Result<(), Box<dyn std::error::Error>> {
     let mut failures = 0usize;
     let mut check = |name: &str, ok: bool, detail: String| {
@@ -336,6 +662,30 @@ fn cmd_selftest() -> Result<(), Box<dyn std::error::Error>> {
     // 10. Tunnel: a real WireGuard handshake and an encrypted inner packet, no Tailscale.
     let tunnel = tunnel_check();
     check("tunnel", tunnel.0, tunnel.1);
+
+    // 11. Netstack: smoltcp turns the tunnel's inner packets into UDP/TCP sockets.
+    let netstack = netstack_check();
+    check("netstack", netstack.0, netstack.1);
+
+    // 12. Tunnel forward: a host-OS TCP connection is bridged over the tunnel to the far end.
+    let bridge = tunnel_forward_check();
+    check("forward-bridge", bridge.0, bridge.1);
+
+    // 13. Relay: a full WireGuard handshake + inner packet carried through the relay, the
+    //     NAT-traversal fallback — no direct UDP path used.
+    let relay = relay_check();
+    check("relay", relay.0, relay.1);
+
+    // 14. Config: a config round-trips through JSON (keys base64, secrets redacted) and the
+    //     auto path-selector brings a link up over the relay when direct is unavailable.
+    let config = config_check();
+    check("config", config.0, config.1);
+
+    // The full session path (a config forward rule carrying a connection end to end over the
+    // tunnel) is deliberately NOT a selftest check: it needs two drivers, a relay and a
+    // forward all live at once, which is too timing-dependent for a fast, deterministic smoke
+    // test. It is covered instead by the reliable `engine::session` module tests and the
+    // documented two-process `rwk connect` verification.
 
     if failures == 0 {
         println!("all checks passed");
@@ -556,6 +906,376 @@ fn tunnel_check() -> (bool, String) {
             ),
         )
     })
+}
+
+/// Drives two userspace stacks across the tunnel device seam: a UDP datagram and a TCP
+/// stream each cross from one stack's socket to the other's, proving smoltcp turns the
+/// tunnel's inner IP packets into working sockets. Synchronous and allocation-light, so it
+/// needs no tokio runtime — the device queues are stepped by hand.
+fn netstack_check() -> (bool, String) {
+    use rwk_core::engine::netstack::MTU;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let a_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+    let b_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+
+    // One "network tick" between two directly-connected stacks: move each side's framed
+    // packets into the other and poll, both ways.
+    fn exchange(a: &mut NetStack, b: &mut NetStack) {
+        for _ in 0..8 {
+            a.poll();
+            b.poll();
+            while let Some(packet) = a.drain_outbound() {
+                b.inject(packet);
+            }
+            while let Some(packet) = b.drain_outbound() {
+                a.inject(packet);
+            }
+            a.poll();
+            b.poll();
+        }
+    }
+
+    let mut a = NetStack::new(a_ip);
+    let mut b = NetStack::new(b_ip);
+
+    // UDP: A -> B, as a forwarded VITA-49 datagram would travel.
+    let (ua, ub) = match (a.open_udp(5000), b.open_udp(4991)) {
+        (Ok(ua), Ok(ub)) => (ua, ub),
+        _ => return (false, "UDP socket bind failed".into()),
+    };
+    if a.udp_send(ua, (b_ip, 4991), b"vita").is_err() {
+        return (false, "UDP send failed".into());
+    }
+    exchange(&mut a, &mut b);
+    let udp_ok = matches!(b.udp_recv(ub), Some((payload, _)) if payload == b"vita");
+
+    // TCP: client connects, both directions stream.
+    let listener = b.open_tcp();
+    let dialer = a.open_tcp();
+    let tcp_setup =
+        b.tcp_listen(listener, 7300).is_ok() && a.tcp_connect(dialer, (b_ip, 7300), 50000).is_ok();
+    exchange(&mut a, &mut b);
+    let connected = a.tcp(dialer).is_active() && b.tcp(listener).is_active();
+
+    let _ = a.tcp_send(dialer, b"CQ");
+    exchange(&mut a, &mut b);
+    let tcp_fwd = a.tcp_send(dialer, b"").is_ok()
+        && b.tcp_recv(listener, 8).map(|d| d == b"CQ").unwrap_or(false);
+    let _ = b.tcp_send(listener, b"QSL");
+    exchange(&mut a, &mut b);
+    let tcp_rev = a.tcp_recv(dialer, 8).map(|d| d == b"QSL").unwrap_or(false);
+
+    let passed = udp_ok && tcp_setup && connected && tcp_fwd && tcp_rev;
+    (
+        passed,
+        format!("MTU {MTU}, UDP crossed={udp_ok}, TCP connected={connected} fwd={tcp_fwd} rev={tcp_rev}"),
+    )
+}
+
+/// Bridges a host-OS TCP connection over a real WireGuard tunnel to a socket on the far
+/// stack and back — the full shape of a port-forward rule in the native engine. A local
+/// `TcpStream` connects to a `TunnelTcpForward`, whose far leg is a tunnel socket dialed on
+/// the Station's inner address; the Station echoes, and the bytes must return to the client.
+fn tunnel_forward_check() -> (bool, String) {
+    use std::net::{IpAddr, Ipv4Addr};
+    use tokio::net::TcpStream;
+    use tokio::sync::watch;
+
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => return (false, format!("tokio runtime: {e}")),
+    };
+
+    runtime.block_on(async {
+        fn identity(seed: u8) -> StaticIdentity {
+            let mut bytes = [0u8; 32];
+            for (i, b) in bytes.iter_mut().enumerate() {
+                *b = seed.wrapping_mul(31).wrapping_add(i as u8);
+            }
+            StaticIdentity::from_private_bytes(bytes)
+        }
+        let peer = |public_key: [u8; 32], endpoint: std::net::SocketAddr| TunnelPeer {
+            public_key,
+            preshared_key: None,
+            endpoint,
+            persistent_keepalive: None,
+        };
+        let client_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let station_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+
+        let c_id = identity(61);
+        let s_id = identity(62);
+        let mut c_tun = match WireGuardTunnel::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            &c_id,
+            &peer(s_id.public_bytes(), "127.0.0.1:9".parse().unwrap()),
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(e) => return (false, format!("client tunnel bind: {e}")),
+        };
+        let mut s_tun = match WireGuardTunnel::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            &s_id,
+            &peer(c_id.public_bytes(), c_tun.local_addr().unwrap()),
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(e) => return (false, format!("station tunnel bind: {e}")),
+        };
+        c_tun.set_peer(s_tun.local_addr().unwrap());
+        let handshake = async {
+            c_tun.initiate().await?;
+            s_tun.poll().await?;
+            c_tun.poll().await?;
+            s_tun.poll().await?;
+            Ok::<(), rwk_core::Error>(())
+        }
+        .await;
+        if let Err(e) = handshake {
+            return (false, format!("handshake: {e}"));
+        }
+
+        let client = NetDriver::spawn(c_tun, NetStack::new(client_ip));
+        let station = NetDriver::spawn(s_tun, NetStack::new(station_ip));
+
+        // Station inner echo listener standing in for the LAN radio.
+        let mut radio = match station.listen_tcp(8000).await {
+            Ok(c) => c,
+            Err(e) => return (false, format!("station listen: {e}")),
+        };
+        tokio::spawn(async move {
+            if let Some(bytes) = radio.recv().await {
+                let _ = radio.send(bytes).await;
+            }
+        });
+
+        // Client host-OS forward bridged to the Station's inner 10.0.0.2:8000.
+        let forward = match TunnelTcpForward::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            client,
+            (station_ip, 8000),
+        )
+        .await
+        {
+            Ok(f) => f,
+            Err(e) => return (false, format!("forward bind: {e}")),
+        };
+        let local = forward.local_addr().unwrap();
+        let (tx, rx) = watch::channel(false);
+        let task = tokio::spawn(forward.run(rx));
+
+        let echoed = async {
+            let mut app = TcpStream::connect(local).await.ok()?;
+            app.write_all(b"cq").await.ok()?;
+            let mut buf = [0u8; 8];
+            let n = app.read(&mut buf).await.ok()?;
+            Some(buf[..n].to_vec())
+        };
+        let result = tokio::time::timeout(Duration::from_secs(8), echoed).await;
+        let _ = tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+
+        let ok = matches!(&result, Ok(Some(bytes)) if bytes == b"cq");
+        (ok, format!("host TCP echoed over tunnel={ok}"))
+    })
+}
+
+/// Brings up the relay fallback end to end: a `RelayServer`, two relay clients, and two
+/// WireGuard tunnels bound to those clients. A full handshake and an encrypted inner packet
+/// are carried entirely through the relay by public key — no direct UDP path — proving the
+/// NAT-traversal fallback works when a direct path cannot be opened.
+fn relay_check() -> (bool, String) {
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => return (false, format!("tokio runtime: {e}")),
+    };
+
+    runtime.block_on(async {
+        let a_id = match StaticIdentity::generate() {
+            Ok(id) => id,
+            Err(e) => return (false, format!("key generation failed: {e}")),
+        };
+        let b_id = match StaticIdentity::generate() {
+            Ok(id) => id,
+            Err(e) => return (false, format!("key generation failed: {e}")),
+        };
+
+        let server = match RelayServer::bind("127.0.0.1:0".parse().unwrap()).await {
+            Ok(s) => s,
+            Err(e) => return (false, format!("relay bind: {e}")),
+        };
+        let relay_addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+
+        let a_client =
+            match RelayClient::connect(relay_addr, a_id.public_bytes(), b_id.public_bytes()).await {
+                Ok(c) => c,
+                Err(e) => return (false, format!("client A connect: {e}")),
+            };
+        let b_client =
+            match RelayClient::connect(relay_addr, b_id.public_bytes(), a_id.public_bytes()).await {
+                Ok(c) => c,
+                Err(e) => return (false, format!("client B connect: {e}")),
+            };
+        // Let both registrations reach the relay so the routes exist before the handshake.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let endpoint = "127.0.0.1:9".parse().unwrap();
+        let mut a = WireGuardTunnel::bind_relay(
+            &a_id,
+            &TunnelPeer {
+                public_key: b_id.public_bytes(),
+                preshared_key: None,
+                endpoint,
+                persistent_keepalive: None,
+            },
+            a_client,
+        );
+        let mut b = WireGuardTunnel::bind_relay(
+            &b_id,
+            &TunnelPeer {
+                public_key: a_id.public_bytes(),
+                preshared_key: None,
+                endpoint,
+                persistent_keepalive: None,
+            },
+            b_client,
+        );
+
+        let exchange = async {
+            a.initiate().await?;
+            b.poll().await?;
+            a.poll().await?;
+            b.poll().await?;
+            Ok::<(), rwk_core::Error>(())
+        };
+        if tokio::time::timeout(Duration::from_secs(5), exchange).await.is_err() {
+            return (false, "relayed handshake timed out".into());
+        }
+        let established = a.is_established() && b.is_established();
+
+        let payload = b"RWK-PADDLE";
+        let mut inner = vec![0u8; 20];
+        inner[0] = 0x45;
+        inner[2..4].copy_from_slice(&((20 + payload.len()) as u16).to_be_bytes());
+        inner[8] = 64;
+        inner[9] = 17;
+        inner[12..16].copy_from_slice(&[10, 0, 0, 1]);
+        inner[16..20].copy_from_slice(&[10, 0, 0, 2]);
+        inner.extend_from_slice(payload);
+
+        if let Err(e) = a.send_inner(&inner).await {
+            return (false, format!("relayed send failed: {e}"));
+        }
+        let round_trip = matches!(
+            tokio::time::timeout(Duration::from_secs(5), b.poll()).await,
+            Ok(Ok(Some(packet))) if packet.bytes() == inner.as_slice()
+        );
+
+        (
+            established && round_trip,
+            format!("handshake over relay={established}, inner packet round-tripped={round_trip}"),
+        )
+    })
+}
+
+/// Round-trips a config through JSON (keys base64, secrets redacted in Debug) and brings a
+/// link up through the auto path-selector over a relay — the whole of increment 4 in one
+/// check: identity, peer, relay config, and direct-then-relay selection.
+fn config_check() -> (bool, String) {
+    use rwk_core::config::{Config, IdentityConfig, PeerConfig, RelayConfig, Role};
+
+    // Part 1 (synchronous): a config survives a JSON round trip and never leaks a secret.
+    let mut cfg = match Config::new(Role::Client) {
+        Ok(c) => c,
+        Err(e) => return (false, format!("config new: {e}")),
+    };
+    let secret_b64 = rwk_core::config::base64_encode(&[0x5A; 32]);
+    cfg.peer.preshared_key = Some(secret_b64.clone());
+    let json = match cfg.to_json() {
+        Ok(j) => j,
+        Err(e) => return (false, format!("to_json: {e}")),
+    };
+    let back = match Config::from_json(&json) {
+        Ok(c) => c,
+        Err(e) => return (false, format!("from_json: {e}")),
+    };
+    let round_trip = back.role == Role::Client
+        && back.identity.public_key_base64().ok() == cfg.identity.public_key_base64().ok();
+    let debug = format!("{cfg:?}");
+    let redacted = debug.contains("<redacted>") && !debug.contains(&secret_b64);
+
+    // Part 2 (async): the auto path-selector falls back to the relay and brings a link up.
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => return (false, format!("tokio runtime: {e}")),
+    };
+    let selected = runtime.block_on(async {
+        let server = match RelayServer::bind("127.0.0.1:0".parse().unwrap()).await {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let relay_addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+
+        let client_id = IdentityConfig::generate().unwrap();
+        let station_id = IdentityConfig::generate().unwrap();
+
+        // Client config: no direct endpoint, so the selector must choose the relay.
+        let mut client_cfg = Config::new(Role::Client).unwrap();
+        client_cfg.identity = client_id.clone();
+        client_cfg.peer = PeerConfig {
+            public_key: station_id.public_key_base64().unwrap(),
+            endpoint: None,
+            preshared_key: None,
+            persistent_keepalive: None,
+        };
+        client_cfg.relay = Some(RelayConfig { address: relay_addr });
+
+        // Hand-drive the Station responder over the relay so the Client's handshake completes.
+        let s_identity = station_id.to_identity().unwrap();
+        let s_relay = rwk_core::engine::relay::RelayClient::connect(
+            relay_addr,
+            s_identity.public_bytes(),
+            client_id.to_identity().unwrap().public_bytes(),
+        )
+        .await
+        .unwrap();
+        let s_peer = PeerConfig {
+            public_key: client_id.public_key_base64().unwrap(),
+            endpoint: None,
+            preshared_key: None,
+            persistent_keepalive: None,
+        }
+        .to_tunnel_peer_with_endpoint("0.0.0.0:0".parse().unwrap())
+        .unwrap();
+        let mut responder = WireGuardTunnel::bind_relay(&s_identity, &s_peer, s_relay);
+        tokio::spawn(async move {
+            for _ in 0..200 {
+                let _ = tokio::time::timeout(Duration::from_millis(50), responder.poll()).await;
+            }
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        match tokio::time::timeout(Duration::from_secs(8), rwk_core::engine::tunnel::connect(&client_cfg)).await {
+            Ok(Ok(connected)) => connected.path == rwk_core::engine::tunnel::Path::Relay,
+            _ => false,
+        }
+    });
+
+    let passed = round_trip && redacted && selected;
+    (
+        passed,
+        format!("json round-trip={round_trip}, secrets redacted={redacted}, relay path selected={selected}"),
+    )
 }
 
 /// Reports what the OS granted for thread priority and timer resolution.

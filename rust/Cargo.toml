@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rwk-core", "crates/rwk"]
+members = ["crates/rwk-core", "crates/rwk", "crates/rwk-relay"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,13 +10,22 @@ authors = ["Gerry Hull, W1VE"]
 repository = "https://github.com/w1ve/rwk-router-keyer"
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time", "signal"] }
 serialport = "4"
 cpal = "0.15"
 spin_sleep = "1"
 thiserror = "2"
 boringtun = "0.7"
 getrandom = "0.3"
+smoltcp = { version = "0.14", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-udp", "socket-tcp"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+axum = "0.7"
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+jsonwebtoken = "9"
+sha2 = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.release]
 lto = true

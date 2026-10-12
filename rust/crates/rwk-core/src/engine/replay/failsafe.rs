@@ -365,7 +365,7 @@ mod tests {
     fn monitor_is_silent_without_an_active_session_or_when_latched() {
         let mut monitor = FailSafeMonitor::new(GHZ);
         let mut snapshot = active_snapshot();
-        snapshot.last_heartbeat = 1 * MS;
+        snapshot.last_heartbeat = MS; // one millisecond of ticks
         snapshot.session_active = false;
         assert_eq!(monitor.check(&snapshot, 999_999 * MS), None);
 

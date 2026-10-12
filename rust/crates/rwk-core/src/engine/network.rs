@@ -28,6 +28,7 @@
 //! The types below are transport-agnostic: they speak plain UDP and will ride over
 //! whatever tunnel implementation lands, so the keying path is ready before the mesh is.
 
+use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -38,6 +39,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{watch, Mutex};
 
+use crate::engine::netstack_driver::{UdpConn, UdpConnReceiver, UdpConnSender};
 use crate::primitives::{ForwardDirection, ForwardProtocol};
 use crate::protocol::edge::RwkPaddleFrame;
 use crate::Result;
@@ -169,13 +171,88 @@ impl EdgeStats {
     }
 }
 
+/// The datagram carrier under an [`EdgeTransport`]: either a plain OS UDP socket, or a
+/// UDP socket living on the in-process WireGuard netstack ([`UdpConn`]).
+///
+/// This is the seam that lets the keying edge ride the tunnel without the transport,
+/// stats, foreign-source gating, or [`PathHealth`] logic forking. `EdgeTransport` speaks
+/// to this enum in [`SocketAddr`] terms; the tunnel arm converts to and from the
+/// `(IpAddr, u16)` the netstack driver uses.
+///
+/// The tunnel arm's receiver is a channel that only one task may drain, so it is held
+/// behind a `Mutex`; the local-socket arm needs no such lock because `UdpSocket::recv_from`
+/// is already `&self`.
+enum DatagramLink {
+    /// A plain OS UDP socket (direct peer, or loopback edge relay).
+    Udp(UdpSocket),
+    /// A UDP socket on the netstack, carrying datagrams inside the WireGuard tunnel.
+    ///
+    /// The connection is split into its two independent halves: the sender clones cheaply
+    /// and sends under `&self`, while the receiver needs `&mut self` and so lives behind
+    /// its own `Mutex`. Splitting matters here — holding one lock across both directions
+    /// would let a blocked `recv` stall every outbound key edge, which on the keying path
+    /// is a deadlock, not merely slow.
+    Tunnel {
+        /// Send half; `&self`, so no lock is needed to transmit.
+        tx: UdpConnSender,
+        /// Receive half; `&mut self`, guarded so the shared transport can drain it.
+        rx: Mutex<UdpConnReceiver>,
+    },
+}
+
+impl DatagramLink {
+    /// Sends `bytes` to `peer`, returning the count written.
+    async fn send_to(&self, bytes: &[u8], peer: SocketAddr) -> io::Result<usize> {
+        match self {
+            Self::Udp(socket) => socket.send_to(bytes, peer).await,
+            Self::Tunnel { tx, .. } => tx
+                .send(bytes.to_vec(), (peer.ip(), peer.port()))
+                .await
+                .map(|()| bytes.len())
+                .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, e.to_string())),
+        }
+    }
+
+    /// Receives one datagram into `buf`, returning its length and source address.
+    async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        match self {
+            Self::Udp(socket) => socket.recv_from(buf).await,
+            Self::Tunnel { rx, .. } => {
+                let mut guard = rx.lock().await;
+                let Some((data, (ip, port))) = guard.recv().await else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "netstack driver stopped",
+                    ));
+                };
+                let len = data.len().min(buf.len());
+                buf[..len].copy_from_slice(&data[..len]);
+                Ok((len, SocketAddr::new(ip, port)))
+            }
+        }
+    }
+
+    /// The local socket address, when the link is a plain OS socket.
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        match self {
+            Self::Udp(socket) => socket.local_addr(),
+            Self::Tunnel { .. } => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "tunnel edge has no OS-level local address",
+            )),
+        }
+    }
+}
+
 /// A UDP endpoint that carries [`RwkPaddleFrame`]s to and from one peer.
 ///
-/// Both directions share one socket, mirroring the sidecar's `edgeRelay`: outbound
+/// Both directions share one carrier, mirroring the sidecar's `edgeRelay`: outbound
 /// frames go to the configured peer, and inbound frames are accepted only from that
-/// peer once it is known.
+/// peer once it is known. The carrier is either a plain OS UDP socket or a tunnel
+/// [`UdpConn`] — see [`DatagramLink`] — so the same stats, foreign-source gating and
+/// [`PathHealth`] serve a direct edge and a tunneled one alike.
 pub struct EdgeTransport {
-    socket: UdpSocket,
+    link: DatagramLink,
     peer: Mutex<Option<SocketAddr>>,
     stats: Arc<EdgeStats>,
     health: PathHealth,
@@ -190,21 +267,39 @@ impl EdgeTransport {
     /// bound.
     pub async fn bind(bind: SocketAddr) -> Result<Self> {
         let socket = UdpSocket::bind(bind).await?;
-        Ok(Self {
-            socket,
+        Ok(Self::from_link(DatagramLink::Udp(socket)))
+    }
+
+    /// Wraps a tunnel [`UdpConn`] so the keying edge rides the WireGuard netstack.
+    ///
+    /// The resulting transport is identical in behaviour to a UDP-backed one — same
+    /// stats, same foreign-source gate, same [`PathHealth`] — but every datagram travels
+    /// inside the encrypted tunnel. The caller still sets the peer with [`Self::set_peer`];
+    /// for a tunnel the peer address is the inner netstack address of the far end.
+    #[must_use]
+    pub fn over_tunnel(conn: UdpConn) -> Self {
+        let (tx, rx) = conn.split();
+        Self::from_link(DatagramLink::Tunnel { tx, rx: Mutex::new(rx) })
+    }
+
+    fn from_link(link: DatagramLink) -> Self {
+        Self {
+            link,
             peer: Mutex::new(None),
             stats: Arc::new(EdgeStats::default()),
             health: PathHealth::new(),
-        })
+        }
     }
 
     /// The local address the transport is bound to.
     ///
     /// # Errors
     ///
-    /// Propagates an `std::io::Error` if the address cannot be read.
+    /// Propagates an `std::io::Error` if the address cannot be read, or
+    /// [`crate::Error::SerialIo`] with `Unsupported` for a tunnel edge, which has no
+    /// OS-level address.
     pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.socket.local_addr()?)
+        Ok(self.link.local_addr()?)
     }
 
     /// Shared statistics for the path.
@@ -248,7 +343,7 @@ impl EdgeTransport {
             return Ok(0);
         };
         let bytes = frame.to_vec();
-        match self.socket.send_to(&bytes, peer).await {
+        match self.link.send_to(&bytes, peer).await {
             Ok(n) => {
                 self.stats.tx_datagrams.fetch_add(1, Ordering::Relaxed);
                 self.stats.tx_bytes.fetch_add(n as u64, Ordering::Relaxed);
@@ -278,8 +373,30 @@ impl EdgeTransport {
     ///
     /// Propagates an `std::io::Error` if the socket read fails.
     pub async fn recv_frame(&self) -> Result<Option<RwkPaddleFrame>> {
+        Ok(self.recv_raw().await?.and_then(|raw| {
+            RwkPaddleFrame::read_from(&raw).map(|(frame, _)| frame)
+        }))
+    }
+
+    /// Receives one edge frame as **validated raw bytes**, ready to hand to the replay
+    /// driver's [`submit`](crate::engine::replay::DriverHandle::submit).
+    ///
+    /// This is the Station-side bridge's entry point: the driver re-parses the bytes on
+    /// its own time-critical thread and stamps arrival there, so handing it the original
+    /// datagram — rather than a reserialised [`RwkPaddleFrame`] — avoids a needless
+    /// round-trip and keeps the exact wire bytes the sender produced. The same
+    /// foreign-source gate and statistics as [`Self::recv_frame`] apply.
+    ///
+    /// Returns [`None`] when the datagram was dropped (foreign source, or not a
+    /// well-formed frame); the caller should simply loop. A truncated or malformed
+    /// datagram is rejected here so the driver never sees bytes that would fail to parse.
+    ///
+    /// # Errors
+    ///
+    /// Propagates an `std::io::Error` if the socket read fails.
+    pub async fn recv_raw(&self) -> Result<Option<Vec<u8>>> {
         let mut buf = vec![0u8; MAX_DATAGRAM];
-        let (len, src) = self.socket.recv_from(&mut buf).await?;
+        let (len, src) = self.link.recv_from(&mut buf).await?;
         self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
         self.stats.rx_bytes.fetch_add(len as u64, Ordering::Relaxed);
 
@@ -292,7 +409,16 @@ impl EdgeTransport {
             }
         }
 
-        Ok(RwkPaddleFrame::read_from(&buf[..len]).map(|(frame, _)| frame))
+        // Validate the frame parses before forwarding, but return the *original* bytes:
+        // the driver re-parses them, and reserialising could only ever reproduce the same
+        // bytes for a valid frame. A parse failure here is a malformed datagram, dropped
+        // exactly as a foreign one would be.
+        let Some((_, used)) = RwkPaddleFrame::read_from(&buf[..len]) else {
+            self.stats.drop_foreign.fetch_add(1, Ordering::Relaxed);
+            return Ok(None);
+        };
+        buf.truncate(used);
+        Ok(Some(buf))
     }
 }
 
