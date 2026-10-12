@@ -4,20 +4,33 @@ import { stationApi as api } from "./station-api.js";
 // The Station tab: KEY/PTT indicators, the keying output configuration (port + control
 // lines), and the Pair-with-Client panel. The Station is the responder — it opens its side
 // of the link and waits for the operating position to connect with the shared relay + code.
-export default function StationTab({ settings, connection, keyDown, pttOn, lastFailSafe }) {
+export default function StationTab({
+  settings,
+  connection,
+  keyDown,
+  pttOn,
+  loggerSending,
+  lastFailSafe,
+}) {
   const [ports, setPorts] = useState([]);
   const [keyingPort, setKeyingPort] = useState(settings.keyingPort || "");
   const [keyLine, setKeyLine] = useState(settings.keyLine || "dtr");
   const [pttLine, setPttLine] = useState(settings.pttLine || "rts");
+  const [loggerPort, setLoggerPort] = useState(settings.loggerPort || "");
+  const [loggerEnabled, setLoggerEnabled] = useState(settings.loggerEnabled || false);
 
-  const [relay, setRelay] = useState("107.172.138.103:9000");
-  const [code, setCode] = useState("");
+  const [relay, setRelay] = useState(settings.relay || "107.172.138.103:9000");
+  const [code, setCode] = useState(settings.pairingCode || "");
 
   // Reflect backend-echoed settings into local state.
   useEffect(() => {
     setKeyingPort(settings.keyingPort || "");
     setKeyLine(settings.keyLine || "dtr");
     setPttLine(settings.pttLine || "rts");
+    setLoggerPort(settings.loggerPort || "");
+    setLoggerEnabled(settings.loggerEnabled || false);
+    if (settings.relay) setRelay(settings.relay);
+    if (settings.pairingCode) setCode(settings.pairingCode);
   }, [settings]);
 
   useEffect(() => {
@@ -37,6 +50,7 @@ export default function StationTab({ settings, connection, keyDown, pttOn, lastF
           <div className="row" style={{ gap: 24, justifyContent: "center", padding: "8px 0" }}>
             <Indicator label="KEY" on={keyDown} onColor="var(--key-on)" />
             <Indicator label="PTT" on={pttOn} onColor="var(--ptt-on)" />
+            <Indicator label="LOGGER" on={loggerSending} onColor="var(--accent)" />
           </div>
           {lastFailSafe ? (
             <div
@@ -115,6 +129,50 @@ export default function StationTab({ settings, connection, keyDown, pttOn, lastF
             The port opens when pairing starts and is held for the session.
           </p>
         </div>
+      </div>
+
+      {/* ─── Logger (WinKeyer) input ────────────────────── */}
+      <div className="panel">
+        <h3>Logger Input (WinKeyer)</h3>
+        <div className="row" style={{ gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <label className="row" style={{ gap: 6 }}>
+            <input
+              type="checkbox"
+              checked={loggerEnabled}
+              disabled={paired || connecting}
+              onChange={(e) => {
+                setLoggerEnabled(e.target.checked);
+                api.setLoggerEnabled(e.target.checked);
+              }}
+            />
+            Enable logger input
+          </label>
+          <div className="field" style={{ marginBottom: 0, minWidth: 180 }}>
+            <label>Logger COM port</label>
+            <select
+              value={loggerPort}
+              disabled={paired || connecting || !loggerEnabled}
+              onChange={(e) => {
+                setLoggerPort(e.target.value);
+                api.setLoggerPort(e.target.value || null);
+              }}
+            >
+              <option value="">(None)</option>
+              {ports
+                .filter((p) => p !== keyingPort)
+                .map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+            </select>
+          </div>
+        </div>
+        <p style={{ color: "var(--text-dim)", fontSize: 12, marginBottom: 0, marginTop: 10 }}>
+          A logging program running at the radio site can send CW macros over this port
+          (WinKeyer2 protocol). Local CW takes priority over remote paddle keying. The keying
+          output port is excluded from the list.
+        </p>
       </div>
 
       {/* ─── Pair with Client ───────────────────────────── */}

@@ -30,6 +30,9 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# Direct serial access for the Station's logger (WinKeyer) input, which must *read* bytes —
+# rwk-core's serial layer is keying-output only (control lines, no data bytes).
+serialport = { workspace = true }
 
 [features]
 # Enabled by Tauri's build tooling for production bundles; harmless in dev.

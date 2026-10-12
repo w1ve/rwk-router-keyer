@@ -174,6 +174,10 @@ struct Shared {
     transport: Mutex<Option<Arc<EdgeTransport>>>,
     /// Session epoch, incremented on each new pairing so the station re-anchors.
     epoch: Mutex<u16>,
+    /// The persisted config, held so pairing reuses a stable WireGuard identity across runs.
+    config: Mutex<Config>,
+    /// Where the config persists; `None` disables saving (tests).
+    config_path: Option<std::path::PathBuf>,
     sink: EventSink,
 }
 
@@ -197,6 +201,21 @@ impl Shared {
             tone_volume: s.tone_volume,
         });
     }
+
+    /// Remembers the relay + pairing code in the persisted config and writes it to disk, so
+    /// the operator does not re-enter them next launch. A write failure is logged, not fatal.
+    fn persist_pairing(&self, relay: std::net::SocketAddr, code: &str) {
+        let Some(path) = &self.config_path else { return };
+        let config = {
+            let mut config = self.config.lock().unwrap();
+            config.relay = Some(rwk_core::config::RelayConfig { address: relay });
+            config.pairing_code = Some(code.to_string());
+            config.clone()
+        };
+        if let Err(e) = config.save(path) {
+            self.log("warn", format!("Could not save config: {e}"));
+        }
+    }
 }
 
 /// The Client controller. Construct with [`ClientController::start`], then drive it with the
@@ -211,17 +230,39 @@ pub struct ClientController {
 }
 
 impl ClientController {
-    /// Starts the controller: brings up the local sidetone (best effort) and emits the
-    /// initial settings. A missing audio device is a logged warning, not a failure — local
-    /// practice still works without sidetone, matching the C# client.
+    /// Starts the controller: loads (or creates) the persisted config so the WireGuard
+    /// identity is stable across runs, brings up the local sidetone (best effort), and emits
+    /// the initial settings. A missing audio device is a logged warning, not a failure.
     pub fn start(sink: EventSink) -> Self {
+        let path = crate::app_paths::config_path(Role::Client);
+        Self::start_with_config(sink, Some(path))
+    }
+
+    /// Starts the controller against an explicit config path (or `None` to disable
+    /// persistence, for tests). Loads the config if present, otherwise generates a fresh
+    /// identity and saves it so the next run reuses the same key.
+    pub fn start_with_config(sink: EventSink, config_path: Option<std::path::PathBuf>) -> Self {
         let settings = Settings::default();
+        let config = match &config_path {
+            Some(p) if p.exists() => {
+                Config::load(p).unwrap_or_else(|_| Config::new(Role::Client).expect("identity"))
+            }
+            _ => {
+                let config = Config::new(Role::Client).expect("generate client identity");
+                if let Some(p) = &config_path {
+                    let _ = config.save(p);
+                }
+                config
+            }
+        };
         let shared = Arc::new(Shared {
             settings: Mutex::new(settings.clone()),
             sidetone: Mutex::new(None),
             keying: Mutex::new(None),
             transport: Mutex::new(None),
             epoch: Mutex::new(1),
+            config: Mutex::new(config),
+            config_path,
             sink,
         });
 
@@ -403,14 +444,15 @@ impl ClientController {
         shared.emit(ClientEvent::Connection { state: "connecting".into(), path: "none".into() });
 
         self.runtime.spawn(async move {
-            // Build a client config with a fresh identity, the relay, and the pairing code.
-            // The peer key is discovered by rendezvous, so no key paste is needed.
-            let mut config = match Config::new(Role::Client) {
-                Ok(c) => c,
-                Err(e) => return fail(&shared, format!("config error: {e}")),
-            };
+            // Clone the PERSISTED config so the WireGuard identity is stable across runs,
+            // then layer the relay and pairing code on top. The peer key is discovered by
+            // rendezvous, so no key paste is needed.
+            let mut config = shared.config.lock().unwrap().clone();
+            config.role = Role::Client;
             config.relay = Some(rwk_core::config::RelayConfig { address: relay_addr });
-            config.pairing_code = Some(code);
+            config.pairing_code = Some(code.clone());
+            // Remember the relay + code for next launch.
+            shared.persist_pairing(relay_addr, &code);
 
             let connected = match tunnel::connect(&config).await {
                 Ok(c) => c,

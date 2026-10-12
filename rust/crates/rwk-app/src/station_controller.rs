@@ -10,10 +10,17 @@
 //! engine-owned threads; the controller holds only `Send + Sync` handles, so it can live in
 //! Tauri's managed state and be driven from command handlers on any thread.
 //!
-//! Slice scope (the Station tab): select the serial KEY/PTT output, pair with the Client by
-//! shared relay + code (the Station is the responder — it waits for the Client to initiate),
-//! replay keyed edges onto the radio, surface KEY/PTT state and the ten fail-safes, and tear
-//! down cleanly on unpair. Logger-WinKeyer input and port forwarding are later increments.
+//! ## What this slice covers
+//!
+//! * **Keying output**: pick the serial port + KEY/PTT control lines that key the radio.
+//! * **Pairing**: connect to the Client by shared relay + code (the Station is the responder
+//!   — it brings its side up and waits for the Client to initiate), using a **persisted**
+//!   WireGuard identity so the key is stable across restarts.
+//! * **Logger input**: an optional second serial port on which a local logging program speaks
+//!   WinKeyer2; its CW keys the same radio through a [`KeyingArbiter`] with priority over the
+//!   remote replay.
+//! * **Persistence**: identity, relay, pairing code and the port selections are saved to a
+//!   per-user `config.json` so a restart resumes where the operator left off.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,13 +28,17 @@ use std::sync::{Arc, Mutex};
 use rwk_core::config::{Config, Role};
 use rwk_core::engine::bus::{CoreEvent, EventBus};
 use rwk_core::engine::edge_station::{pump_edges, tunnel_replayer};
+use rwk_core::engine::keying_arbiter::{KeyingArbiter, LineObserver, LineUpdate};
 use rwk_core::engine::network::EdgeTransport;
-use rwk_core::engine::replay::{spawn_driver, EdgeJitterProfile, KeyingOutput, SerialKeyingAdapter};
+use rwk_core::engine::replay::{spawn_driver, EdgeJitterProfile, SerialKeyingAdapter};
 use rwk_core::engine::serial::{enumerate_ports, KeyingOutputConfig, SerialKeyingOutput};
 use rwk_core::engine::session::Session;
 use rwk_core::engine::tunnel;
 use rwk_core::primitives::KeyingLine;
 use rwk_core::timing::{Clock, MonotonicClock};
+
+use crate::app_paths;
+use crate::station_winkeyer::{HostReport, HostReporter, StationWinKeyerHost};
 
 /// The inner UDP port the keying edge rides over the tunnel, matching the Client's
 /// [`crate::controller`] `EDGE_PORT` so the two ends agree.
@@ -42,6 +53,8 @@ pub enum StationEvent {
     KeyState { down: bool },
     /// The PTT line changed state (for the PTT indicator).
     Ptt { asserted: bool },
+    /// The local logger is actively sending CW (`true`) or idle (`false`).
+    LoggerSending { active: bool },
     /// The link to the client changed. `path` is "none" | "direct" | "relay".
     Connection { state: String, path: String },
     /// A fail-safe fired (F1..=F10). `code` is the number, `message` the description.
@@ -53,6 +66,10 @@ pub enum StationEvent {
         keying_port: Option<String>,
         key_line: String,
         ptt_line: String,
+        logger_port: Option<String>,
+        logger_enabled: bool,
+        relay: Option<String>,
+        pairing_code: Option<String>,
     },
 }
 
@@ -60,18 +77,30 @@ pub enum StationEvent {
 /// does not depend on the UI framework.
 pub type EventSink = Arc<dyn Fn(StationEvent) + Send + Sync>;
 
-/// Live Station settings, shared with the pairing task.
+/// Live Station settings, shared with the pairing task and persisted to `config.json`.
 #[derive(Debug, Clone)]
 struct Settings {
     keying_port: Option<String>,
     key_line: KeyingLine,
     /// `None` means PTT is not driven (QSK / hardware-handled).
     ptt_line: Option<KeyingLine>,
+    logger_port: Option<String>,
+    logger_enabled: bool,
+    relay: Option<String>,
+    pairing_code: Option<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { keying_port: None, key_line: KeyingLine::Dtr, ptt_line: Some(KeyingLine::Rts) }
+        Self {
+            keying_port: None,
+            key_line: KeyingLine::Dtr,
+            ptt_line: Some(KeyingLine::Rts),
+            logger_port: None,
+            logger_enabled: false,
+            relay: None,
+            pairing_code: None,
+        }
     }
 }
 
@@ -79,6 +108,11 @@ impl Default for Settings {
 /// `Send + Sync`, which is what lets the controller be stored in Tauri's managed state.
 struct Shared {
     settings: Mutex<Settings>,
+    /// The persisted config (identity, relay, code, station settings). Held so pairing reuses
+    /// the stable identity, and so UI changes can be written back to disk.
+    config: Mutex<Config>,
+    /// Where the config persists; `None` disables saving (used only in tests).
+    config_path: Option<std::path::PathBuf>,
     sink: EventSink,
 }
 
@@ -97,7 +131,37 @@ impl Shared {
             keying_port: s.keying_port.clone(),
             key_line: line_name(s.key_line).into(),
             ptt_line: s.ptt_line.map(|l| line_name(l).to_string()).unwrap_or_else(|| "none".into()),
+            logger_port: s.logger_port.clone(),
+            logger_enabled: s.logger_enabled,
+            relay: s.relay.clone(),
+            pairing_code: s.pairing_code.clone(),
         });
+    }
+
+    /// Copies the live UI settings into the persisted config and writes it to disk. A write
+    /// failure is logged, not fatal — the app still runs, it just will not remember.
+    fn persist(&self) {
+        let Some(path) = &self.config_path else { return };
+        {
+            let s = self.settings.lock().unwrap();
+            let mut config = self.config.lock().unwrap();
+            config.relay = s
+                .relay
+                .as_deref()
+                .and_then(|r| r.parse().ok())
+                .map(|address| rwk_core::config::RelayConfig { address });
+            config.pairing_code = s.pairing_code.clone();
+            config.station.keying_port = s.keying_port.clone();
+            config.station.key_line = Some(line_name(s.key_line).to_string());
+            config.station.ptt_line =
+                Some(s.ptt_line.map(|l| line_name(l).to_string()).unwrap_or_else(|| "none".into()));
+            config.station.logger_port = s.logger_port.clone();
+            config.station.logger_enabled = s.logger_enabled;
+        }
+        let config = self.config.lock().unwrap();
+        if let Err(e) = config.save(path) {
+            self.log("warn", format!("Could not save config: {e}"));
+        }
     }
 }
 
@@ -116,32 +180,52 @@ pub struct StationController {
 struct ActiveSession {
     session: Session,
     /// Pump task that forwards tunnel datagrams into the replay driver. Aborting it stops
-    /// the inflow; the driver's own threads stop when its handle (held inside `_driver`) drops.
+    /// the inflow; the driver's own threads stop when its handle drops.
     pump: tokio::task::JoinHandle<rwk_core::Result<()>>,
     /// A flag the bus-forwarding task watches so it exits when the session ends.
     stop_bus: Arc<AtomicBool>,
+    /// The logger-WinKeyer host, if the operator enabled it for this session. Dropped (and
+    /// its port released) when the session ends.
+    logger: Option<StationWinKeyerHost>,
+    /// Held so the arbiter (and the serial port it owns) lives for the session.
+    _arbiter: Arc<KeyingArbiter>,
 }
 
 impl StationController {
-    /// Starts the controller and emits the initial settings. Unlike the Client there is no
-    /// sidetone to bring up: the Station keys a radio, it does not generate practice audio.
+    /// Starts the controller: loads (or creates) the persisted config, applies the saved
+    /// settings, and emits them. Unlike the Client there is no sidetone to bring up — the
+    /// Station keys a radio, it does not generate practice audio.
     pub fn start(sink: EventSink) -> Self {
-        let shared = Arc::new(Shared { settings: Mutex::new(Settings::default()), sink });
+        let path = app_paths::config_path(Role::Station);
+        Self::start_with_config(sink, Some(path))
+    }
+
+    /// Starts the controller against an explicit config path (or `None` to disable
+    /// persistence, for tests). Loads the config if the file exists, otherwise generates a
+    /// fresh identity and saves it so the next run reuses the same key.
+    pub fn start_with_config(sink: EventSink, config_path: Option<std::path::PathBuf>) -> Self {
+        let (config, settings) = load_or_create(&config_path);
+
+        let shared = Arc::new(Shared {
+            settings: Mutex::new(settings),
+            config: Mutex::new(config),
+            config_path,
+            sink,
+        });
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("tokio runtime");
 
-        let controller =
-            Self { shared, runtime, active: Arc::new(Mutex::new(None)) };
+        let controller = Self { shared, runtime, active: Arc::new(Mutex::new(None)) };
         controller.shared.emit_settings();
         controller
     }
 
     // ─── Ports / keying configuration ──────────────────────────────────────────
 
-    /// Lists available serial ports for the keying-output picker.
+    /// Lists available serial ports for the keying-output and logger pickers.
     #[must_use]
     pub fn serial_ports() -> Vec<String> {
         enumerate_ports()
@@ -149,15 +233,16 @@ impl StationController {
             .unwrap_or_default()
     }
 
-    /// Selects the serial port that keys the radio, or `None` to clear it. The port is not
-    /// opened here; it is opened when pairing starts, so the replay driver owns it for the
-    /// session's lifetime. Changing the port while paired takes effect on the next pairing.
+    /// Selects the serial port that keys the radio, or `None` to clear it. The port is opened
+    /// when pairing starts, so the replay driver owns it for the session; changing it while
+    /// paired takes effect on the next pairing.
     pub fn select_keying_port(&self, port: Option<String>) {
         self.shared.settings.lock().unwrap().keying_port = port.clone();
         match port {
             Some(name) => self.shared.log("info", format!("Keying output set to {name}.")),
             None => self.shared.log("info", "Keying output cleared."),
         }
+        self.shared.persist();
         self.shared.emit_settings();
     }
 
@@ -165,12 +250,34 @@ impl StationController {
     pub fn set_key_line(&self, line: &str) {
         let parsed = parse_line(line).unwrap_or(KeyingLine::Dtr);
         self.shared.settings.lock().unwrap().key_line = parsed;
+        self.shared.persist();
         self.shared.emit_settings();
     }
 
     /// Sets which control line asserts PTT ("dtr", "rts", or "none").
     pub fn set_ptt_line(&self, line: &str) {
         self.shared.settings.lock().unwrap().ptt_line = parse_line(line);
+        self.shared.persist();
+        self.shared.emit_settings();
+    }
+
+    /// Selects the serial port the local logger sends WinKeyer protocol on, or `None`.
+    pub fn set_logger_port(&self, port: Option<String>) {
+        self.shared.settings.lock().unwrap().logger_port = port.clone();
+        match port {
+            Some(name) => self.shared.log("info", format!("Logger input port set to {name}.")),
+            None => self.shared.log("info", "Logger input port cleared."),
+        }
+        self.shared.persist();
+        self.shared.emit_settings();
+    }
+
+    /// Enables or disables the logger input. Takes effect on the next pairing (the logger
+    /// host starts alongside the replay driver so both share the one keying output).
+    pub fn set_logger_enabled(&self, enabled: bool) {
+        self.shared.settings.lock().unwrap().logger_enabled = enabled;
+        self.shared.log("info", if enabled { "Logger input enabled." } else { "Logger input disabled." });
+        self.shared.persist();
         self.shared.emit_settings();
     }
 
@@ -195,9 +302,17 @@ impl StationController {
             }
         };
 
-        let keying_port = {
+        // Remember the relay + code the operator used, so a restart can resume.
+        {
+            let mut s = self.shared.settings.lock().unwrap();
+            s.relay = Some(relay.to_string());
+            s.pairing_code = Some(code.to_string());
+        }
+        self.shared.persist();
+
+        let (keying_port, logger_port, logger_enabled) = {
             let s = self.shared.settings.lock().unwrap();
-            s.keying_port.clone()
+            (s.keying_port.clone(), s.logger_port.clone(), s.logger_enabled)
         };
         if keying_port.is_none() {
             self.shared.log("warn", "Select a keying output port before pairing.");
@@ -217,11 +332,10 @@ impl StationController {
         shared.log("info", "Waiting for the client to pair…");
 
         self.runtime.spawn(async move {
-            // Build a station config with a fresh identity, the relay, and the pairing code.
-            let mut config = match Config::new(Role::Station) {
-                Ok(c) => c,
-                Err(e) => return fail(&shared, format!("config error: {e}")),
-            };
+            // Clone the PERSISTED config so the WireGuard identity is stable, then layer the
+            // live relay + code on top for this pairing.
+            let mut config = shared.config.lock().unwrap().clone();
+            config.role = Role::Station;
             config.relay = Some(rwk_core::config::RelayConfig { address: relay_addr });
             config.pairing_code = Some(code);
 
@@ -249,7 +363,7 @@ impl StationController {
             );
             transport.set_peer(peer).await;
 
-            // Open the serial keying output the replay driver will drive.
+            // Open the serial keying output.
             let (key_line, ptt_line) = {
                 let s = shared.settings.lock().unwrap();
                 (s.key_line, s.ptt_line)
@@ -267,24 +381,58 @@ impl StationController {
             };
             shared.log("info", format!("Keying output open on {port_name}."));
 
-            // Build the replay stack: a replayer tuned for the tunnel (DERP band), the
-            // dedicated replay + watchdog threads, and a keying output that both drives the
-            // serial line and reports KEY/PTT state to the UI.
+            // Build the arbiter in front of the single keying output: the replay driver keys
+            // the remote source, and (optionally) the logger keys the local source with
+            // priority. A line observer reports the effective KEY/PTT to the UI.
+            let arbiter = Arc::new(KeyingArbiter::with_observer(
+                SerialKeyingAdapter::new(serial),
+                Some(make_line_observer(Arc::clone(&shared))),
+            ));
+
+            // The replay stack: a replayer tuned for the tunnel (DERP band) and the dedicated
+            // replay + watchdog threads, keying the arbiter's remote source.
             let clock: Arc<dyn Clock> = Arc::new(MonotonicClock);
             let mut replayer =
                 tunnel_replayer(clock.as_ref(), EdgeJitterProfile::PathAdaptive, None);
             replayer.begin_session(1);
 
             let bus = EventBus::new();
-            let output = UiKeyingOutput::new(SerialKeyingAdapter::new(serial), Arc::clone(&shared));
             let path_health = rwk_core::engine::network::PathHealth::new();
             let driver = spawn_driver(
                 replayer,
-                Box::new(output),
+                Box::new(arbiter.remote_output()),
                 Arc::clone(&clock),
                 Some(bus.clone()),
                 Some(path_health),
             );
+
+            // Optionally start the logger-WinKeyer host on the local source.
+            let logger = if logger_enabled {
+                match logger_port {
+                    Some(lp) => {
+                        let reporter: HostReporter = make_host_reporter(Arc::clone(&shared));
+                        match StationWinKeyerHost::open(&lp, arbiter.local_handle(), reporter) {
+                            Ok(host) => {
+                                shared.log(
+                                    "info",
+                                    format!("Logger input active on {}.", host.port_name()),
+                                );
+                                Some(host)
+                            }
+                            Err(e) => {
+                                shared.log("warn", format!("Logger input unavailable: {e}"));
+                                None
+                            }
+                        }
+                    }
+                    None => {
+                        shared.log("warn", "Logger input enabled but no port selected.");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
             // Forward fail-safe events from the bus to the UI until the session stops.
             let stop_bus = Arc::new(AtomicBool::new(false));
@@ -293,8 +441,13 @@ impl StationController {
             // Pump received edge datagrams into the replay driver.
             let pump = tokio::spawn(pump_edges(Arc::clone(&transport), driver));
 
-            *active_slot.lock().unwrap() =
-                Some(ActiveSession { session, pump, stop_bus });
+            *active_slot.lock().unwrap() = Some(ActiveSession {
+                session,
+                pump,
+                stop_bus,
+                logger,
+                _arbiter: arbiter,
+            });
 
             shared
                 .emit(StationEvent::Connection { state: "connected".into(), path: path.clone() });
@@ -302,23 +455,92 @@ impl StationController {
         });
     }
 
-    /// Tears the session, replay stack and keying output down, returning to the unpaired
-    /// state. The replay driver's handle (held by the pump's `pump_edges` call) is dropped
-    /// here, which stops the replay and watchdog threads and forces the key up (F8).
+    /// Tears the session, replay stack, logger host and keying output down, returning to the
+    /// unpaired state. Dropping the driver's handle stops the replay/watchdog threads and
+    /// forces the key up (F8); dropping the logger host releases its port.
     pub fn disconnect(&self) {
         let active = self.active.lock().unwrap().take();
-        if let Some(active) = active {
+        if let Some(mut active) = active {
             active.stop_bus.store(true, Ordering::SeqCst);
+            if let Some(mut logger) = active.logger.take() {
+                logger.stop();
+            }
             active.pump.abort();
             let mut session = active.session;
             self.runtime.block_on(async { session.shutdown().await });
             self.shared.emit(StationEvent::KeyState { down: false });
             self.shared.emit(StationEvent::Ptt { asserted: false });
+            self.shared.emit(StationEvent::LoggerSending { active: false });
             self.shared
                 .emit(StationEvent::Connection { state: "disconnected".into(), path: "none".into() });
             self.shared.log("info", "Unpaired.");
         }
     }
+}
+
+/// Loads the config at `path` (if present) or creates a fresh one and saves it, then derives
+/// the live UI [`Settings`] from it. A fresh config persists its new identity immediately so
+/// the next run reuses the same WireGuard key.
+fn load_or_create(path: &Option<std::path::PathBuf>) -> (Config, Settings) {
+    let config = match path {
+        Some(p) if p.exists() => Config::load(p).unwrap_or_else(|_| {
+            Config::new(Role::Station).expect("generate station identity")
+        }),
+        _ => {
+            let config = Config::new(Role::Station).expect("generate station identity");
+            if let Some(p) = path {
+                let _ = config.save(p);
+            }
+            config
+        }
+    };
+
+    let settings = Settings {
+        keying_port: config.station.keying_port.clone(),
+        key_line: config
+            .station
+            .key_line
+            .as_deref()
+            .and_then(parse_line)
+            .unwrap_or(KeyingLine::Dtr),
+        ptt_line: config.station.ptt_line.as_deref().and_then(parse_line),
+        logger_port: config.station.logger_port.clone(),
+        logger_enabled: config.station.logger_enabled,
+        relay: config.relay.as_ref().map(|r| r.address.to_string()),
+        pairing_code: config.pairing_code.clone(),
+    };
+    (config, settings)
+}
+
+/// Builds the arbiter's line observer: emits KEY/PTT to the UI only on an actual change,
+/// using interior state so it satisfies the `Fn` observer contract.
+fn make_line_observer(shared: Arc<Shared>) -> LineObserver {
+    let last_key = Arc::new(Mutex::new(None::<bool>));
+    let last_ptt = Arc::new(Mutex::new(None::<bool>));
+    Arc::new(move |u: LineUpdate| {
+        {
+            let mut lk = last_key.lock().unwrap_or_else(|e| e.into_inner());
+            if *lk != Some(u.key_down) {
+                *lk = Some(u.key_down);
+                shared.emit(StationEvent::KeyState { down: u.key_down });
+            }
+        }
+        {
+            let mut lp = last_ptt.lock().unwrap_or_else(|e| e.into_inner());
+            if *lp != Some(u.ptt) {
+                *lp = Some(u.ptt);
+                shared.emit(StationEvent::Ptt { asserted: u.ptt });
+            }
+        }
+    })
+}
+
+/// Builds the logger host's reporter: logs its lines and bridges the sending indicator.
+fn make_host_reporter(shared: Arc<Shared>) -> HostReporter {
+    Arc::new(move |report: HostReport| match report {
+        HostReport::Log { level, message } => shared.log(&level, message),
+        HostReport::Sending(active) => shared.emit(StationEvent::LoggerSending { active }),
+    })
 }
 
 /// Reports a pairing failure through the event sink.
@@ -354,45 +576,6 @@ impl Drop for StationController {
     }
 }
 
-/// A [`KeyingOutput`] that drives the real serial line *and* reports KEY/PTT transitions to
-/// the UI, so the Station's indicators follow the keying in real time. It wraps the engine's
-/// [`SerialKeyingAdapter`] (which owns the port and latches faults for F6) and only emits a
-/// UI event on an actual state change, matching the C# Station's sticky LED behaviour.
-struct UiKeyingOutput {
-    inner: SerialKeyingAdapter,
-    shared: Arc<Shared>,
-    last_key: Option<bool>,
-    last_ptt: Option<bool>,
-}
-
-impl UiKeyingOutput {
-    fn new(inner: SerialKeyingAdapter, shared: Arc<Shared>) -> Self {
-        Self { inner, shared, last_key: None, last_ptt: None }
-    }
-}
-
-impl KeyingOutput for UiKeyingOutput {
-    fn set_key(&mut self, key_down: bool) {
-        self.inner.set_key(key_down);
-        if self.last_key != Some(key_down) {
-            self.last_key = Some(key_down);
-            self.shared.emit(StationEvent::KeyState { down: key_down });
-        }
-    }
-
-    fn set_ptt(&mut self, asserted: bool) {
-        self.inner.set_ptt(asserted);
-        if self.last_ptt != Some(asserted) {
-            self.last_ptt = Some(asserted);
-            self.shared.emit(StationEvent::Ptt { asserted });
-        }
-    }
-
-    fn take_fault(&mut self) -> Option<String> {
-        self.inner.take_fault()
-    }
-}
-
 /// Parses a UI line name into a [`KeyingLine`]; "none"/empty maps to [`None`].
 fn parse_line(name: &str) -> Option<KeyingLine> {
     match name.to_ascii_lowercase().as_str() {
@@ -423,6 +606,11 @@ mod tests {
         (sink, events)
     }
 
+    /// A controller with persistence disabled (no file writes in tests).
+    fn controller(sink: EventSink) -> StationController {
+        StationController::start_with_config(sink, None)
+    }
+
     fn wait_for(
         events: &Arc<Mutex<Vec<StationEvent>>>,
         timeout: Duration,
@@ -441,7 +629,7 @@ mod tests {
     #[test]
     fn start_emits_initial_settings() {
         let (sink, events) = recording_sink();
-        let _controller = StationController::start(sink);
+        let _controller = controller(sink);
         let ok = wait_for(&events, Duration::from_secs(1), |evs| {
             evs.iter().any(|e| matches!(e, StationEvent::Settings { key_line, .. } if key_line == "dtr"))
         });
@@ -451,7 +639,7 @@ mod tests {
     #[test]
     fn selecting_a_keying_port_updates_and_echoes_settings() {
         let (sink, events) = recording_sink();
-        let controller = StationController::start(sink);
+        let controller = controller(sink);
         controller.select_keying_port(Some("COM7".into()));
         assert_eq!(controller.shared.settings.lock().unwrap().keying_port.as_deref(), Some("COM7"));
         let ok = wait_for(&events, Duration::from_secs(1), |evs| {
@@ -465,7 +653,7 @@ mod tests {
     #[test]
     fn line_setters_parse_and_store() {
         let (sink, _events) = recording_sink();
-        let controller = StationController::start(sink);
+        let controller = controller(sink);
         controller.set_key_line("rts");
         controller.set_ptt_line("none");
         let s = controller.shared.settings.lock().unwrap();
@@ -474,10 +662,20 @@ mod tests {
     }
 
     #[test]
+    fn logger_settings_store() {
+        let (sink, _events) = recording_sink();
+        let controller = controller(sink);
+        controller.set_logger_port(Some("COM9".into()));
+        controller.set_logger_enabled(true);
+        let s = controller.shared.settings.lock().unwrap();
+        assert_eq!(s.logger_port.as_deref(), Some("COM9"));
+        assert!(s.logger_enabled);
+    }
+
+    #[test]
     fn listen_without_a_keying_port_reports_disconnected() {
         let (sink, events) = recording_sink();
-        let controller = StationController::start(sink);
-        // No keying port selected: pairing must refuse and stay disconnected.
+        let controller = controller(sink);
         controller.listen("127.0.0.1:9999", "code");
         let ok = wait_for(&events, Duration::from_secs(1), |evs| {
             evs.iter().any(|e| matches!(e, StationEvent::Connection { state, .. } if state == "disconnected"))
@@ -489,13 +687,43 @@ mod tests {
     #[test]
     fn listen_rejects_a_bad_relay_address_without_blocking() {
         let (sink, events) = recording_sink();
-        let controller = StationController::start(sink);
+        let controller = controller(sink);
         controller.select_keying_port(Some("COM1".into()));
         controller.listen("not-an-address", "code");
         let ok = wait_for(&events, Duration::from_secs(1), |evs| {
             evs.iter().any(|e| matches!(e, StationEvent::Connection { state, .. } if state == "disconnected"))
         });
         assert!(ok, "a bad relay address must report disconnected, never hang");
+    }
+
+    #[test]
+    fn persistence_round_trips_identity_and_settings() {
+        // Write a config via one controller, then load it in a second and confirm the
+        // identity and settings survived.
+        let dir = std::env::temp_dir().join(format!("rwk-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("station.json");
+        let _ = std::fs::remove_file(&path);
+
+        let (sink, _events) = recording_sink();
+        let first = StationController::start_with_config(sink, Some(path.clone()));
+        first.select_keying_port(Some("COM3".into()));
+        first.set_logger_port(Some("COM4".into()));
+        first.set_logger_enabled(true);
+        let first_pub = first.shared.config.lock().unwrap().identity.public_key_base64().unwrap();
+        drop(first);
+
+        let (sink2, _e2) = recording_sink();
+        let second = StationController::start_with_config(sink2, Some(path.clone()));
+        let second_pub = second.shared.config.lock().unwrap().identity.public_key_base64().unwrap();
+        assert_eq!(first_pub, second_pub, "identity must persist across restarts");
+        let s = second.shared.settings.lock().unwrap();
+        assert_eq!(s.keying_port.as_deref(), Some("COM3"));
+        assert_eq!(s.logger_port.as_deref(), Some("COM4"));
+        assert!(s.logger_enabled);
+        drop(s);
+        drop(second);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -3236,6 +3236,7 @@ dependencies = [
  "rwk-core",
  "serde",
  "serde_json",
+ "serialport",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

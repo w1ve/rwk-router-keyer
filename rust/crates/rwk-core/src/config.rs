@@ -201,6 +201,35 @@ pub struct Config {
     /// Port forward rules, in the shape the .NET client persists.
     #[serde(default)]
     pub forwards: Vec<ForwardRuleConfig>,
+    /// Station-only UI settings (keying output + logger input). Absent in a Client config.
+    #[serde(default)]
+    pub station: StationSettings,
+}
+
+/// Station-only persisted settings: the serial keying output and the optional logger
+/// (WinKeyer) input. Kept here so a Station remembers its port selections across restarts,
+/// the same way the identity, relay and pairing code persist.
+///
+/// Control lines are stored as the UI's lowercase names (`"dtr"`, `"rts"`, `"none"`) rather
+/// than the [`crate::primitives::KeyingLine`] enum, so the on-disk format stays stable and
+/// human-editable and does not couple to the enum's discriminants.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StationSettings {
+    /// Serial port that keys the radio, if chosen.
+    #[serde(default)]
+    pub keying_port: Option<String>,
+    /// Control line that keys the radio: `"dtr"` or `"rts"`. Empty ⇒ default (`"dtr"`).
+    #[serde(default)]
+    pub key_line: Option<String>,
+    /// Control line that asserts PTT: `"dtr"`, `"rts"`, or `"none"`. Empty ⇒ default.
+    #[serde(default)]
+    pub ptt_line: Option<String>,
+    /// Serial port the local logger sends WinKeyer protocol on, if chosen.
+    #[serde(default)]
+    pub logger_port: Option<String>,
+    /// Whether the logger input is enabled.
+    #[serde(default)]
+    pub logger_enabled: bool,
 }
 
 impl Config {
@@ -226,6 +255,7 @@ impl Config {
             relay: None,
             pairing_code: None,
             forwards: Vec::new(),
+            station: StationSettings::default(),
         })
     }
 

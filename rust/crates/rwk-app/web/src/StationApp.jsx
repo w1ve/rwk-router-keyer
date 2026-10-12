@@ -6,6 +6,10 @@ const DEFAULT_SETTINGS = {
   keyingPort: null,
   keyLine: "dtr",
   pttLine: "rts",
+  loggerPort: null,
+  loggerEnabled: false,
+  relay: null,
+  pairingCode: null,
 };
 
 // The Station application shell: a Station tab and a Log tab, plus a status strip showing
@@ -18,6 +22,7 @@ export default function StationApp() {
   const [connection, setConnection] = useState({ state: "disconnected", path: "none" });
   const [keyDown, setKeyDown] = useState(false);
   const [pttOn, setPttOn] = useState(false);
+  const [loggerSending, setLoggerSending] = useState(false);
   const [lastFailSafe, setLastFailSafe] = useState(null);
   const [log, setLog] = useState([]);
 
@@ -29,6 +34,10 @@ export default function StationApp() {
             keyingPort: ev.keying_port,
             keyLine: ev.key_line,
             pttLine: ev.ptt_line,
+            loggerPort: ev.logger_port,
+            loggerEnabled: ev.logger_enabled,
+            relay: ev.relay,
+            pairingCode: ev.pairing_code,
           });
           break;
         case "connection":
@@ -43,6 +52,9 @@ export default function StationApp() {
           break;
         case "ptt":
           setPttOn(ev.asserted);
+          break;
+        case "loggerSending":
+          setLoggerSending(ev.active);
           break;
         case "failSafe":
           setLastFailSafe({ code: ev.code, message: ev.message });
@@ -101,6 +113,7 @@ export default function StationApp() {
             connection={connection}
             keyDown={keyDown}
             pttOn={pttOn}
+            loggerSending={loggerSending}
             lastFailSafe={lastFailSafe}
           />
         )}

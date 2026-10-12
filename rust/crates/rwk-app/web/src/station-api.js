@@ -14,6 +14,10 @@ export const stationApi = {
   setKeyLine: (line) => invoke("station_set_key_line", { line }),
   setPttLine: (line) => invoke("station_set_ptt_line", { line }),
 
+  // Logger (WinKeyer) input
+  setLoggerPort: (port) => invoke("station_set_logger_port", { port }),
+  setLoggerEnabled: (enabled) => invoke("station_set_logger_enabled", { enabled }),
+
   // Pairing (the Station is the responder: it waits for the client)
   listen: (relay, code) => invoke("station_listen", { relay, code }),
   disconnect: () => invoke("station_disconnect"),

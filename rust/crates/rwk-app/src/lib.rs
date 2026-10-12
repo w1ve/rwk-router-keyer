@@ -17,8 +17,10 @@
 //! The split mirrors the C# apps: a headless controller does the work on background threads,
 //! and the UI only sends commands (`invoke`) and renders events (`emit` on `rwk://event`).
 
+mod app_paths;
 mod controller;
 mod station_controller;
+mod station_winkeyer;
 
 use std::sync::Arc;
 
@@ -208,6 +210,8 @@ pub fn run_station() {
             station_select_keying_port,
             station_set_key_line,
             station_set_ptt_line,
+            station_set_logger_port,
+            station_set_logger_enabled,
             station_listen,
             station_disconnect,
         ])
@@ -246,6 +250,16 @@ fn station_set_key_line(state: State<'_, StationState>, line: String) {
 #[tauri::command]
 fn station_set_ptt_line(state: State<'_, StationState>, line: String) {
     state.controller.set_ptt_line(&line);
+}
+
+#[tauri::command]
+fn station_set_logger_port(state: State<'_, StationState>, port: Option<String>) {
+    state.controller.set_logger_port(port);
+}
+
+#[tauri::command]
+fn station_set_logger_enabled(state: State<'_, StationState>, enabled: bool) {
+    state.controller.set_logger_enabled(enabled);
 }
 
 /// Begins pairing: the Station waits for the Client to connect over the shared relay + code,

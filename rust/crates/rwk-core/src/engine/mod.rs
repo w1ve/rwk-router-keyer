@@ -2,6 +2,7 @@
 //!
 //! * [`serial`] — serial port enumeration and DTR/RTS key/PTT line control.
 //! * [`keying`] — Morse element timing, scheduling and the paddle decider.
+//! * [`keying_arbiter`] — shares the one radio output between remote replay and a local logger.
 //! * [`edge_sender`] — Client-side orchestrator: edge events → redundant `RWK-PADDLE` frames.
 //! * [`edge_station`] — Station-side bridge: tunnel edge datagrams → the replay driver.
 //! * [`audio`] — the keyed-sine sidetone generator and its cpal output stream.
@@ -20,6 +21,7 @@ pub mod bus;
 pub mod edge_sender;
 pub mod edge_station;
 pub mod keying;
+pub mod keying_arbiter;
 pub mod netstack;
 pub mod netstack_driver;
 pub mod network;
@@ -45,6 +47,9 @@ pub use tunnel_forward::{
 pub use tunnel::{connect, Connected, Path, StaticIdentity, TunnelPacket, TunnelPeer, WireGuardTunnel};
 pub use edge_sender::EdgeSender;
 pub use edge_station::{pump_edges, tunnel_replayer};
+pub use keying_arbiter::{
+    KeySource, KeyingArbiter, LineObserver, LineUpdate, LocalKeyHandle, RemoteKeyingOutput,
+};
 pub use keying::{
     EdgeEvent, EdgeSchedule, EdgeScheduleBuilder, ElementKeyer, KeyerElement, KeyerElementTiming,
     PaddleElementEngine, PaddleState,
