@@ -1,0 +1,36 @@
+[package]
+name = "rwk-app"
+description = "RWK Router Keyer desktop app (Tauri v2): the operator UI over the native rwk-core engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+# The Client (operating-position) binary. Named `rwk-app` so it does not collide with the
+# `rwk` CLI.
+[[bin]]
+name = "rwk-app"
+path = "src/main.rs"
+
+# The Station (remote radio site) binary. A separate executable sharing this crate's library
+# and web bundle, but running the Station controller, command set, and window.
+[[bin]]
+name = "rwk-station"
+path = "src/main_station.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rwk-core = { path = "../rwk-core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+# Enabled by Tauri's build tooling for production bundles; harmless in dev.
+custom-protocol = ["tauri/custom-protocol"]

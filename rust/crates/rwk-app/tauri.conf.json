@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "RWK Router Keyer",
+  "version": "0.1.0",
+  "identifier": "com.w1ve.rwk",
+  "build": {
+    "frontendDist": "../web/dist",
+    "devUrl": "http://localhost:5174",
+    "beforeDevCommand": {
+      "cwd": "web",
+      "script": "npm run dev"
+    },
+    "beforeBuildCommand": {
+      "cwd": "web",
+      "script": "npm run build"
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "RWK Router/Keyer — Any Rig, Any Internet, Anytime",
+        "width": 980,
+        "height": 640,
+        "minWidth": 900,
+        "minHeight": 560,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico"]
+  }
+}

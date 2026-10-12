@@ -40,6 +40,11 @@ rust/
       driver.rs                  dedicated replay + watchdog threads
     src/engine/bus.rs            tokio broadcast event bus
   crates/rwk/                    the single `rwk` executable
+  crates/rwk-app/                the Tauri v2 desktop UI (operator app)
+    src/controller.rs            Client controller: owns the engine, exposes commands + events
+    src/lib.rs                   Tauri command bridge (invoke) + event bridge (emit)
+    web/                         React front end (Vite); the Keyer tab lives here
+  crates/rwk-relay/              the standalone relay server + dashboard
   docs/NATIVE-NETWORK-SPIKE.md   plan for replacing the Tailscale sidecar natively
 ```
 
@@ -79,6 +84,54 @@ cargo test                     # 183 unit tests
 ./target/release/rwk connect client.json  # the operating position
 ./target/release/rwk key COM3 "CQ TEST" --wpm 25 --line dtr
 ```
+
+## Desktop UI (`rwk-app`, Tauri v2)
+
+The operator app is a Tauri v2 desktop application: a Rust backend (the `ClientController`,
+which owns the engine) with a React front end in `crates/rwk-app/web`. The UI only sends
+commands (`invoke`) and renders events (`emit` on the `rwk://event` channel); all keying,
+timing, and the WireGuard link run on controller-owned threads.
+
+> **cpal is not `Send`.** The sidetone's audio stream lives on its own dedicated thread; the
+> controller holds only a channel handle to it. This is why the controller can be shared as
+> Tauri managed state. The same pattern applies to any future audio/stream-owning piece.
+
+**First time — install the front-end deps and build the bundle:**
+
+```powershell
+cd crates/rwk-app/web
+npm install
+npm run build        # produces web/dist, which the app loads
+```
+
+**Build and run the app** (from `rust/`, with the toolchain env sourced on this machine):
+
+```powershell
+. .\build-env.ps1 | Out-Null      # this machine only; see the toolchain note above
+cargo build -p rwk-app
+./target/debug/rwk-app.exe
+```
+
+The window opens on the **Keyer** tab: WPM (5–60) and weight (25–75) sliders, keyer mode
+(Iambic B/A, Ultimatic, Bug, Straight), paddle-reverse, eight editable CW macros, a
+type-ahead box, **Test TX**, a Sidetone panel (frequency 400–1000 Hz, volume 0–100 %), input
+port pickers, a momentary **PTT** button, and a **Pair with Station** panel. Pairing is the
+native zero-setup model: enter the same relay `host:port` and pairing code on both ends — no
+key exchange, no Tailscale. Once paired, keyed CW rides the WireGuard tunnel to the station.
+
+> **Linker note.** On this machine the xwin-fetched MSVC CRT import libraries carry no `.pdb`,
+> so the link step prints `LNK4099` ("cannot use debug info") warnings. These are cosmetic:
+> the `linker_messages` lint ignores `-D warnings` and the build still succeeds. On a machine
+> with a complete MSVC install they do not appear.
+
+Scope of this slice: the Keyer tab is wired to the real engine (keyer timing, sidetone, local
+serial key line, CW text, pairing-code connect, keying over the tunnel). The **Ham Router**
+and **Log** tabs are present as a shell; serial *paddle input*, the WinKeyer protocol host,
+sidetone device selection, and the Station app are later increments. The port pickers accept
+and remember a selection today but do not yet drive a physical paddle or WinKeyer.
+
+Build-env is only needed on this dev machine. On a normal MSVC "Desktop development with C++"
+install, `cargo build -p rwk-app` works without it (and without the `LNK4099` noise).
 
 ## What is ported
 
