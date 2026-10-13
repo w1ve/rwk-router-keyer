@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.w1ve.rwk",
   "build": {
-    "frontendDist": "../web/dist",
+    "frontendDist": "web/dist",
     "devUrl": "http://localhost:5174",
     "beforeDevCommand": {
       "cwd": "web",
