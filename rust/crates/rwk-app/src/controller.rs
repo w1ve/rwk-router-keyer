@@ -11,19 +11,24 @@
 //! selection and persist it, but driving a physical paddle is not wired yet (see
 //! [`ClientController::select_paddle_port`]).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
 use rwk_core::config::{Config, Role};
 use rwk_core::engine::audio::SidetoneEngine;
+use rwk_core::engine::debounce::ContactDebouncer;
 use rwk_core::engine::edge_sender::EdgeSender;
 use rwk_core::engine::keying::{EdgeEvent, EdgeSchedule, EdgeScheduleBuilder};
 use rwk_core::engine::network::EdgeTransport;
+use rwk_core::engine::paddle::PaddleKeyer;
+use rwk_core::engine::paddle_input::PaddleInputPort;
 use rwk_core::engine::serial::{enumerate_ports, KeyingOutputConfig, SerialKeyingOutput};
 use rwk_core::engine::session::Session;
 use rwk_core::engine::tunnel;
+use rwk_core::platform::{ThreadPriorityGuard, TimerResolutionGuard};
 use rwk_core::primitives::{EdgeSource, KeyerMode, KeyingLine};
-use rwk_core::timing::{Clock, MonotonicClock};
+use rwk_core::timing::{Clock, HybridWaiter, MonotonicClock};
 
 /// The inner UDP port the keying edge rides over the tunnel, both ends agreeing.
 const EDGE_PORT: u16 = 5555;
@@ -174,6 +179,8 @@ struct Shared {
     transport: Mutex<Option<Arc<EdgeTransport>>>,
     /// Session epoch, incremented on each new pairing so the station re-anchors.
     epoch: Mutex<u16>,
+    /// The running serial paddle poller, present only while a paddle port is selected.
+    paddle: Mutex<Option<PaddlePollerHandle>>,
     /// The persisted config, held so pairing reuses a stable WireGuard identity across runs.
     config: Mutex<Config>,
     /// Where the config persists; `None` disables saving (tests).
@@ -261,6 +268,7 @@ impl ClientController {
             keying: Mutex::new(None),
             transport: Mutex::new(None),
             epoch: Mutex::new(1),
+            paddle: Mutex::new(None),
             config: Mutex::new(config),
             config_path,
             sink,
@@ -374,16 +382,33 @@ impl ClientController {
         }
     }
 
-    /// Records the selected paddle port. NOTE: serial paddle *input* polling is a later
-    /// increment; for now this persists the choice and logs it, but no edges are read yet.
+    /// Selects the serial port a paddle/key is wired to, or `None` to release it.
+    ///
+    /// Opening starts a dedicated high-priority poller thread that reads the port's modem-
+    /// status lines (CTS=dit, DSR=dah, DCD=straight), debounces them, runs the live keyer for
+    /// the current mode/speed/weight, and keys the local sidetone, the local key line, the UI
+    /// indicator, and (when paired) the tunnel — exactly the output path the type-ahead CW
+    /// uses. This matches the C# `PaddleInputPoller`: 1 ms poll, raised priority, DTR asserted
+    /// as the contact voltage source, so it works on native UARTs and USB-to-serial alike.
     pub fn select_paddle_port(&self, port: Option<String>) {
         self.shared.settings.lock().unwrap().paddle_port = port.clone();
+        // Stop any running poller first (changing ports is a normal operation).
+        *self.shared.paddle.lock().unwrap() = None;
+
         match port {
-            Some(name) => self.shared.log(
-                "info",
-                format!("Paddle port {name} selected (serial paddle input not yet wired)."),
-            ),
-            None => self.shared.log("info", "Paddle port cleared."),
+            Some(name) => match PaddleInputPort::open(&name) {
+                Ok(input) => {
+                    let handle = PaddlePollerHandle::spawn(
+                        input,
+                        Arc::clone(&self.shared),
+                        self.runtime.handle().clone(),
+                    );
+                    *self.shared.paddle.lock().unwrap() = Some(handle);
+                    self.shared.log("info", format!("Paddle input on {name} (CTS=dit, DSR=dah, DCD=straight)."));
+                }
+                Err(e) => self.shared.log("warn", format!("Paddle port {name} failed: {e}")),
+            },
+            None => self.shared.log("info", "Paddle input cleared."),
         }
     }
 
@@ -545,38 +570,172 @@ fn play_cw(shared: &Arc<Shared>, rt: &tokio::runtime::Handle, text: &str) {
     for edge in &schedule.edges {
         // Pace to the edge's scheduled tick with a hybrid sleep/spin for sub-ms accuracy.
         rwk_core::timing::HybridWaiter::wait_until_ticks(&clock, edge.timestamp_ticks, &|| false);
-
-        // Drive the local sidetone (via its thread).
-        if let Some(tone) = tone.as_ref() {
-            tone.key(edge.key_down);
-        }
-        // Drive the local key line, if a port is open.
-        if let Some(out) = shared.keying.lock().unwrap().as_mut() {
-            let _ = out.apply(edge.key_down, false);
-        }
-        // Emit the key-state for the UI indicator.
-        shared.emit(ClientEvent::KeyState { down: edge.key_down });
-
-        // Send the edge over the tunnel when paired.
-        let transport = shared.transport.lock().unwrap().clone();
-        if let Some(transport) = transport {
-            let event = EdgeEvent {
-                timestamp_ticks: edge.timestamp_ticks,
-                key_down: edge.key_down,
-                source: EdgeSource::Host,
-            };
-            let frame = sender.frame_for(event);
-            let _ = rt.block_on(async { transport.send_frame(&frame).await });
-        }
+        drive_edge(shared, rt, tone.as_ref(), &mut sender, edge.key_down, edge.timestamp_ticks);
     }
     // Ensure the key is up at the end.
-    if let Some(tone) = tone.as_ref() {
-        tone.key(false);
+    drive_edge(shared, rt, tone.as_ref(), &mut sender, false, clock.now());
+}
+
+/// Fans a single key transition to every output: local sidetone, the local serial key line,
+/// the UI indicator, and (when paired) the tunnel edge transport. This is the one place the
+/// Client turns a decided edge into effect, shared by the text/macro path ([`play_cw`]) and
+/// the live paddle poller so both key identically.
+fn drive_edge(
+    shared: &Arc<Shared>,
+    rt: &tokio::runtime::Handle,
+    tone: Option<&Sidetone>,
+    sender: &mut EdgeSender,
+    key_down: bool,
+    timestamp_ticks: u64,
+) {
+    // 1. Local sidetone (via its own audio thread).
+    if let Some(tone) = tone {
+        tone.key(key_down);
     }
+    // 2. Local key line, if a port is open.
     if let Some(out) = shared.keying.lock().unwrap().as_mut() {
-        let _ = out.apply(false, false);
+        let _ = out.apply(key_down, false);
     }
-    shared.emit(ClientEvent::KeyState { down: false });
+    // 3. UI indicator.
+    shared.emit(ClientEvent::KeyState { down: key_down });
+    // 4. Tunnel transport when paired.
+    let transport = shared.transport.lock().unwrap().clone();
+    if let Some(transport) = transport {
+        let event = EdgeEvent { timestamp_ticks, key_down, source: EdgeSource::Paddle };
+        let frame = sender.frame_for(event);
+        let _ = rt.block_on(async { transport.send_frame(&frame).await });
+    }
+}
+
+/// Nominal paddle poll interval, matching the C# `PaddleInputPoller` (1 ms).
+const PADDLE_POLL_MS: u64 = 1;
+/// Debounce window for the paddle contacts (5 ms), matching the C# default.
+const PADDLE_DEBOUNCE_MS: u64 = 5;
+
+/// A handle to the running paddle poller thread. Dropping it stops the thread, joins it, and
+/// releases the serial port (DTR dropped). Changing or clearing the paddle port drops the
+/// previous handle, so there is never more than one poller.
+struct PaddlePollerHandle {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PaddlePollerHandle {
+    /// Spawns the poller thread over an open [`PaddleInputPort`].
+    fn spawn(
+        mut input: PaddleInputPort,
+        shared: Arc<Shared>,
+        rt: tokio::runtime::Handle,
+    ) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let thread = std::thread::Builder::new()
+            .name("rwk-paddle".into())
+            .spawn(move || paddle_loop(&mut input, &shared, &rt, &stop_thread))
+            .expect("spawn paddle poller thread");
+        Self { stop, thread: Some(thread) }
+    }
+}
+
+impl Drop for PaddlePollerHandle {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// The paddle poller body. Runs on a dedicated time-critical thread with a 1 ms timer period,
+/// polling the serial control lines, debouncing, and driving the live keyer. Each resulting
+/// edge is fanned to sidetone / key line / UI / tunnel through [`drive_edge`], the same path
+/// the type-ahead CW uses, so a paddle and a typed macro key identically. A port read error
+/// (adapter unplugged) ends the loop cleanly after releasing the key.
+fn paddle_loop(
+    input: &mut PaddleInputPort,
+    shared: &Arc<Shared>,
+    rt: &tokio::runtime::Handle,
+    stop: &Arc<AtomicBool>,
+) {
+    // Raise priority and timer resolution for the whole session, mirroring the C# poller.
+    let _priority = ThreadPriorityGuard::raise_time_critical();
+    let _timer = TimerResolutionGuard::raise(1);
+
+    let clock = MonotonicClock;
+    let hz = clock.frequency();
+    let mut debouncer = ContactDebouncer::new(PADDLE_DEBOUNCE_MS, hz);
+
+    // The live keyer, re-tuned each element from the current UI settings so moving the WPM
+    // slider or changing mode takes effect immediately.
+    let (mut wpm, mut weight, mut mode, _reverse0) = read_keyer_settings(shared);
+    let mut keyer = match PaddleKeyer::new(mode, wpm, weight, hz) {
+        Ok(k) => k,
+        Err(e) => {
+            shared.log("warn", format!("Paddle keyer init failed: {e}"));
+            return;
+        }
+    };
+
+    // A fresh EdgeSender for the tunnel frames, with its own epoch window from now.
+    let epoch = *shared.epoch.lock().unwrap();
+    let mut sender = EdgeSender::new(epoch, hz, clock.now());
+
+    let poll_step = hz.saturating_mul(PADDLE_POLL_MS) / 1000;
+    let should_abort = || stop.load(Ordering::SeqCst);
+
+    while !stop.load(Ordering::SeqCst) {
+        // Read + debounce the contacts.
+        let raw = match input.read() {
+            Ok(sample) => sample,
+            Err(e) => {
+                shared.log("warn", format!("Paddle port read error: {e}. Input stopped."));
+                break;
+            }
+        };
+        let _ = debouncer.accept(raw, clock.now());
+        let accepted = debouncer.accepted();
+
+        // Re-read UI settings; re-tune / change mode live if they moved.
+        let (nw, ng, nm, reverse) = read_keyer_settings(shared);
+        if nw != wpm || ng != weight {
+            let _ = keyer.retune(nw, ng, hz);
+            wpm = nw;
+            weight = ng;
+        }
+        if nm != mode {
+            keyer.set_mode(nm);
+            mode = nm;
+        }
+
+        // Snapshot of the debounced paddle for the keyer, applying dit/dah reversal.
+        let paddle_now = move || accepted.to_paddle_state(reverse);
+
+        let tone = shared.sidetone.lock().unwrap().clone();
+        let played = keyer.run_once(
+            &clock,
+            &paddle_now,
+            &mut |edge| {
+                drive_edge(shared, rt, tone.as_ref(), &mut sender, edge.key_down, edge.timestamp_ticks);
+            },
+            &should_abort,
+        );
+
+        if !played {
+            // Idle: pace the poll at ~1 ms so the thread does not busy-spin.
+            let next = clock.now() + poll_step.max(1);
+            HybridWaiter::wait_until_ticks(&clock, next, &should_abort);
+        }
+    }
+
+    // Leave the key up on the way out.
+    let tone = shared.sidetone.lock().unwrap().clone();
+    drive_edge(shared, rt, tone.as_ref(), &mut sender, false, clock.now());
+}
+
+/// Reads the current keyer settings (wpm, weight, mode, paddle-reverse) under the lock.
+fn read_keyer_settings(shared: &Arc<Shared>) -> (u32, u32, KeyerMode, bool) {
+    let s = shared.settings.lock().unwrap();
+    (s.wpm, s.weight, s.mode, s.paddle_reverse)
 }
 
 /// Maps a UI mode name to a [`KeyerMode`], defaulting to Iambic B.
