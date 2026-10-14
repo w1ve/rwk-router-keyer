@@ -1,8 +1,9 @@
-# RWK Router Keyer — Rust port (`rwk-core`)
+# W1VE Remote Keyer-Router — Rust port (`rwk-core`)
 
-Native Rust engine for RWK Router Keyer. This directory is the start of the port away
-from the .NET solution plus its Go/Tailscale sidecar, toward **one self-contained
-executable with no child process**.
+Native Rust engine for **W1VE Remote Keyer-Router** (formerly "RWK Router Keyer"). This
+directory is the port away from the .NET solution plus its Go/Tailscale sidecar, toward
+**one self-contained executable with no child process**. The crate names (`rwk-core`,
+`rwk-app`, `rwk-station`, `rwk`) keep the `rwk` prefix; only the product name changed.
 
 ## Layout
 

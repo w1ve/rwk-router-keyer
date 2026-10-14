@@ -8,8 +8,8 @@
 //! and Station can run on the same machine during testing without clobbering each other:
 //!
 //! ```text
-//! Windows: %APPDATA%\RWK Router Keyer\client.json  (or station.json)
-//! other:   ~/.config/rwk-router-keyer/client.json  (or station.json)
+//! Windows: %APPDATA%\W1VE Remote Keyer-Router\client.json  (or station.json)
+//! other:   ~/.config/w1ve-remote-keyer-router/client.json  (or station.json)
 //! ```
 //!
 //! Resolution is dependency-free (no `dirs`/`directories` crate): on Windows it reads
@@ -22,8 +22,8 @@ use std::path::PathBuf;
 use rwk_core::config::Role;
 
 /// The vendor/product folder name under the per-user config root.
-const APP_DIR_WINDOWS: &str = "RWK Router Keyer";
-const APP_DIR_UNIX: &str = "rwk-router-keyer";
+const APP_DIR_WINDOWS: &str = "W1VE Remote Keyer-Router";
+const APP_DIR_UNIX: &str = "w1ve-remote-keyer-router";
 
 /// Returns the config-file path for `role`, creating the parent directory if needed.
 ///

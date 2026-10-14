@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "RWK Router Keyer",
+  "productName": "W1VE Remote Keyer-Router",
   "version": "0.1.0",
   "identifier": "com.w1ve.rwk",
   "build": {
@@ -19,7 +19,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "RWK Router/Keyer — Any Rig, Any Internet, Anytime",
+        "title": "W1VE Remote Keyer-Router — Any Rig, Any Internet, Anytime",
         "width": 980,
         "height": 640,
         "minWidth": 900,
