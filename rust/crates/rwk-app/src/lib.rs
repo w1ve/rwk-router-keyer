@@ -1,4 +1,4 @@
-//! The RWK Router Keyer desktop applications (Tauri v2).
+//! The W1VE Remote Keyer-Router desktop applications (Tauri v2).
 //!
 //! This crate is the operator-facing shell over the native [`rwk_core`] engine. It ships as
 //! **two separate executables** that share this one library:
@@ -69,6 +69,11 @@ pub fn run_client() {
             test_tx,
             connect,
             disconnect,
+            forward_rules_refresh,
+            add_forward_rule,
+            remove_forward_rule,
+            set_forward_rule_enabled,
+            set_flex_discovery,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the RWK Client application");
@@ -172,6 +177,46 @@ fn disconnect(state: State<'_, ClientState>) {
     state.controller.disconnect();
 }
 
+// ─── Client: Ham Router (port forwarding) ──────────────────────────────────────
+
+#[tauri::command]
+fn forward_rules_refresh(state: State<'_, ClientState>) {
+    state.controller.refresh_forward_rules();
+}
+
+#[tauri::command]
+fn add_forward_rule(
+    state: State<'_, ClientState>,
+    name: String,
+    protocol: String,
+    client_port: u16,
+    station_port: u16,
+    station_target_address: String,
+) {
+    state.controller.add_forward_rule(
+        &name,
+        &protocol,
+        client_port,
+        station_port,
+        &station_target_address,
+    );
+}
+
+#[tauri::command]
+fn remove_forward_rule(state: State<'_, ClientState>, id: String) {
+    state.controller.remove_forward_rule(&id);
+}
+
+#[tauri::command]
+fn set_forward_rule_enabled(state: State<'_, ClientState>, id: String, enabled: bool) {
+    state.controller.set_forward_rule_enabled(&id, enabled);
+}
+
+#[tauri::command]
+fn set_flex_discovery(state: State<'_, ClientState>, enabled: bool) {
+    state.controller.set_flex_discovery(enabled);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Station application (`rwk-station`)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -198,8 +243,9 @@ pub fn run_station() {
             // command, which exists only in this binary, and mounts the Station UI when it
             // succeeds (and the Client UI when it does not).
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window
-                    .set_title("RWK Router/Keyer Station — Any Rig, Any Internet, Anytime");
+                let _ = window.set_title(
+                    "W1VE Remote Keyer-Router Station — Any Rig, Any Internet, Anytime",
+                );
             }
             Ok(())
         })

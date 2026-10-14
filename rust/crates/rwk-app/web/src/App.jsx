@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { onRwkEvent } from "./api.js";
 import KeyerTab from "./KeyerTab.jsx";
+import RouterTab from "./RouterTab.jsx";
 
 const DEFAULT_SETTINGS = {
   wpm: 20,
@@ -16,6 +17,8 @@ export default function App() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [connection, setConnection] = useState({ state: "disconnected", path: "none" });
   const [keyDown, setKeyDown] = useState(false);
+  const [forwardRules, setForwardRules] = useState([]);
+  const [flexEnabled, setFlexEnabled] = useState(false);
   const [log, setLog] = useState([]);
 
   useEffect(() => {
@@ -36,6 +39,12 @@ export default function App() {
           break;
         case "keyState":
           setKeyDown(ev.down);
+          break;
+        case "forwardRules":
+          setForwardRules(ev.rules || []);
+          break;
+        case "flexDiscovery":
+          setFlexEnabled(ev.enabled);
           break;
         case "log":
           setLog((prev) => [
@@ -87,10 +96,11 @@ export default function App() {
       <div className="tabbody">
         {tab === "keyer" && <KeyerTab settings={settings} connection={connection} />}
         {tab === "router" && (
-          <div className="panel">
-            <h3>Ham Router</h3>
-            <p style={{ color: "var(--text-dim)" }}>Port forwarding — a later slice.</p>
-          </div>
+          <RouterTab
+            rules={forwardRules}
+            flexEnabled={flexEnabled}
+            connected={connection.state === "connected"}
+          />
         )}
         {tab === "log" && (
           <div className="panel" style={{ height: "100%" }}>

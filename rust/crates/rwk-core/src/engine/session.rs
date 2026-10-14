@@ -107,6 +107,36 @@ impl Session {
         self._handle.clone()
     }
 
+    /// Replaces the running forward rules with `rules`, over the same tunnel and netstack.
+    ///
+    /// This is how a pushed rule table (Client → Station over the control channel) takes
+    /// effect live: the current forward tasks are signalled to stop, then a fresh task is
+    /// started per enabled rule. The keying edge and the control channel ride their own
+    /// sockets and are untouched. Returns the number of rules started.
+    ///
+    /// The shutdown `watch` is replaced so the *old* tasks stop without stopping the session;
+    /// new tasks subscribe to the new channel.
+    pub async fn apply_forwards(&mut self, rules: &[ForwardRuleConfig]) -> usize {
+        // Signal the old forward tasks to stop and reap them.
+        let _ = self.shutdown.send(true);
+        for task in self.tasks.drain(..) {
+            let _ = task.await;
+        }
+        // Fresh shutdown channel for the new generation of tasks.
+        let (tx, rx) = watch::channel(false);
+        self.shutdown = tx;
+
+        let mut started = 0usize;
+        for rule in rules.iter().filter(|r| r.enabled) {
+            if let Ok(Some(task)) = start_rule(self.role, &self._handle, rule, &rx) {
+                self.tasks.push(task);
+                started += 1;
+            }
+        }
+        self.started = started;
+        started
+    }
+
     /// Stops every forward task and waits for them to finish.
     ///
     /// Idempotent: a second call is a no-op. The driver stops once the session (and any cloned

@@ -17,13 +17,16 @@
 //! * [`relay`] — a minimal packet relay (NAT-traversal fallback) keyed by public key.
 //! * [`session`] — a running session: netstack + forwarders wired over a connected tunnel.
 //! * [`replay`] — the Station edge replayer: jitter buffer, fail-safes, watchdogs.
+//! * [`control`] — the Client↔Station control channel (forward rules, discovery announce).
 //! * [`bus`] — the broadcast event bus that feeds the UI.
 
 pub mod audio;
 pub mod bus;
+pub mod control;
 pub mod debounce;
 pub mod edge_sender;
 pub mod edge_station;
+pub mod flex_discovery;
 pub mod keying;
 pub mod keying_arbiter;
 pub mod netstack;
@@ -56,6 +59,8 @@ pub use edge_station::{pump_edges, tunnel_replayer};
 pub use keying_arbiter::{
     KeySource, KeyingArbiter, LineObserver, LineUpdate, LocalKeyHandle, RemoteKeyingOutput,
 };
+pub use control::{ControlLink, ControlMessage, is_reserved_port, CONTROL_PORT};
+pub use flex_discovery::{DiscoveryEmitter, DiscoveryListener};
 pub use debounce::ContactDebouncer;
 pub use paddle::PaddleKeyer;
 pub use paddle_input::{ContactSample, PaddleInputPort};

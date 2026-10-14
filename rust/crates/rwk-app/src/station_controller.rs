@@ -25,9 +25,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use rwk_core::config::{Config, Role};
+use rwk_core::config::{base64_encode, Config, Role};
 use rwk_core::engine::bus::{CoreEvent, EventBus};
+use rwk_core::engine::control::{ControlLink, ControlMessage};
 use rwk_core::engine::edge_station::{pump_edges, tunnel_replayer};
+use rwk_core::engine::flex_discovery::DiscoveryListener;
 use rwk_core::engine::keying_arbiter::{KeyingArbiter, LineObserver, LineUpdate};
 use rwk_core::engine::network::EdgeTransport;
 use rwk_core::engine::replay::{spawn_driver, EdgeJitterProfile, SerialKeyingAdapter};
@@ -178,11 +180,15 @@ pub struct StationController {
 
 /// The resources a running pairing owns, torn down together on unpair.
 struct ActiveSession {
-    session: Session,
+    /// The live session, shared with the control task so pushed forward rules can be applied
+    /// over the same tunnel without tearing the link down.
+    session: Arc<tokio::sync::Mutex<Session>>,
     /// Pump task that forwards tunnel datagrams into the replay driver. Aborting it stops
     /// the inflow; the driver's own threads stop when its handle drops.
     pump: tokio::task::JoinHandle<rwk_core::Result<()>>,
-    /// A flag the bus-forwarding task watches so it exits when the session ends.
+    /// The control-channel task (receives forward-rule pushes + sends discovery announces).
+    control: tokio::task::JoinHandle<()>,
+    /// A flag the bus-forwarding and control tasks watch so they exit when the session ends.
     stop_bus: Arc<AtomicBool>,
     /// The logger-WinKeyer host, if the operator enabled it for this session. Dropped (and
     /// its port released) when the session ends.
@@ -441,9 +447,19 @@ impl StationController {
             // Pump received edge datagrams into the replay driver.
             let pump = tokio::spawn(pump_edges(Arc::clone(&transport), driver));
 
+            // Share the session so the control task can apply pushed forward rules live.
+            let session = Arc::new(tokio::sync::Mutex::new(session));
+            let control = spawn_control_task(
+                Arc::clone(&shared),
+                net.clone(),
+                Arc::clone(&session),
+                Arc::clone(&stop_bus),
+            );
+
             *active_slot.lock().unwrap() = Some(ActiveSession {
                 session,
                 pump,
+                control,
                 stop_bus,
                 logger,
                 _arbiter: arbiter,
@@ -466,8 +482,11 @@ impl StationController {
                 logger.stop();
             }
             active.pump.abort();
-            let mut session = active.session;
-            self.runtime.block_on(async { session.shutdown().await });
+            active.control.abort();
+            let session = active.session;
+            self.runtime.block_on(async {
+                session.lock().await.shutdown().await;
+            });
             self.shared.emit(StationEvent::KeyState { down: false });
             self.shared.emit(StationEvent::Ptt { asserted: false });
             self.shared.emit(StationEvent::LoggerSending { active: false });
@@ -547,6 +566,107 @@ fn make_host_reporter(shared: Arc<Shared>) -> HostReporter {
 fn fail(shared: &Arc<Shared>, message: String) {
     shared.log("warn", message);
     shared.emit(StationEvent::Connection { state: "disconnected".into(), path: "none".into() });
+}
+
+/// Spawns the Station's control-channel task: accept the Client's control connection, apply
+/// each pushed forward-rule table to the live session, and — when any FlexRadio rule is
+/// present — capture the radio's VITA-49 discovery broadcasts and forward them to the Client.
+fn spawn_control_task(
+    shared: Arc<Shared>,
+    net: rwk_core::engine::netstack_driver::NetStackHandle,
+    session: Arc<tokio::sync::Mutex<Session>>,
+    stop: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        // Accept the Client's control connection over the tunnel.
+        let link = match ControlLink::listen(&net).await {
+            Ok(l) => l,
+            Err(e) => {
+                shared.log("warn", format!("Control channel listen failed: {e}"));
+                return;
+            }
+        };
+        shared.log("info", "Control channel up.");
+        let link = Arc::new(tokio::sync::Mutex::new(link));
+
+        // A handle to a running Flex discovery listener task, so a later rule change can stop
+        // it (or leave it running).
+        let mut flex_task: Option<tokio::task::JoinHandle<()>> = None;
+
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                break;
+            }
+            let message = {
+                let mut guard = link.lock().await;
+                guard.recv().await
+            };
+            match message {
+                Ok(Some(ControlMessage::ForwardRules { rules })) => {
+                    let started = session.lock().await.apply_forwards(&rules).await;
+                    shared.log(
+                        "info",
+                        format!("Applied {started} forward rule(s) pushed from the client."),
+                    );
+                    // If the Client pushed any Flex rule, make sure the discovery listener is
+                    // running so SmartSDR discovery is relayed back.
+                    let has_flex = rules.iter().any(|r| r.id.starts_with("flex-"));
+                    if has_flex && flex_task.is_none() {
+                        flex_task = Some(spawn_flex_listener(
+                            Arc::clone(&shared),
+                            Arc::clone(&link),
+                            Arc::clone(&stop),
+                        ));
+                        shared.log("info", "FlexRadio discovery capture started.");
+                    } else if !has_flex {
+                        if let Some(task) = flex_task.take() {
+                            task.abort();
+                        }
+                    }
+                }
+                Ok(Some(_)) => {} // the Station ignores other message types
+                Ok(None) | Err(_) => break, // closed or error
+            }
+        }
+        if let Some(task) = flex_task.take() {
+            task.abort();
+        }
+    })
+}
+
+/// Spawns a blocking task that captures FlexRadio discovery broadcasts on the Station LAN and
+/// forwards each raw packet to the Client over `link` as a base64 `DiscoveryAnnounce`.
+fn spawn_flex_listener(
+    shared: Arc<Shared>,
+    link: Arc<tokio::sync::Mutex<ControlLink>>,
+    stop: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let listener = match DiscoveryListener::bind() {
+            Ok(l) => l,
+            Err(e) => {
+                shared.log("warn", format!("Flex discovery listener failed: {e}"));
+                return;
+            }
+        };
+        let _ = listener.set_read_timeout(Some(std::time::Duration::from_millis(300)));
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            // The capture is blocking; run it off the async worker.
+            let captured = tokio::task::block_in_place(|| listener.recv_discovery());
+            match captured {
+                Ok(Some(packet)) => {
+                    let payload = base64_encode(&packet);
+                    let guard = link.lock().await;
+                    let _ = guard.send(&ControlMessage::DiscoveryAnnounce { payload }).await;
+                }
+                Ok(None) => {} // not a Flex packet, ignore
+                Err(_) => {}   // timeout or transient error: loop and re-check the stop flag
+            }
+        }
+    })
 }
 
 /// Forwards fail-safe events published on the replay driver's bus to the UI sink until

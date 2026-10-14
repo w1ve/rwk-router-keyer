@@ -211,3 +211,32 @@ input[type="range"] {
   gap: 6px 8px;
   align-items: center;
 }
+
+/* Forward-rule table (Ham Router) */
+table.rules {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+table.rules th {
+  text-align: left;
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+table.rules td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+table.rules code {
+  background: var(--bg-panel-2);
+  padding: 1px 4px;
+  border-radius: 3px;
+}

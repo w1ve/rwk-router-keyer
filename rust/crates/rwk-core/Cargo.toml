@@ -18,6 +18,7 @@ getrandom = { workspace = true }
 smoltcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+socket2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

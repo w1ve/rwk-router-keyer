@@ -30,6 +30,21 @@ export const api = {
   // Pairing
   connect: (relay, code) => invoke("connect", { relay, code }),
   disconnect: () => invoke("disconnect"),
+
+  // Ham Router (port forwarding)
+  forwardRulesRefresh: () => invoke("forward_rules_refresh"),
+  addForwardRule: (name, protocol, clientPort, stationPort, stationTargetAddress) =>
+    invoke("add_forward_rule", {
+      name,
+      protocol,
+      clientPort,
+      stationPort,
+      stationTargetAddress,
+    }),
+  removeForwardRule: (id) => invoke("remove_forward_rule", { id }),
+  setForwardRuleEnabled: (id, enabled) =>
+    invoke("set_forward_rule_enabled", { id, enabled }),
+  setFlexDiscovery: (enabled) => invoke("set_flex_discovery", { enabled }),
 };
 
 // Subscribes to the single controller event stream. `handler` receives each ClientEvent

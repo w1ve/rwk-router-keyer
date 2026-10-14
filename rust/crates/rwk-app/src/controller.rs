@@ -15,10 +15,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
-use rwk_core::config::{Config, Role};
+use rwk_core::config::{base64_decode, Config, ForwardRuleConfig, Role};
 use rwk_core::engine::audio::SidetoneEngine;
+use rwk_core::engine::control::{is_reserved_port, ControlLink, ControlMessage};
 use rwk_core::engine::debounce::ContactDebouncer;
 use rwk_core::engine::edge_sender::EdgeSender;
+use rwk_core::engine::flex_discovery::DiscoveryEmitter;
 use rwk_core::engine::keying::{EdgeEvent, EdgeSchedule, EdgeScheduleBuilder};
 use rwk_core::engine::network::EdgeTransport;
 use rwk_core::engine::paddle::PaddleKeyer;
@@ -26,6 +28,7 @@ use rwk_core::engine::paddle_input::PaddleInputPort;
 use rwk_core::engine::serial::{enumerate_ports, KeyingOutputConfig, SerialKeyingOutput};
 use rwk_core::engine::session::Session;
 use rwk_core::engine::tunnel;
+use rwk_core::protocol::flex_vita;
 use rwk_core::platform::{ThreadPriorityGuard, TimerResolutionGuard};
 use rwk_core::primitives::{EdgeSource, KeyerMode, KeyingLine};
 use rwk_core::timing::{Clock, HybridWaiter, MonotonicClock};
@@ -128,6 +131,38 @@ pub enum ClientEvent {
         tone_hz: i32,
         tone_volume: u32,
     },
+    /// The current forward-rule table, echoed whenever it changes (for the Ham Router tab).
+    ForwardRules { rules: Vec<ForwardRuleView> },
+    /// Whether FlexRadio discovery re-emission is enabled (for the Ham Router toggle).
+    FlexDiscovery { enabled: bool },
+}
+
+/// A forward rule as the UI sees it: the persisted [`ForwardRuleConfig`] fields, serialized
+/// in camelCase for the web layer.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForwardRuleView {
+    pub id: String,
+    pub name: String,
+    pub protocol: String,
+    pub client_port: u16,
+    pub station_port: u16,
+    pub enabled: bool,
+    pub station_target_address: String,
+}
+
+impl From<&ForwardRuleConfig> for ForwardRuleView {
+    fn from(r: &ForwardRuleConfig) -> Self {
+        Self {
+            id: r.id.clone(),
+            name: r.name.clone(),
+            protocol: r.protocol.clone(),
+            client_port: r.client_port,
+            station_port: r.station_port,
+            enabled: r.enabled,
+            station_target_address: r.station_target_address.clone(),
+        }
+    }
 }
 
 /// A sink the host (Tauri) registers to receive [`ClientEvent`]s. Boxed so the controller
@@ -181,6 +216,14 @@ struct Shared {
     epoch: Mutex<u16>,
     /// The running serial paddle poller, present only while a paddle port is selected.
     paddle: Mutex<Option<PaddlePollerHandle>>,
+    /// The control channel to the Station, present only while paired. Used to push the
+    /// forward-rule table and to receive FlexRadio discovery announcements.
+    control: tokio::sync::Mutex<Option<ControlLink>>,
+    /// The live session, so the Client can restart its own forwards on a rule change. Shared
+    /// (rather than held only on the controller) so command handlers reach it.
+    session: tokio::sync::Mutex<Option<Session>>,
+    /// The host-LAN FlexRadio discovery emitter, present while re-emission is enabled.
+    flex_emitter: Mutex<Option<DiscoveryEmitter>>,
     /// The persisted config, held so pairing reuses a stable WireGuard identity across runs.
     config: Mutex<Config>,
     /// Where the config persists; `None` disables saving (tests).
@@ -223,6 +266,33 @@ impl Shared {
             self.log("warn", format!("Could not save config: {e}"));
         }
     }
+
+    /// Emits the current forward-rule table to the UI.
+    fn emit_forward_rules(&self) {
+        let config = self.config.lock().unwrap();
+        let rules = config.forwards.iter().map(ForwardRuleView::from).collect();
+        self.emit(ClientEvent::ForwardRules { rules });
+    }
+
+    /// Emits whether FlexRadio discovery re-emission is enabled.
+    fn emit_flex_state(&self) {
+        let enabled = self.flex_emitter.lock().unwrap().is_some();
+        self.emit(ClientEvent::FlexDiscovery { enabled });
+    }
+
+    /// Writes the current config (including `forwards`) to disk. Logged, not fatal, on error.
+    fn persist_config(&self) {
+        let Some(path) = &self.config_path else { return };
+        let config = self.config.lock().unwrap();
+        if let Err(e) = config.save(path) {
+            self.log("warn", format!("Could not save config: {e}"));
+        }
+    }
+
+    /// Returns a clone of the current forward rules.
+    fn forward_rules(&self) -> Vec<ForwardRuleConfig> {
+        self.config.lock().unwrap().forwards.clone()
+    }
 }
 
 /// The Client controller. Construct with [`ClientController::start`], then drive it with the
@@ -230,9 +300,6 @@ impl Shared {
 pub struct ClientController {
     shared: Arc<Shared>,
     runtime: tokio::runtime::Runtime,
-    /// The live session, held so the link stays up until unpaired or dropped. An `Arc` so a
-    /// spawned pairing task can install the session when the handshake completes.
-    session: Arc<Mutex<Option<Session>>>,
     _clock: Arc<dyn Clock>,
 }
 
@@ -269,6 +336,9 @@ impl ClientController {
             transport: Mutex::new(None),
             epoch: Mutex::new(1),
             paddle: Mutex::new(None),
+            control: tokio::sync::Mutex::new(None),
+            session: tokio::sync::Mutex::new(None),
+            flex_emitter: Mutex::new(None),
             config: Mutex::new(config),
             config_path,
             sink,
@@ -284,13 +354,10 @@ impl ClientController {
             .build()
             .expect("tokio runtime");
 
-        let controller = Self {
-            shared,
-            runtime,
-            session: Arc::new(Mutex::new(None)),
-            _clock: Arc::new(MonotonicClock),
-        };
+        let controller = Self { shared, runtime, _clock: Arc::new(MonotonicClock) };
         controller.shared.emit_settings();
+        controller.shared.emit_forward_rules();
+        controller.shared.emit_flex_state();
         controller
     }
 
@@ -442,6 +509,150 @@ impl ClientController {
         self.send_cw("VVV TESTING");
     }
 
+    // ─── Ham Router: forward rules ─────────────────────────────────────────────
+
+    /// Adds a forward rule. `protocol` is "tcp" or "udp". Ports are validated: a rule using a
+    /// reserved RWK port (7373/41373), or a duplicate client port on the same protocol, is
+    /// rejected with a logged warning and no change. New rules default to **disabled** so the
+    /// operator enables them deliberately (matching the C#).
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_forward_rule(
+        &self,
+        name: &str,
+        protocol: &str,
+        client_port: u16,
+        station_port: u16,
+        station_target_address: &str,
+    ) {
+        let proto = if protocol.eq_ignore_ascii_case("udp") { "udp" } else { "tcp" };
+        if is_reserved_port(client_port) || is_reserved_port(station_port) {
+            self.shared.log("warn", "That port is reserved for RWK control traffic.");
+            return;
+        }
+        {
+            let mut config = self.shared.config.lock().unwrap();
+            if config
+                .forwards
+                .iter()
+                .any(|r| r.protocol == proto && r.client_port == client_port)
+            {
+                drop(config);
+                self.shared.log("warn", format!("A {proto} rule already uses client port {client_port}."));
+                return;
+            }
+            let id = format!("{proto}-{client_port}-{}", config.forwards.len() + 1);
+            config.forwards.push(ForwardRuleConfig {
+                id,
+                name: name.to_string(),
+                protocol: proto.to_string(),
+                client_port,
+                station_port,
+                enabled: false,
+                station_target_address: station_target_address.to_string(),
+            });
+        }
+        self.shared.persist_config();
+        self.shared.emit_forward_rules();
+        self.push_and_apply_rules();
+    }
+
+    /// Removes the forward rule with `id`.
+    pub fn remove_forward_rule(&self, id: &str) {
+        {
+            let mut config = self.shared.config.lock().unwrap();
+            config.forwards.retain(|r| r.id != id);
+        }
+        self.shared.persist_config();
+        self.shared.emit_forward_rules();
+        self.push_and_apply_rules();
+    }
+
+    /// Enables or disables the forward rule with `id`.
+    pub fn set_forward_rule_enabled(&self, id: &str, enabled: bool) {
+        {
+            let mut config = self.shared.config.lock().unwrap();
+            if let Some(rule) = config.forwards.iter_mut().find(|r| r.id == id) {
+                rule.enabled = enabled;
+            }
+        }
+        self.shared.persist_config();
+        self.shared.emit_forward_rules();
+        self.push_and_apply_rules();
+    }
+
+    /// Re-emits the current rule table to the UI (for an explicit refresh).
+    pub fn refresh_forward_rules(&self) {
+        self.shared.emit_forward_rules();
+    }
+
+    /// Pushes the current rules to the Station (if paired) and restarts the Client's own
+    /// forwards to match. Runs on the controller runtime; non-blocking for the caller.
+    fn push_and_apply_rules(&self) {
+        let shared = Arc::clone(&self.shared);
+        let rules = self.shared.forward_rules();
+        self.runtime.spawn(async move {
+            push_rules(&shared, &rules).await;
+        });
+    }
+
+    // ─── Ham Router: FlexRadio discovery re-emission ───────────────────────────
+
+    /// Enables or disables FlexRadio discovery re-emission on the Client LAN. Enabling creates
+    /// the host-side emitter and auto-adds the Flex forward rules (TCP 4992 command, UDP 4991
+    /// stream) if absent; disabling removes the emitter and those rules. The real radio IP is
+    /// filled into `station_target_address` when the first discovery announcement arrives.
+    pub fn set_flex_discovery(&self, enabled: bool) {
+        if enabled {
+            match DiscoveryEmitter::new() {
+                Ok(emitter) => {
+                    *self.shared.flex_emitter.lock().unwrap() = Some(emitter);
+                    self.ensure_flex_rules();
+                    self.shared.log("info", "FlexRadio discovery re-emission enabled.");
+                }
+                Err(e) => {
+                    self.shared.log("warn", format!("Flex re-emission unavailable: {e}"));
+                    self.shared.emit_flex_state();
+                    return;
+                }
+            }
+        } else {
+            *self.shared.flex_emitter.lock().unwrap() = None;
+            self.remove_flex_rules();
+            self.shared.log("info", "FlexRadio discovery re-emission disabled.");
+        }
+        self.shared.persist_config();
+        self.shared.emit_flex_state();
+        self.shared.emit_forward_rules();
+        self.push_and_apply_rules();
+    }
+
+    /// Ensures the two Flex forward rules exist (TCP 4992, UDP 4991), enabled.
+    fn ensure_flex_rules(&self) {
+        let mut config = self.shared.config.lock().unwrap();
+        for (proto, port, label) in [
+            ("tcp", 4992u16, "[Flex] SmartSDR Command"),
+            ("udp", 4991u16, "[Flex] VITA-49 Stream"),
+        ] {
+            if !config.forwards.iter().any(|r| r.protocol == proto && r.client_port == port) {
+                config.forwards.push(ForwardRuleConfig {
+                    id: format!("flex-{proto}-{port}"),
+                    name: label.to_string(),
+                    protocol: proto.to_string(),
+                    client_port: port,
+                    station_port: port,
+                    enabled: true,
+                    station_target_address: String::new(), // filled from the first announce
+                });
+            }
+        }
+    }
+
+    /// Removes the auto-managed Flex forward rules.
+    fn remove_flex_rules(&self) {
+        let mut config = self.shared.config.lock().unwrap();
+        config.forwards.retain(|r| !r.id.starts_with("flex-"));
+    }
+
     // ─── Pairing ──────────────────────────────────────────────────────────────
 
     /// Pairs with the station using a shared pairing code over the configured relay, brings
@@ -464,14 +675,14 @@ impl ClientController {
         };
         let code = code.to_string();
         let shared = Arc::clone(&self.shared);
-        let session_slot = self.session_handle();
 
         shared.emit(ClientEvent::Connection { state: "connecting".into(), path: "none".into() });
 
         self.runtime.spawn(async move {
             // Clone the PERSISTED config so the WireGuard identity is stable across runs,
             // then layer the relay and pairing code on top. The peer key is discovered by
-            // rendezvous, so no key paste is needed.
+            // rendezvous, so no key paste is needed. The forward rules travel to the Station
+            // over the control channel, so they are not needed in the connect config.
             let mut config = shared.config.lock().unwrap().clone();
             config.role = Role::Client;
             config.relay = Some(rwk_core::config::RelayConfig { address: relay_addr });
@@ -503,8 +714,23 @@ impl ClientController {
             );
             transport.set_peer(peer).await;
 
+            // Open the control channel to the Station and push the current forward rules.
+            let station_inner = std::net::IpAddr::V4(Role::Client.peer_inner_address());
+            match ControlLink::connect(&net, station_inner).await {
+                Ok(link) => {
+                    let rules = shared.config.lock().unwrap().forwards.clone();
+                    if let Err(e) = link.send(&ControlMessage::ForwardRules { rules }).await {
+                        shared.log("warn", format!("Could not push forward rules: {e}"));
+                    }
+                    *shared.control.lock().await = Some(link);
+                    // Start receiving discovery announcements from the Station.
+                    spawn_discovery_receiver(Arc::clone(&shared));
+                }
+                Err(e) => shared.log("warn", format!("Control channel unavailable: {e}")),
+            }
+
             *shared.transport.lock().unwrap() = Some(transport);
-            *session_slot.lock().unwrap() = Some(session);
+            *shared.session.lock().await = Some(session);
             {
                 let mut epoch = shared.epoch.lock().unwrap();
                 *epoch = epoch.wrapping_add(1);
@@ -516,20 +742,93 @@ impl ClientController {
         });
     }
 
-    /// Tears the session and keying edge down, returning to the unpaired state.
+    /// Tears the session, control channel and keying edge down, returning to unpaired.
     pub fn disconnect(&self) {
         *self.shared.transport.lock().unwrap() = None;
-        if let Some(mut session) = self.session.lock().unwrap().take() {
-            self.runtime.block_on(async { session.shutdown().await });
-        }
+        let shared = Arc::clone(&self.shared);
+        self.runtime.block_on(async move {
+            *shared.control.lock().await = None;
+            if let Some(mut session) = shared.session.lock().await.take() {
+                session.shutdown().await;
+            }
+        });
         self.shared
             .emit(ClientEvent::Connection { state: "disconnected".into(), path: "none".into() });
         self.shared.log("info", "Unpaired.");
     }
+}
 
-    /// A clone of the session slot `Arc` for use inside spawned tasks.
-    fn session_handle(&self) -> Arc<Mutex<Option<Session>>> {
-        Arc::clone(&self.session)
+/// Pushes `rules` to the Station over the control channel (if paired) and restarts the
+/// Client's own forward tasks to match. Safe to call when not paired (does nothing).
+async fn push_rules(shared: &Arc<Shared>, rules: &[ForwardRuleConfig]) {
+    // Push to the Station.
+    if let Some(link) = shared.control.lock().await.as_ref() {
+        if let Err(e) = link.send(&ControlMessage::ForwardRules { rules: rules.to_vec() }).await {
+            shared.log("warn", format!("Could not push forward rules: {e}"));
+        }
+    }
+    // Restart the Client's own forwards (binds local ports for enabled rules).
+    if let Some(session) = shared.session.lock().await.as_mut() {
+        let started = session.apply_forwards(rules).await;
+        shared.log("info", format!("{started} forward rule(s) active locally."));
+    }
+}
+
+/// Spawns a task that receives FlexRadio discovery announcements on the control channel and
+/// re-broadcasts them on the Client LAN. Runs until the control channel closes.
+fn spawn_discovery_receiver(shared: Arc<Shared>) {
+    tokio::spawn(async move {
+        loop {
+            // Take the recv side under the lock for one message, then release so sends can
+            // interleave. The control link is single-reader (this task), single-writer.
+            let message = {
+                let mut guard = shared.control.lock().await;
+                match guard.as_mut() {
+                    Some(link) => link.recv().await,
+                    None => return, // disconnected
+                }
+            };
+            match message {
+                Ok(Some(ControlMessage::DiscoveryAnnounce { payload })) => {
+                    handle_discovery_announce(&shared, &payload);
+                }
+                Ok(Some(_)) => {} // the Client ignores other message types
+                Ok(None) | Err(_) => return, // closed or error
+            }
+            // Small yield so a concurrent send can grab the lock.
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    });
+}
+
+/// Rewrites a captured Flex discovery packet to the local forwarded endpoint and re-broadcasts
+/// it on the Client LAN. Also learns the radio's real IP and fills it into the Flex rules'
+/// `station_target_address` so the Station dials the right device.
+fn handle_discovery_announce(shared: &Arc<Shared>, payload_b64: &str) {
+    let Ok(packet) = base64_decode(payload_b64) else {
+        return;
+    };
+    // Learn the radio's real address from the packet and set it on the Flex rules.
+    if let Ok(radio) = flex_vita::parse(&packet) {
+        let mut changed = false;
+        {
+            let mut config = shared.config.lock().unwrap();
+            for rule in config.forwards.iter_mut().filter(|r| r.id.starts_with("flex-")) {
+                let addr = radio.address.to_string();
+                if rule.station_target_address != addr {
+                    rule.station_target_address = addr;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            shared.persist_config();
+            shared.emit_forward_rules();
+        }
+    }
+    // Re-broadcast rewritten to the local Flex command port (4992) on the Client LAN.
+    if let Some(emitter) = shared.flex_emitter.lock().unwrap().as_ref() {
+        let _ = emitter.rebroadcast(&packet, std::net::Ipv4Addr::LOCALHOST, 4992);
     }
 }
 
