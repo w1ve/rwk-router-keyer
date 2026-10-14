@@ -27,9 +27,15 @@ export const api = {
   sendCw: (text) => invoke("send_cw", { text }),
   testTx: () => invoke("test_tx"),
 
-  // Pairing
+  // Pairing — WAN (relay + code)
   connect: (relay, code) => invoke("connect", { relay, code }),
   disconnect: () => invoke("disconnect"),
+
+  // Pairing — transport + LAN (this keyer advertises itself; the Station picks it)
+  setTransport: (transport) => invoke("set_transport", { transport }),
+  setCallsign: (callsign) => invoke("set_callsign", { callsign }),
+  setKeyerId: (keyerId) => invoke("set_keyer_id", { keyerId }),
+  lanAdvertise: (on) => invoke("lan_advertise", { on }),
 
   // Ham Router (port forwarding)
   forwardRulesRefresh: () => invoke("forward_rules_refresh"),

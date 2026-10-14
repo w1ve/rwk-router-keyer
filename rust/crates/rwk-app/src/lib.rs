@@ -3,10 +3,10 @@
 //! This crate is the operator-facing shell over the native [`rwk_core`] engine. It ships as
 //! **two separate executables** that share this one library:
 //!
-//! * `rwk-app` — the **Client** (operating position): the paddle/keyer UI, driven by
+//! * `w1ve-rkr` — the **Client** (operating position): the paddle/keyer UI, driven by
 //!   [`ClientController`]. Entry point [`run_client`].
-//! * `rwk-station` — the **Station** (remote radio site): the replay/keying UI, driven by
-//!   [`StationController`]. Entry point [`run_station`].
+//! * `w1ve-rkr-station` — the **Station** (remote radio site): the replay/keying UI, driven
+//!   by [`StationController`]. Entry point [`run_station`].
 //!
 //! They are distinct binaries, not one app in two modes, because the two sides run on
 //! different machines and have no overlapping UI: the Client sends keyed edges, the Station
@@ -29,7 +29,7 @@ use station_controller::{StationController, StationEvent};
 use tauri::{Emitter, Manager, State};
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  Client application (`rwk-app`)
+//  Client application (`w1ve-rkr`)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// The Tauri-managed state for the Client app: the live Client controller.
@@ -58,6 +58,10 @@ pub fn run_client() {
             set_weight,
             set_mode,
             set_paddle_reverse,
+            set_transport,
+            set_callsign,
+            set_keyer_id,
+            lan_advertise,
             set_tone_frequency,
             set_tone_volume,
             audio_devices,
@@ -87,7 +91,7 @@ pub fn run() {
 /// A trivial liveness command, used to confirm the UI↔Rust bridge is wired.
 #[tauri::command]
 fn ping() -> String {
-    format!("rwk-app {} ready", env!("CARGO_PKG_VERSION"))
+    format!("w1ve-rkr {} ready", env!("CARGO_PKG_VERSION"))
 }
 
 // ─── Client: keyer settings ──────────────────────────────────────────────────
@@ -110,6 +114,26 @@ fn set_mode(state: State<'_, ClientState>, mode: String) {
 #[tauri::command]
 fn set_paddle_reverse(state: State<'_, ClientState>, reverse: bool) {
     state.controller.set_paddle_reverse(reverse);
+}
+
+#[tauri::command]
+fn set_transport(state: State<'_, ClientState>, transport: String) {
+    state.controller.set_transport(&transport);
+}
+
+#[tauri::command]
+fn set_callsign(state: State<'_, ClientState>, callsign: String) {
+    state.controller.set_callsign(&callsign);
+}
+
+#[tauri::command]
+fn set_keyer_id(state: State<'_, ClientState>, keyer_id: String) {
+    state.controller.set_keyer_id(&keyer_id);
+}
+
+#[tauri::command]
+fn lan_advertise(state: State<'_, ClientState>, on: bool) {
+    state.controller.lan_advertise(on);
 }
 
 // ─── Client: sidetone ─────────────────────────────────────────────────────────
@@ -218,7 +242,7 @@ fn set_flex_discovery(state: State<'_, ClientState>, enabled: bool) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  Station application (`rwk-station`)
+//  Station application (`w1ve-rkr-station`)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// The Tauri-managed state for the Station app: the live Station controller.
@@ -258,6 +282,9 @@ pub fn run_station() {
             station_set_ptt_line,
             station_set_logger_port,
             station_set_logger_enabled,
+            station_set_transport,
+            station_lan_browse,
+            station_connect_lan,
             station_listen,
             station_disconnect,
         ])
@@ -268,7 +295,7 @@ pub fn run_station() {
 /// Station liveness command.
 #[tauri::command]
 fn station_ping() -> String {
-    format!("rwk-station {} ready", env!("CARGO_PKG_VERSION"))
+    format!("w1ve-rkr-station {} ready", env!("CARGO_PKG_VERSION"))
 }
 
 /// Which role this executable is. The shared web bundle calls this once at startup and mounts
@@ -306,6 +333,21 @@ fn station_set_logger_port(state: State<'_, StationState>, port: Option<String>)
 #[tauri::command]
 fn station_set_logger_enabled(state: State<'_, StationState>, enabled: bool) {
     state.controller.set_logger_enabled(enabled);
+}
+
+#[tauri::command]
+fn station_set_transport(state: State<'_, StationState>, transport: String) {
+    state.controller.set_transport(&transport);
+}
+
+#[tauri::command]
+fn station_lan_browse(state: State<'_, StationState>) {
+    state.controller.lan_browse();
+}
+
+#[tauri::command]
+fn station_connect_lan(state: State<'_, StationState>, key: String, endpoint: String) {
+    state.controller.connect_lan(&key, &endpoint);
 }
 
 /// Begins pairing: the Station waits for the Client to connect over the shared relay + code,

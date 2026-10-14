@@ -18,9 +18,14 @@ export const stationApi = {
   setLoggerPort: (port) => invoke("station_set_logger_port", { port }),
   setLoggerEnabled: (enabled) => invoke("station_set_logger_enabled", { enabled }),
 
-  // Pairing (the Station is the responder: it waits for the client)
+  // Pairing — WAN (the Station waits for the client over the relay)
   listen: (relay, code) => invoke("station_listen", { relay, code }),
   disconnect: () => invoke("station_disconnect"),
+
+  // Pairing — transport + LAN (the Station browses advertised keyers and picks one)
+  setTransport: (transport) => invoke("station_set_transport", { transport }),
+  lanBrowse: () => invoke("station_lan_browse"),
+  connectLan: (key, endpoint) => invoke("station_connect_lan", { key, endpoint }),
 };
 
 // Subscribes to the controller event stream. `handler` receives each StationEvent (a JS

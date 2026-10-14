@@ -7,16 +7,15 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
-# The Client (operating-position) binary. Named `rwk-app` so it does not collide with the
-# `rwk` CLI.
+# The Client (operating-position) binary.
 [[bin]]
-name = "rwk-app"
+name = "w1ve-rkr"
 path = "src/main.rs"
 
 # The Station (remote radio site) binary. A separate executable sharing this crate's library
 # and web bundle, but running the Station controller, command set, and window.
 [[bin]]
-name = "rwk-station"
+name = "w1ve-rkr-station"
 path = "src/main_station.rs"
 
 [build-dependencies]

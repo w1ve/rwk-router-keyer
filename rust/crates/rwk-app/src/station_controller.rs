@@ -72,7 +72,22 @@ pub enum StationEvent {
         logger_enabled: bool,
         relay: Option<String>,
         pairing_code: Option<String>,
+        transport: String,
     },
+    /// The live list of LAN keyers available to connect to (for the dropdown).
+    LanPeers { peers: Vec<LanPeerView> },
+}
+
+/// A LAN keyer as the Station UI shows it in the dropdown.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanPeerView {
+    /// Base64 public key — the stable id passed back to `connect_lan`.
+    pub key: String,
+    /// `callsign-keyerId` display name.
+    pub name: String,
+    /// The keyer's endpoint (`ip:port`), passed back to `connect_lan`.
+    pub endpoint: String,
 }
 
 /// A sink the host (Tauri) registers to receive [`StationEvent`]s. Boxed so the controller
@@ -90,6 +105,8 @@ struct Settings {
     logger_enabled: bool,
     relay: Option<String>,
     pairing_code: Option<String>,
+    /// Pairing transport: "wan" (relay + code) or "lan" (broadcast discovery / pick a keyer).
+    transport: String,
 }
 
 impl Default for Settings {
@@ -102,6 +119,7 @@ impl Default for Settings {
             logger_enabled: false,
             relay: None,
             pairing_code: None,
+            transport: "wan".to_string(),
         }
     }
 }
@@ -137,6 +155,7 @@ impl Shared {
             logger_enabled: s.logger_enabled,
             relay: s.relay.clone(),
             pairing_code: s.pairing_code.clone(),
+            transport: s.transport.clone(),
         });
     }
 
@@ -176,6 +195,8 @@ pub struct StationController {
     /// unpaired or dropped. An `Arc<Mutex>` so a spawned pairing task can install it when the
     /// handshake completes.
     active: Arc<Mutex<Option<ActiveSession>>>,
+    /// The running LAN browse task (radio-site side), present while browsing for keyers.
+    browse: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// The resources a running pairing owns, torn down together on unpair.
@@ -224,9 +245,22 @@ impl StationController {
             .build()
             .expect("tokio runtime");
 
-        let controller = Self { shared, runtime, active: Arc::new(Mutex::new(None)) };
+        let controller = Self {
+            shared,
+            runtime,
+            active: Arc::new(Mutex::new(None)),
+            browse: Mutex::new(None),
+        };
         controller.shared.emit_settings();
         controller
+    }
+
+    /// Selects the pairing transport: "wan" (relay + code) or "lan" (browse + pick a keyer).
+    pub fn set_transport(&self, transport: &str) {
+        let t = if transport.eq_ignore_ascii_case("lan") { "lan" } else { "wan" };
+        self.shared.settings.lock().unwrap().transport = t.to_string();
+        self.shared.persist();
+        self.shared.emit_settings();
     }
 
     // ─── Ports / keying configuration ──────────────────────────────────────────
@@ -349,125 +383,102 @@ impl StationController {
                 Ok(c) => c,
                 Err(e) => return fail(&shared, format!("link failed: {e}")),
             };
-            let path = format!("{:?}", connected.path).to_lowercase();
+            bring_up_station(&shared, &active_slot, connected, keying_port, logger_port, logger_enabled)
+                .await;
+        });
+    }
 
-            let session = match Session::start(connected, &config) {
-                Ok(s) => s,
-                Err(e) => return fail(&shared, format!("session failed: {e}")),
-            };
-            let net = session.handle();
+    // ─── LAN: browse available keyers and pick one ─────────────────────────────
 
-            // Open the keying edge over the tunnel, pointed at the client's inner address.
-            let conn = match net.open_udp(EDGE_PORT).await {
-                Ok(c) => c,
-                Err(e) => return fail(&shared, format!("edge open failed: {e}")),
-            };
-            let transport = Arc::new(EdgeTransport::over_tunnel(conn));
-            let peer = std::net::SocketAddr::new(
-                std::net::IpAddr::V4(Role::Station.peer_inner_address()),
-                EDGE_PORT,
-            );
-            transport.set_peer(peer).await;
-
-            // Open the serial keying output.
-            let (key_line, ptt_line) = {
-                let s = shared.settings.lock().unwrap();
-                (s.key_line, s.ptt_line)
-            };
-            let port_name = keying_port.expect("checked present before listen");
-            let cfg = KeyingOutputConfig {
-                port_name: port_name.clone(),
-                key_line,
-                ptt_line: ptt_line.unwrap_or(KeyingLine::None),
-                ..Default::default()
-            };
-            let serial = match SerialKeyingOutput::open(cfg) {
-                Ok(out) => out,
-                Err(e) => return fail(&shared, format!("keying port {port_name} failed: {e}")),
-            };
-            shared.log("info", format!("Keying output open on {port_name}."));
-
-            // Build the arbiter in front of the single keying output: the replay driver keys
-            // the remote source, and (optionally) the logger keys the local source with
-            // priority. A line observer reports the effective KEY/PTT to the UI.
-            let arbiter = Arc::new(KeyingArbiter::with_observer(
-                SerialKeyingAdapter::new(serial),
-                Some(make_line_observer(Arc::clone(&shared))),
-            ));
-
-            // The replay stack: a replayer tuned for the tunnel (DERP band) and the dedicated
-            // replay + watchdog threads, keying the arbiter's remote source.
-            let clock: Arc<dyn Clock> = Arc::new(MonotonicClock);
-            let mut replayer =
-                tunnel_replayer(clock.as_ref(), EdgeJitterProfile::PathAdaptive, None);
-            replayer.begin_session(1);
-
-            let bus = EventBus::new();
-            let path_health = rwk_core::engine::network::PathHealth::new();
-            let driver = spawn_driver(
-                replayer,
-                Box::new(arbiter.remote_output()),
-                Arc::clone(&clock),
-                Some(bus.clone()),
-                Some(path_health),
-            );
-
-            // Optionally start the logger-WinKeyer host on the local source.
-            let logger = if logger_enabled {
-                match logger_port {
-                    Some(lp) => {
-                        let reporter: HostReporter = make_host_reporter(Arc::clone(&shared));
-                        match StationWinKeyerHost::open(&lp, arbiter.local_handle(), reporter) {
-                            Ok(host) => {
-                                shared.log(
-                                    "info",
-                                    format!("Logger input active on {}.", host.port_name()),
-                                );
-                                Some(host)
-                            }
-                            Err(e) => {
-                                shared.log("warn", format!("Logger input unavailable: {e}"));
-                                None
-                            }
-                        }
-                    }
-                    None => {
-                        shared.log("warn", "Logger input enabled but no port selected.");
-                        None
-                    }
+    /// Starts browsing the LAN for advertised keyers, emitting [`StationEvent::LanPeers`] the
+    /// UI renders as a dropdown. Runs until a new browse, a connect, or disconnect.
+    pub fn lan_browse(&self) {
+        self.stop_browse();
+        let self_key = match self.shared.config.lock().unwrap().identity.to_identity() {
+            Ok(id) => id.public_bytes(),
+            Err(e) => {
+                self.shared.log("warn", format!("identity error: {e}"));
+                return;
+            }
+        };
+        let shared = Arc::clone(&self.shared);
+        let handle = self.runtime.spawn(async move {
+            let mut browser = match rwk_core::engine::lan_discovery::LanBrowser::bind(self_key) {
+                Ok(b) => b,
+                Err(e) => {
+                    shared.log("warn", format!("LAN browse failed: {e}"));
+                    return;
                 }
-            } else {
-                None
             };
+            shared.log("info", "Browsing the LAN for keyers…");
+            emit_station_peers(&shared, &mut browser);
+            loop {
+                match tokio::time::timeout(std::time::Duration::from_secs(1), browser.recv_once())
+                    .await
+                {
+                    Ok(Ok(true)) => emit_station_peers(&shared, &mut browser),
+                    Ok(Ok(false)) => {}
+                    Ok(Err(_)) => break,
+                    Err(_) => emit_station_peers(&shared, &mut browser),
+                }
+            }
+        });
+        *self.browse.lock().unwrap() = Some(handle);
+    }
 
-            // Forward fail-safe events from the bus to the UI until the session stops.
-            let stop_bus = Arc::new(AtomicBool::new(false));
-            spawn_bus_forwarder(bus, Arc::clone(&shared), Arc::clone(&stop_bus));
+    fn stop_browse(&self) {
+        if let Some(task) = self.browse.lock().unwrap().take() {
+            task.abort();
+        }
+    }
 
-            // Pump received edge datagrams into the replay driver.
-            let pump = tokio::spawn(pump_edges(Arc::clone(&transport), driver));
+    /// Picks a browsed keyer by base64 public key + endpoint, brings the link up as the
+    /// initiator, and starts replaying its edges onto the radio.
+    pub fn connect_lan(&self, peer_key_b64: &str, peer_endpoint: &str) {
+        let (keying_port, logger_port, logger_enabled) = {
+            let s = self.shared.settings.lock().unwrap();
+            (s.keying_port.clone(), s.logger_port.clone(), s.logger_enabled)
+        };
+        if keying_port.is_none() {
+            self.shared.log("warn", "Select a keying output port before connecting.");
+            return;
+        }
+        let peer_key = match rwk_core::config::base64_decode(peer_key_b64)
+            .ok()
+            .and_then(|b| <[u8; 32]>::try_from(b).ok())
+        {
+            Some(k) => k,
+            None => {
+                self.shared.log("warn", "Invalid keyer selection.");
+                return;
+            }
+        };
+        let endpoint: std::net::SocketAddr = match peer_endpoint.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                self.shared.log("warn", format!("Invalid keyer address: {e}"));
+                return;
+            }
+        };
+        self.stop_browse();
+        self.disconnect();
 
-            // Share the session so the control task can apply pushed forward rules live.
-            let session = Arc::new(tokio::sync::Mutex::new(session));
-            let control = spawn_control_task(
-                Arc::clone(&shared),
-                net.clone(),
-                Arc::clone(&session),
-                Arc::clone(&stop_bus),
-            );
+        let shared = Arc::clone(&self.shared);
+        let active_slot = Arc::clone(&self.active);
+        shared.emit(StationEvent::Connection { state: "connecting".into(), path: "none".into() });
+        shared.log("info", "Connecting to the selected keyer…");
 
-            *active_slot.lock().unwrap() = Some(ActiveSession {
-                session,
-                pump,
-                control,
-                stop_bus,
-                logger,
-                _arbiter: arbiter,
-            });
-
-            shared
-                .emit(StationEvent::Connection { state: "connected".into(), path: path.clone() });
-            shared.log("info", format!("Paired with the client over the {path} path."));
+        self.runtime.spawn(async move {
+            let identity = match shared.config.lock().unwrap().identity.to_identity() {
+                Ok(id) => id,
+                Err(e) => return fail(&shared, format!("identity error: {e}")),
+            };
+            let connected = match tunnel::lan_connect_to(&identity, peer_key, endpoint).await {
+                Ok(c) => c,
+                Err(e) => return fail(&shared, format!("LAN link failed: {e}")),
+            };
+            bring_up_station(&shared, &active_slot, connected, keying_port, logger_port, logger_enabled)
+                .await;
         });
     }
 
@@ -475,6 +486,7 @@ impl StationController {
     /// unpaired state. Dropping the driver's handle stops the replay/watchdog threads and
     /// forces the key up (F8); dropping the logger host releases its port.
     pub fn disconnect(&self) {
+        self.stop_browse();
         let active = self.active.lock().unwrap().take();
         if let Some(mut active) = active {
             active.stop_bus.store(true, Ordering::SeqCst);
@@ -527,6 +539,7 @@ fn load_or_create(path: &Option<std::path::PathBuf>) -> (Config, Settings) {
         logger_enabled: config.station.logger_enabled,
         relay: config.relay.as_ref().map(|r| r.address.to_string()),
         pairing_code: config.pairing_code.clone(),
+        transport: "wan".to_string(),
     };
     (config, settings)
 }
@@ -566,6 +579,139 @@ fn make_host_reporter(shared: Arc<Shared>) -> HostReporter {
 fn fail(shared: &Arc<Shared>, message: String) {
     shared.log("warn", message);
     shared.emit(StationEvent::Connection { state: "disconnected".into(), path: "none".into() });
+}
+
+/// Emits the browser's current peer list as a [`StationEvent::LanPeers`].
+fn emit_station_peers(
+    shared: &Arc<Shared>,
+    browser: &mut rwk_core::engine::lan_discovery::LanBrowser,
+) {
+    let peers = browser
+        .peers()
+        .into_iter()
+        .map(|p| LanPeerView {
+            key: rwk_core::config::base64_encode(&p.public_key),
+            name: p.display_name(),
+            endpoint: p.endpoint.to_string(),
+        })
+        .collect();
+    shared.emit(StationEvent::LanPeers { peers });
+}
+
+/// Shared post-connect setup for both the WAN (`listen`) and LAN (`connect_lan`) paths: open
+/// the keying edge, serial output, arbiter, replay driver, optional logger host, and the
+/// control-channel task; install the running session. Reports connected (or fails).
+async fn bring_up_station(
+    shared: &Arc<Shared>,
+    active_slot: &Arc<Mutex<Option<ActiveSession>>>,
+    connected: tunnel::Connected,
+    keying_port: Option<String>,
+    logger_port: Option<String>,
+    logger_enabled: bool,
+) {
+    let path = format!("{:?}", connected.path).to_lowercase();
+    let config = shared.config.lock().unwrap().clone();
+    let session = match Session::start(connected, &config) {
+        Ok(s) => s,
+        Err(e) => return fail(shared, format!("session failed: {e}")),
+    };
+    let net = session.handle();
+
+    let conn = match net.open_udp(EDGE_PORT).await {
+        Ok(c) => c,
+        Err(e) => return fail(shared, format!("edge open failed: {e}")),
+    };
+    let transport = Arc::new(EdgeTransport::over_tunnel(conn));
+    let peer = std::net::SocketAddr::new(
+        std::net::IpAddr::V4(Role::Station.peer_inner_address()),
+        EDGE_PORT,
+    );
+    transport.set_peer(peer).await;
+
+    let (key_line, ptt_line) = {
+        let s = shared.settings.lock().unwrap();
+        (s.key_line, s.ptt_line)
+    };
+    let port_name = keying_port.expect("checked present before connect");
+    let cfg = KeyingOutputConfig {
+        port_name: port_name.clone(),
+        key_line,
+        ptt_line: ptt_line.unwrap_or(KeyingLine::None),
+        ..Default::default()
+    };
+    let serial = match SerialKeyingOutput::open(cfg) {
+        Ok(out) => out,
+        Err(e) => return fail(shared, format!("keying port {port_name} failed: {e}")),
+    };
+    shared.log("info", format!("Keying output open on {port_name}."));
+
+    let arbiter = Arc::new(KeyingArbiter::with_observer(
+        SerialKeyingAdapter::new(serial),
+        Some(make_line_observer(Arc::clone(shared))),
+    ));
+
+    let clock: Arc<dyn Clock> = Arc::new(MonotonicClock);
+    let mut replayer = tunnel_replayer(clock.as_ref(), EdgeJitterProfile::PathAdaptive, None);
+    replayer.begin_session(1);
+
+    let bus = EventBus::new();
+    let path_health = rwk_core::engine::network::PathHealth::new();
+    let driver = spawn_driver(
+        replayer,
+        Box::new(arbiter.remote_output()),
+        Arc::clone(&clock),
+        Some(bus.clone()),
+        Some(path_health),
+    );
+
+    let logger = if logger_enabled {
+        match logger_port {
+            Some(lp) => {
+                let reporter: HostReporter = make_host_reporter(Arc::clone(shared));
+                match StationWinKeyerHost::open(&lp, arbiter.local_handle(), reporter) {
+                    Ok(host) => {
+                        shared.log("info", format!("Logger input active on {}.", host.port_name()));
+                        Some(host)
+                    }
+                    Err(e) => {
+                        shared.log("warn", format!("Logger input unavailable: {e}"));
+                        None
+                    }
+                }
+            }
+            None => {
+                shared.log("warn", "Logger input enabled but no port selected.");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let stop_bus = Arc::new(AtomicBool::new(false));
+    spawn_bus_forwarder(bus, Arc::clone(shared), Arc::clone(&stop_bus));
+
+    let pump = tokio::spawn(pump_edges(Arc::clone(&transport), driver));
+
+    let session = Arc::new(tokio::sync::Mutex::new(session));
+    let control = spawn_control_task(
+        Arc::clone(shared),
+        net.clone(),
+        Arc::clone(&session),
+        Arc::clone(&stop_bus),
+    );
+
+    *active_slot.lock().unwrap() = Some(ActiveSession {
+        session,
+        pump,
+        control,
+        stop_bus,
+        logger,
+        _arbiter: arbiter,
+    });
+
+    shared.emit(StationEvent::Connection { state: "connected".into(), path: path.clone() });
+    shared.log("info", format!("Paired with the keyer over the {path} path."));
 }
 
 /// Spawns the Station's control-channel task: accept the Client's control connection, apply

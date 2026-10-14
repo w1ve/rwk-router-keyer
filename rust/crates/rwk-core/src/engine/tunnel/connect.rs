@@ -255,6 +255,130 @@ async fn try_relay(
     Ok(tunnel)
 }
 
+// ─── LAN direct path (relay-free) ──────────────────────────────────────────────
+//
+// On a LAN the two ends find each other by UDP broadcast (see
+// [`crate::engine::lan_discovery`]) instead of a relay. The radio site *browses* the
+// advertised keyers and *picks* one, so — unlike WAN, where the Client initiates — on the LAN
+// the **picker initiates** and the **advertiser responds**. boringtun needs each end to know
+// the other's static key before the handshake: the picker learns the advertiser's key from the
+// beacon, and a one-shot plaintext HELLO (the picker's key, sent to the advertiser's WireGuard
+// port) tells the advertiser the picker's key. After that the normal WireGuard handshake runs
+// with no relay and no NAT hole-punch.
+
+/// How long the advertiser waits for a picker's HELLO before giving up a listen cycle.
+const LAN_HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How long each side allows for the LAN WireGuard handshake once keys are exchanged.
+const LAN_HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Magic prefix for the LAN connect HELLO datagram (picker → advertiser).
+const LAN_HELLO_MAGIC: [u8; 4] = *b"RWKH";
+
+/// Binds a WireGuard UDP socket on an ephemeral port for the LAN path, returning the socket
+/// and the port the advertiser must announce in its beacon.
+///
+/// # Errors
+///
+/// Propagates a bind error.
+pub async fn lan_bind() -> Result<(UdpSocket, u16)> {
+    let socket = UdpSocket::bind("0.0.0.0:0").await.map_err(crate::Error::from)?;
+    let port = socket.local_addr().map_err(crate::Error::from)?.port();
+    Ok((socket, port))
+}
+
+/// The advertiser side of a LAN pairing: wait for a picker's HELLO on the already-bound
+/// `socket` (whose port was advertised), learn the picker's key, then bring the WireGuard
+/// link up as the responder. Returns the established tunnel.
+///
+/// `socket` must be the one from [`lan_bind`] whose port the beacon advertised, so the picker's
+/// HELLO and handshake reach it.
+///
+/// # Errors
+///
+/// Returns [`crate::Error::Config`] if no HELLO arrives within [`LAN_HELLO_TIMEOUT`] or the
+/// handshake does not complete; propagates socket errors.
+pub async fn lan_await_initiator(
+    socket: UdpSocket,
+    identity: &StaticIdentity,
+) -> Result<Connected> {
+    // 1. Wait for the picker's HELLO, which carries its public key, and note where it came
+    //    from (that is the picker's WireGuard endpoint).
+    let (peer_key, peer_addr) = {
+        let mut buf = vec![0u8; 64];
+        let fut = async {
+            loop {
+                let (len, src) = socket.recv_from(&mut buf).await.map_err(crate::Error::from)?;
+                if len >= 4 + 32 && buf[..4] == LAN_HELLO_MAGIC {
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(&buf[4..36]);
+                    return Ok::<_, crate::Error>((key, src));
+                }
+                // Not a HELLO (a stray datagram); keep waiting.
+            }
+        };
+        match tokio::time::timeout(LAN_HELLO_TIMEOUT, fut).await {
+            Ok(result) => result?,
+            Err(_) => {
+                return Err(crate::Error::Config(
+                    "no LAN connect request arrived; the picker never connected".into(),
+                ))
+            }
+        }
+    };
+
+    // 2. Build the responder tunnel over the same socket, now that we know the picker's key
+    //    and address, and answer its handshake.
+    let peer = TunnelPeer {
+        public_key: peer_key,
+        preshared_key: None,
+        endpoint: peer_addr,
+        persistent_keepalive: Some(25),
+    };
+    let mut tunnel = WireGuardTunnel::from_socket(socket, identity, &peer);
+    tunnel.await_session(LAN_HANDSHAKE_TIMEOUT).await?;
+    Ok(Connected { tunnel, path: Path::Direct })
+}
+
+/// The picker side of a LAN pairing: send a HELLO announcing our key to the advertiser's
+/// endpoint, then bring the WireGuard link up as the initiator. Returns the established
+/// tunnel.
+///
+/// `peer_key` and `peer_endpoint` come from the chosen [`LanPeer`](crate::engine::lan_discovery::LanPeer).
+///
+/// # Errors
+///
+/// Returns [`crate::Error::Config`] if the handshake does not complete; propagates socket
+/// errors.
+pub async fn lan_connect_to(
+    identity: &StaticIdentity,
+    peer_key: [u8; relay::KEY_LEN],
+    peer_endpoint: SocketAddr,
+) -> Result<Connected> {
+    let socket = UdpSocket::bind("0.0.0.0:0").await.map_err(crate::Error::from)?;
+
+    // 1. Tell the advertiser our key so it can build its responder tunnel. Send a few times:
+    //    the first datagram can race the advertiser arriving at its recv.
+    let mut hello = Vec::with_capacity(36);
+    hello.extend_from_slice(&LAN_HELLO_MAGIC);
+    hello.extend_from_slice(&identity.public_bytes());
+    for _ in 0..5 {
+        let _ = socket.send_to(&hello, peer_endpoint).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    // 2. Bring the link up as the initiator.
+    let peer = TunnelPeer {
+        public_key: peer_key,
+        preshared_key: None,
+        endpoint: peer_endpoint,
+        persistent_keepalive: Some(25),
+    };
+    let mut tunnel = WireGuardTunnel::from_socket(socket, identity, &peer);
+    tunnel.ensure_session_within(LAN_HANDSHAKE_TIMEOUT).await?;
+    Ok(Connected { tunnel, path: Path::Direct })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,5 +541,35 @@ mod tests {
     async fn pairing_connect_without_a_relay_errors() {
         let config = Config::new(Role::Client).unwrap(); // no relay
         assert!(connect_paired(&config, "ANY").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn lan_picker_and_advertiser_establish_a_direct_link() {
+        // The advertiser (operating position) binds its WG socket and waits; the picker (radio
+        // site) sends a HELLO to that port and initiates. Both end up with an established
+        // direct tunnel over loopback — the relay-free LAN path.
+        let advertiser_id = IdentityConfig::generate().unwrap().to_identity().unwrap();
+        let picker_id = IdentityConfig::generate().unwrap().to_identity().unwrap();
+
+        let (adv_socket, adv_port) = lan_bind().await.unwrap();
+        let adv_endpoint: SocketAddr = format!("127.0.0.1:{adv_port}").parse().unwrap();
+
+        // Advertiser awaits the initiator in the background.
+        let adv_fut = {
+            let id = advertiser_id.clone();
+            tokio::spawn(async move { lan_await_initiator(adv_socket, &id).await })
+        };
+        // Give the advertiser a beat to reach its recv.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let adv_key = advertiser_id.public_bytes();
+        let picker = lan_connect_to(&picker_id, adv_key, adv_endpoint).await;
+        let picker = picker.expect("picker should establish the direct link");
+        assert_eq!(picker.path, Path::Direct);
+        assert!(picker.tunnel.is_established(), "picker link up");
+
+        let advertiser = adv_fut.await.unwrap().expect("advertiser should establish");
+        assert_eq!(advertiser.path, Path::Direct);
+        assert!(advertiser.tunnel.is_established(), "advertiser link up");
     }
 }

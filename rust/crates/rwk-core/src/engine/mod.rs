@@ -18,6 +18,8 @@
 //! * [`session`] — a running session: netstack + forwarders wired over a connected tunnel.
 //! * [`replay`] — the Station edge replayer: jitter buffer, fail-safes, watchdogs.
 //! * [`control`] — the Client↔Station control channel (forward rules, discovery announce).
+//! * [`flex_discovery`] — FlexRadio VITA-49 LAN capture + re-broadcast.
+//! * [`lan_discovery`] — relay-free LAN peer discovery (advertise + browse).
 //! * [`bus`] — the broadcast event bus that feeds the UI.
 
 pub mod audio;
@@ -27,6 +29,7 @@ pub mod debounce;
 pub mod edge_sender;
 pub mod edge_station;
 pub mod flex_discovery;
+pub mod lan_discovery;
 pub mod keying;
 pub mod keying_arbiter;
 pub mod netstack;
@@ -61,6 +64,7 @@ pub use keying_arbiter::{
 };
 pub use control::{ControlLink, ControlMessage, is_reserved_port, CONTROL_PORT};
 pub use flex_discovery::{DiscoveryEmitter, DiscoveryListener};
+pub use lan_discovery::{Beacon, LanAdvertiser, LanBrowser, LanPeer};
 pub use debounce::ContactDebouncer;
 pub use paddle::PaddleKeyer;
 pub use paddle_input::{ContactSample, PaddleInputPort};

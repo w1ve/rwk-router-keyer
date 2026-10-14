@@ -32,7 +32,7 @@ function loadMacros() {
 
 // The Keyer tab: Keyer | Sidetone | Inputs panels across the top, and the Pair-with-Station
 // panel below — mirroring the C# client's layout, but with the Rust pairing-code model.
-export default function KeyerTab({ settings, connection }) {
+export default function KeyerTab({ settings, connection, advertising }) {
   // Keyer
   const [wpm, setWpm] = useState(settings.wpm);
   const [weight, setWeight] = useState(settings.weight);
@@ -58,6 +58,9 @@ export default function KeyerTab({ settings, connection }) {
   // Pairing
   const [relay, setRelay] = useState("107.172.138.103:9000");
   const [code, setCode] = useState("");
+  const [transport, setTransport] = useState(settings.transport || "wan");
+  const [callsign, setCallsign] = useState(settings.callsign || "");
+  const [keyerId, setKeyerId] = useState(settings.keyerId || "");
 
   // Reflect backend-echoed settings (e.g. first load) into local state.
   useEffect(() => {
@@ -67,6 +70,9 @@ export default function KeyerTab({ settings, connection }) {
     setPaddleReverse(settings.paddleReverse);
     setToneHz(settings.toneHz);
     setToneVol(settings.toneVolume);
+    if (settings.transport) setTransport(settings.transport);
+    setCallsign(settings.callsign || "");
+    setKeyerId(settings.keyerId || "");
   }, [settings]);
 
   // Enumerate devices once.
@@ -269,46 +275,126 @@ export default function KeyerTab({ settings, connection }) {
       {/* ─── Pair with Station ──────────────────────────── */}
       <div className="panel">
         <h3>Pair with Station</h3>
-        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Relay (host:port)</label>
-            <input
-              type="text"
-              value={relay}
-              onChange={(e) => setRelay(e.target.value)}
-              disabled={paired || connecting}
-              style={{ width: 200 }}
-            />
-          </div>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Pairing code</label>
-            <input
-              type="text"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="shared code"
-              disabled={paired || connecting}
-              style={{ width: 160 }}
-            />
-          </div>
-          <div style={{ alignSelf: "flex-end" }}>
-            {paired ? (
-              <button onClick={() => api.disconnect()} style={{ background: "#5a2d2d" }}>
-                Unpair
-              </button>
-            ) : (
+        <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div>
+            <label style={{ display: "block", fontSize: 12, color: "var(--text-dim)", marginBottom: 4 }}>
+              Transport
+            </label>
+            <div className="segmented" style={paired || connecting ? { opacity: 0.5, pointerEvents: "none" } : null}>
               <button
-                onClick={() => api.connect(relay, code)}
-                disabled={connecting || !code.trim() || !relay.trim()}
-                style={{ background: "var(--accent-dim)", borderColor: "var(--accent)" }}
+                className={transport === "wan" ? "active" : ""}
+                onClick={() => {
+                  setTransport("wan");
+                  api.setTransport("wan");
+                }}
               >
-                {connecting ? "Pairing…" : "Pair with Station"}
+                WAN (Relay)
               </button>
-            )}
+              <button
+                className={transport === "lan" ? "active" : ""}
+                onClick={() => {
+                  setTransport("lan");
+                  api.setTransport("lan");
+                }}
+              >
+                LAN
+              </button>
+            </div>
           </div>
+
+          {transport === "wan" ? (
+            <>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Relay (host:port)</label>
+                <input
+                  type="text"
+                  value={relay}
+                  onChange={(e) => setRelay(e.target.value)}
+                  disabled={paired || connecting}
+                  style={{ width: 180 }}
+                />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Pairing code</label>
+                <input
+                  type="text"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  placeholder="shared code"
+                  disabled={paired || connecting}
+                  style={{ width: 140 }}
+                />
+              </div>
+              <div style={{ alignSelf: "flex-end" }}>
+                {paired ? (
+                  <button onClick={() => api.disconnect()} style={{ background: "#5a2d2d" }}>
+                    Unpair
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => api.connect(relay, code)}
+                    disabled={connecting || !code.trim() || !relay.trim()}
+                    style={{ background: "var(--accent-dim)", borderColor: "var(--accent)" }}
+                  >
+                    {connecting ? "Pairing…" : "Pair with Station"}
+                  </button>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Station Callsign</label>
+                <input
+                  type="text"
+                  value={callsign}
+                  placeholder="Station Callsign"
+                  disabled={paired || connecting}
+                  onChange={(e) => {
+                    setCallsign(e.target.value);
+                    api.setCallsign(e.target.value);
+                  }}
+                  style={{ width: 130 }}
+                />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Keyer ID</label>
+                <input
+                  type="text"
+                  value={keyerId}
+                  placeholder="Keyer ID (20m, etc.)"
+                  disabled={paired || connecting}
+                  onChange={(e) => {
+                    setKeyerId(e.target.value);
+                    api.setKeyerId(e.target.value);
+                  }}
+                  style={{ width: 150 }}
+                />
+              </div>
+              <div style={{ alignSelf: "flex-end" }}>
+                {paired || connecting ? (
+                  <button onClick={() => api.lanAdvertise(false)} style={{ background: "#5a2d2d" }}>
+                    {connecting ? "Stop" : "Unpair"}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => api.lanAdvertise(true)}
+                    disabled={!callsign.trim()}
+                    style={{ background: "var(--accent-dim)", borderColor: "var(--accent)" }}
+                  >
+                    Advertise
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </div>
         <p style={{ color: "var(--text-dim)", fontSize: 12, marginBottom: 0 }}>
-          Both ends enter the same relay and pairing code — no key exchange, no network setup.
+          {transport === "wan"
+            ? "Both ends enter the same relay and pairing code — no key exchange, no network setup."
+            : advertising
+              ? "Advertising on the LAN — pick this keyer on the Station. No relay, no internet."
+              : "Enter your callsign (and optional ID), then Advertise so the Station can find and pick this keyer."}
         </p>
       </div>
 

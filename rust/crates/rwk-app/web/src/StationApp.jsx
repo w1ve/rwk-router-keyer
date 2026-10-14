@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS = {
   loggerEnabled: false,
   relay: null,
   pairingCode: null,
+  transport: "wan",
 };
 
 // The Station application shell: a Station tab and a Log tab, plus a status strip showing
@@ -24,6 +25,7 @@ export default function StationApp() {
   const [pttOn, setPttOn] = useState(false);
   const [loggerSending, setLoggerSending] = useState(false);
   const [lastFailSafe, setLastFailSafe] = useState(null);
+  const [lanPeers, setLanPeers] = useState([]);
   const [log, setLog] = useState([]);
 
   useEffect(() => {
@@ -38,7 +40,11 @@ export default function StationApp() {
             loggerEnabled: ev.logger_enabled,
             relay: ev.relay,
             pairingCode: ev.pairing_code,
+            transport: ev.transport ?? "wan",
           });
+          break;
+        case "lanPeers":
+          setLanPeers(ev.peers || []);
           break;
         case "connection":
           setConnection({ state: ev.state, path: ev.path });
@@ -115,6 +121,7 @@ export default function StationApp() {
             pttOn={pttOn}
             loggerSending={loggerSending}
             lastFailSafe={lastFailSafe}
+            lanPeers={lanPeers}
           />
         )}
         {tab === "log" && (

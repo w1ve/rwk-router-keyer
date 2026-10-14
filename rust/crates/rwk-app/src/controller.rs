@@ -130,11 +130,43 @@ pub enum ClientEvent {
         paddle_reverse: bool,
         tone_hz: i32,
         tone_volume: u32,
+        transport: String,
+        callsign: String,
+        keyer_id: String,
     },
     /// The current forward-rule table, echoed whenever it changes (for the Ham Router tab).
     ForwardRules { rules: Vec<ForwardRuleView> },
     /// Whether FlexRadio discovery re-emission is enabled (for the Ham Router toggle).
     FlexDiscovery { enabled: bool },
+    /// Whether the LAN discovery beacon is currently being advertised.
+    Advertising { active: bool },
+}
+
+/// Which transport the operator chose for pairing: WAN (relay + code) or LAN (relay-free
+/// broadcast discovery). The Keyer-Router's WAN path is the existing relay rendezvous.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// Over the internet via the relay (the existing `connect(relay, code)` path).
+    Wan,
+    /// Relay-free on the local network (broadcast discovery; the radio site picks this keyer).
+    Lan,
+}
+
+impl Transport {
+    fn parse(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("lan") {
+            Transport::Lan
+        } else {
+            Transport::Wan
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Transport::Wan => "wan",
+            Transport::Lan => "lan",
+        }
+    }
 }
 
 /// A forward rule as the UI sees it: the persisted [`ForwardRuleConfig`] fields, serialized
@@ -181,6 +213,9 @@ struct Settings {
     keying_port: Option<String>,
     paddle_port: Option<String>,
     winkeyer_port: Option<String>,
+    transport: Transport,
+    callsign: String,
+    keyer_id: String,
 }
 
 impl Default for Settings {
@@ -195,6 +230,9 @@ impl Default for Settings {
             keying_port: None,
             paddle_port: None,
             winkeyer_port: None,
+            transport: Transport::Wan,
+            callsign: String::new(),
+            keyer_id: String::new(),
         }
     }
 }
@@ -216,6 +254,8 @@ struct Shared {
     epoch: Mutex<u16>,
     /// The running serial paddle poller, present only while a paddle port is selected.
     paddle: Mutex<Option<PaddlePollerHandle>>,
+    /// The running LAN advertiser task (operating-position side), present while advertising.
+    advertise: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// The control channel to the Station, present only while paired. Used to push the
     /// forward-rule table and to receive FlexRadio discovery announcements.
     control: tokio::sync::Mutex<Option<ControlLink>>,
@@ -249,7 +289,25 @@ impl Shared {
             paddle_reverse: s.paddle_reverse,
             tone_hz: s.tone_hz,
             tone_volume: s.tone_volume,
+            transport: s.transport.as_str().into(),
+            callsign: s.callsign.clone(),
+            keyer_id: s.keyer_id.clone(),
         });
+    }
+
+    /// Persists callsign/keyer_id into the config and writes it to disk.
+    fn persist_identity_labels(&self) {
+        let Some(path) = &self.config_path else { return };
+        {
+            let s = self.settings.lock().unwrap();
+            let mut config = self.config.lock().unwrap();
+            config.callsign = s.callsign.clone();
+            config.keyer_id = s.keyer_id.clone();
+        }
+        let config = self.config.lock().unwrap();
+        if let Err(e) = config.save(path) {
+            self.log("warn", format!("Could not save config: {e}"));
+        }
     }
 
     /// Remembers the relay + pairing code in the persisted config and writes it to disk, so
@@ -316,7 +374,6 @@ impl ClientController {
     /// persistence, for tests). Loads the config if present, otherwise generates a fresh
     /// identity and saves it so the next run reuses the same key.
     pub fn start_with_config(sink: EventSink, config_path: Option<std::path::PathBuf>) -> Self {
-        let settings = Settings::default();
         let config = match &config_path {
             Some(p) if p.exists() => {
                 Config::load(p).unwrap_or_else(|_| Config::new(Role::Client).expect("identity"))
@@ -329,6 +386,10 @@ impl ClientController {
                 config
             }
         };
+        // Seed callsign/keyer_id from the persisted config so the LAN beacon name survives.
+        let mut settings = Settings::default();
+        settings.callsign = config.callsign.clone();
+        settings.keyer_id = config.keyer_id.clone();
         let shared = Arc::new(Shared {
             settings: Mutex::new(settings.clone()),
             sidetone: Mutex::new(None),
@@ -336,6 +397,7 @@ impl ClientController {
             transport: Mutex::new(None),
             epoch: Mutex::new(1),
             paddle: Mutex::new(None),
+            advertise: tokio::sync::Mutex::new(None),
             control: tokio::sync::Mutex::new(None),
             session: tokio::sync::Mutex::new(None),
             flex_emitter: Mutex::new(None),
@@ -384,6 +446,55 @@ impl ClientController {
     /// Sets whether the paddle dit/dah contacts are reversed.
     pub fn set_paddle_reverse(&self, reverse: bool) {
         self.shared.settings.lock().unwrap().paddle_reverse = reverse;
+    }
+
+    // ─── Transport + LAN identity ──────────────────────────────────────────────
+
+    /// Selects the pairing transport: "wan" (relay + code) or "lan" (broadcast discovery).
+    pub fn set_transport(&self, transport: &str) {
+        self.shared.settings.lock().unwrap().transport = Transport::parse(transport);
+        self.shared.emit_settings();
+    }
+
+    /// Sets the operator callsign used as the LAN beacon name.
+    pub fn set_callsign(&self, callsign: &str) {
+        self.shared.settings.lock().unwrap().callsign = callsign.to_string();
+        self.shared.persist_identity_labels();
+        self.shared.emit_settings();
+    }
+
+    /// Sets the position label (e.g. `20m`) appended to the callsign in the LAN beacon.
+    pub fn set_keyer_id(&self, keyer_id: &str) {
+        self.shared.settings.lock().unwrap().keyer_id = keyer_id.to_string();
+        self.shared.persist_identity_labels();
+        self.shared.emit_settings();
+    }
+
+    /// Starts (or stops) broadcasting this keyer's LAN beacon so a Station can find and pick
+    /// it. When a Station picks us, we come up as the responder and the keying edge opens.
+    /// Starting stops any WAN pairing first; advertising stops automatically once paired.
+    pub fn lan_advertise(&self, on: bool) {
+        if !on {
+            self.disconnect();
+            return;
+        }
+        self.disconnect();
+        let (callsign, keyer_id) = {
+            let s = self.shared.settings.lock().unwrap();
+            (s.callsign.clone(), s.keyer_id.clone())
+        };
+        let shared = Arc::clone(&self.shared);
+        shared.emit(ClientEvent::Connection { state: "connecting".into(), path: "none".into() });
+        shared.emit(ClientEvent::Advertising { active: true });
+        shared.log("info", "Advertising on the LAN; waiting for a station to connect…");
+        let handle = self.runtime.spawn(async move {
+            lan_advertise_and_await(shared).await;
+        });
+        self.runtime.block_on(async {
+            *self.shared.advertise.lock().await = Some(handle);
+        });
+        // callsign/keyer_id captured for logging symmetry (the beacon reads them in the task).
+        let _ = (callsign, keyer_id);
     }
 
     // ─── Sidetone ──────────────────────────────────────────────────────────────
@@ -694,68 +805,116 @@ impl ClientController {
                 Ok(c) => c,
                 Err(e) => return fail(&shared, format!("link failed: {e}")),
             };
-            let path = format!("{:?}", connected.path).to_lowercase();
-
-            let session = match Session::start(connected, &config) {
-                Ok(s) => s,
-                Err(e) => return fail(&shared, format!("session failed: {e}")),
-            };
-            let net = session.handle();
-
-            // Open the keying edge over the tunnel, pointed at the station's inner address.
-            let conn = match net.open_udp(EDGE_PORT).await {
-                Ok(c) => c,
-                Err(e) => return fail(&shared, format!("edge open failed: {e}")),
-            };
-            let transport = Arc::new(EdgeTransport::over_tunnel(conn));
-            let peer = std::net::SocketAddr::new(
-                std::net::IpAddr::V4(Role::Client.peer_inner_address()),
-                EDGE_PORT,
-            );
-            transport.set_peer(peer).await;
-
-            // Open the control channel to the Station and push the current forward rules.
-            let station_inner = std::net::IpAddr::V4(Role::Client.peer_inner_address());
-            match ControlLink::connect(&net, station_inner).await {
-                Ok(link) => {
-                    let rules = shared.config.lock().unwrap().forwards.clone();
-                    if let Err(e) = link.send(&ControlMessage::ForwardRules { rules }).await {
-                        shared.log("warn", format!("Could not push forward rules: {e}"));
-                    }
-                    *shared.control.lock().await = Some(link);
-                    // Start receiving discovery announcements from the Station.
-                    spawn_discovery_receiver(Arc::clone(&shared));
-                }
-                Err(e) => shared.log("warn", format!("Control channel unavailable: {e}")),
-            }
-
-            *shared.transport.lock().unwrap() = Some(transport);
-            *shared.session.lock().await = Some(session);
-            {
-                let mut epoch = shared.epoch.lock().unwrap();
-                *epoch = epoch.wrapping_add(1);
-            }
-
-            shared
-                .emit(ClientEvent::Connection { state: "connected".into(), path: path.clone() });
-            shared.log("info", format!("Paired over the {path} path."));
+            bring_up_client(&shared, connected).await;
         });
     }
 
-    /// Tears the session, control channel and keying edge down, returning to unpaired.
+    /// Tears the session, control channel, LAN advertiser and keying edge down.
     pub fn disconnect(&self) {
         *self.shared.transport.lock().unwrap() = None;
         let shared = Arc::clone(&self.shared);
         self.runtime.block_on(async move {
+            if let Some(task) = shared.advertise.lock().await.take() {
+                task.abort();
+            }
             *shared.control.lock().await = None;
             if let Some(mut session) = shared.session.lock().await.take() {
                 session.shutdown().await;
             }
         });
+        self.shared.emit(ClientEvent::Advertising { active: false });
         self.shared
             .emit(ClientEvent::Connection { state: "disconnected".into(), path: "none".into() });
         self.shared.log("info", "Unpaired.");
     }
+}
+
+/// Shared post-connect wiring for the Client (operating position), used by both the WAN
+/// `connect` and the LAN advertise paths: start the session, open the keying edge, open the
+/// control channel and push the forward rules, and report connected.
+async fn bring_up_client(shared: &Arc<Shared>, connected: tunnel::Connected) {
+    let path = format!("{:?}", connected.path).to_lowercase();
+    let config = shared.config.lock().unwrap().clone();
+    let session = match Session::start(connected, &config) {
+        Ok(s) => s,
+        Err(e) => return fail(shared, format!("session failed: {e}")),
+    };
+    let net = session.handle();
+
+    let conn = match net.open_udp(EDGE_PORT).await {
+        Ok(c) => c,
+        Err(e) => return fail(shared, format!("edge open failed: {e}")),
+    };
+    let transport = Arc::new(EdgeTransport::over_tunnel(conn));
+    let peer = std::net::SocketAddr::new(
+        std::net::IpAddr::V4(Role::Client.peer_inner_address()),
+        EDGE_PORT,
+    );
+    transport.set_peer(peer).await;
+
+    // Open the control channel to the Station and push the current forward rules.
+    let station_inner = std::net::IpAddr::V4(Role::Client.peer_inner_address());
+    match ControlLink::connect(&net, station_inner).await {
+        Ok(link) => {
+            let rules = shared.config.lock().unwrap().forwards.clone();
+            if let Err(e) = link.send(&ControlMessage::ForwardRules { rules }).await {
+                shared.log("warn", format!("Could not push forward rules: {e}"));
+            }
+            *shared.control.lock().await = Some(link);
+            spawn_discovery_receiver(Arc::clone(shared));
+        }
+        Err(e) => shared.log("warn", format!("Control channel unavailable: {e}")),
+    }
+
+    *shared.transport.lock().unwrap() = Some(transport);
+    *shared.session.lock().await = Some(session);
+    {
+        let mut epoch = shared.epoch.lock().unwrap();
+        *epoch = epoch.wrapping_add(1);
+    }
+    shared.emit(ClientEvent::Connection { state: "connected".into(), path: path.clone() });
+    shared.log("info", format!("Paired over the {path} path."));
+}
+
+/// The operating-position LAN flow: bind the WireGuard socket, broadcast the beacon with that
+/// port, and wait for a Station to pick this keyer. On success, bring the link up as the
+/// responder. Runs as one task; aborting it stops both the beacon and the wait.
+async fn lan_advertise_and_await(shared: Arc<Shared>) {
+    let (socket, wg_port) = match tunnel::lan_bind().await {
+        Ok(pair) => pair,
+        Err(e) => return fail(&shared, format!("LAN bind failed: {e}")),
+    };
+    let (identity, callsign, keyer_id) = {
+        let config = shared.config.lock().unwrap();
+        let s = shared.settings.lock().unwrap();
+        match config.identity.to_identity() {
+            Ok(id) => (id, s.callsign.clone(), s.keyer_id.clone()),
+            Err(e) => return fail(&shared, format!("identity error: {e}")),
+        }
+    };
+
+    let beacon = rwk_core::engine::lan_discovery::Beacon {
+        callsign,
+        keyer_id,
+        public_key: identity.public_bytes(),
+        wg_port,
+    };
+    let advertiser = match rwk_core::engine::lan_discovery::LanAdvertiser::new(beacon) {
+        Ok(a) => a,
+        Err(e) => return fail(&shared, format!("LAN advertise failed: {e}")),
+    };
+    let beacon_task = tokio::spawn(advertiser.run());
+
+    let connected = match tunnel::lan_await_initiator(socket, &identity).await {
+        Ok(c) => c,
+        Err(e) => {
+            beacon_task.abort();
+            return fail(&shared, format!("LAN pairing failed: {e}"));
+        }
+    };
+    beacon_task.abort();
+    shared.emit(ClientEvent::Advertising { active: false });
+    bring_up_client(&shared, connected).await;
 }
 
 /// Pushes `rules` to the Station over the control channel (if paired) and restarts the

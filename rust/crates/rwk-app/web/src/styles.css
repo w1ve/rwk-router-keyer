@@ -240,3 +240,26 @@ table.rules code {
   padding: 1px 4px;
   border-radius: 3px;
 }
+
+/* WAN/LAN segmented slider */
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-panel-2);
+}
+
+.segmented button {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 6px 16px;
+  font-weight: 600;
+}
+
+.segmented button.active {
+  background: var(--accent-dim);
+  color: var(--text);
+}

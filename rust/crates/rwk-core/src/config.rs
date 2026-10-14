@@ -204,6 +204,14 @@ pub struct Config {
     /// Station-only UI settings (keying output + logger input). Absent in a Client config.
     #[serde(default)]
     pub station: StationSettings,
+    /// Operator callsign, used as the LAN discovery beacon name on the operating-position
+    /// side (e.g. `W1VE`). Empty when unset.
+    #[serde(default)]
+    pub callsign: String,
+    /// Optional position label that disambiguates several keyers on one LAN (e.g. `20m`); the
+    /// LAN beacon advertises `callsign-keyer_id`. Empty when unset.
+    #[serde(default)]
+    pub keyer_id: String,
 }
 
 /// Station-only persisted settings: the serial keying output and the optional logger
@@ -256,6 +264,8 @@ impl Config {
             pairing_code: None,
             forwards: Vec::new(),
             station: StationSettings::default(),
+            callsign: String::new(),
+            keyer_id: String::new(),
         })
     }
 

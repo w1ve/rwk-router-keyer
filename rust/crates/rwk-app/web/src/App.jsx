@@ -10,6 +10,9 @@ const DEFAULT_SETTINGS = {
   paddleReverse: false,
   toneHz: 600,
   toneVolume: 70,
+  transport: "wan",
+  callsign: "",
+  keyerId: "",
 };
 
 export default function App() {
@@ -17,6 +20,7 @@ export default function App() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [connection, setConnection] = useState({ state: "disconnected", path: "none" });
   const [keyDown, setKeyDown] = useState(false);
+  const [advertising, setAdvertising] = useState(false);
   const [forwardRules, setForwardRules] = useState([]);
   const [flexEnabled, setFlexEnabled] = useState(false);
   const [log, setLog] = useState([]);
@@ -32,6 +36,9 @@ export default function App() {
             paddleReverse: ev.paddle_reverse,
             toneHz: ev.tone_hz,
             toneVolume: ev.tone_volume,
+            transport: ev.transport ?? "wan",
+            callsign: ev.callsign ?? "",
+            keyerId: ev.keyer_id ?? "",
           });
           break;
         case "connection":
@@ -39,6 +46,9 @@ export default function App() {
           break;
         case "keyState":
           setKeyDown(ev.down);
+          break;
+        case "advertising":
+          setAdvertising(ev.active);
           break;
         case "forwardRules":
           setForwardRules(ev.rules || []);
@@ -94,7 +104,9 @@ export default function App() {
       </div>
 
       <div className="tabbody">
-        {tab === "keyer" && <KeyerTab settings={settings} connection={connection} />}
+        {tab === "keyer" && (
+          <KeyerTab settings={settings} connection={connection} advertising={advertising} />
+        )}
         {tab === "router" && (
           <RouterTab
             rules={forwardRules}

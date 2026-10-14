@@ -32,7 +32,9 @@
 pub mod connect;
 pub mod wire;
 
-pub use connect::{connect, connect_paired, Connected, Path};
+pub use connect::{
+    connect, connect_paired, lan_await_initiator, lan_bind, lan_connect_to, Connected, Path,
+};
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};

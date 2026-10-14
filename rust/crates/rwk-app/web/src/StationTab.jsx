@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { stationApi as api } from "./station-api.js";
 
 // The Station tab: KEY/PTT indicators, the keying output configuration (port + control
-// lines), and the Pair-with-Client panel. The Station is the responder — it opens its side
-// of the link and waits for the operating position to connect with the shared relay + code.
+// lines), and the Pair-with-Client panel. On WAN the Station is the responder — it waits for
+// the operating position to connect with the shared relay + code. On LAN the roles reverse:
+// the Station browses the keyers advertising themselves on the local network and the operator
+// picks one from the list, so no relay or pairing code is needed.
 export default function StationTab({
   settings,
   connection,
@@ -11,6 +13,7 @@ export default function StationTab({
   pttOn,
   loggerSending,
   lastFailSafe,
+  lanPeers = [],
 }) {
   const [ports, setPorts] = useState([]);
   const [keyingPort, setKeyingPort] = useState(settings.keyingPort || "");
@@ -21,6 +24,8 @@ export default function StationTab({
 
   const [relay, setRelay] = useState(settings.relay || "107.172.138.103:9000");
   const [code, setCode] = useState(settings.pairingCode || "");
+  const [transport, setTransport] = useState(settings.transport || "wan");
+  const [pickedKey, setPickedKey] = useState("");
 
   // Reflect backend-echoed settings into local state.
   useEffect(() => {
@@ -31,15 +36,36 @@ export default function StationTab({
     setLoggerEnabled(settings.loggerEnabled || false);
     if (settings.relay) setRelay(settings.relay);
     if (settings.pairingCode) setCode(settings.pairingCode);
+    if (settings.transport) setTransport(settings.transport);
   }, [settings]);
 
   useEffect(() => {
     api.serialPorts().then(setPorts).catch(() => {});
   }, []);
 
+  // Keep the picked keyer valid: default to the first peer, and drop the selection if the
+  // advertised keyer we had chosen has aged out of the list.
+  useEffect(() => {
+    if (lanPeers.length === 0) {
+      if (pickedKey) setPickedKey("");
+      return;
+    }
+    if (!lanPeers.some((p) => p.key === pickedKey)) {
+      setPickedKey(lanPeers[0].key);
+    }
+  }, [lanPeers]);
+
   const paired = connection.state === "connected";
   const connecting = connection.state === "connecting";
   const canPair = !!keyingPort && !!code.trim() && !!relay.trim();
+  const picked = lanPeers.find((p) => p.key === pickedKey) || null;
+  const canConnectLan = !!keyingPort && !!picked;
+
+  function selectTransport(next) {
+    setTransport(next);
+    api.setTransport(next);
+    if (next === "lan") api.lanBrowse();
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -178,47 +204,111 @@ export default function StationTab({
       {/* ─── Pair with Client ───────────────────────────── */}
       <div className="panel">
         <h3>Pair with Client</h3>
-        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Relay (host:port)</label>
-            <input
-              type="text"
-              value={relay}
-              onChange={(e) => setRelay(e.target.value)}
-              disabled={paired || connecting}
-              style={{ width: 200 }}
-            />
-          </div>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Pairing code</label>
-            <input
-              type="text"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              placeholder="shared code"
-              disabled={paired || connecting}
-              style={{ width: 160 }}
-            />
-          </div>
-          <div style={{ alignSelf: "flex-end" }}>
-            {paired || connecting ? (
-              <button onClick={() => api.disconnect()} style={{ background: "#5a2d2d" }}>
-                {connecting ? "Cancel" : "Unpair"}
-              </button>
-            ) : (
+        <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <div>
+            <label style={{ display: "block", fontSize: 12, color: "var(--text-dim)", marginBottom: 4 }}>
+              Transport
+            </label>
+            <div className="segmented" style={paired || connecting ? { opacity: 0.5, pointerEvents: "none" } : null}>
               <button
-                onClick={() => api.listen(relay, code)}
-                disabled={!canPair}
-                style={{ background: "var(--accent-dim)", borderColor: "var(--accent)" }}
+                className={transport === "wan" ? "active" : ""}
+                onClick={() => selectTransport("wan")}
               >
-                Wait for Client
+                WAN (Relay)
               </button>
-            )}
+              <button
+                className={transport === "lan" ? "active" : ""}
+                onClick={() => selectTransport("lan")}
+              >
+                LAN
+              </button>
+            </div>
           </div>
+
+          {transport === "wan" ? (
+            <>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Relay (host:port)</label>
+                <input
+                  type="text"
+                  value={relay}
+                  onChange={(e) => setRelay(e.target.value)}
+                  disabled={paired || connecting}
+                  style={{ width: 200 }}
+                />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <label>Pairing code</label>
+                <input
+                  type="text"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  placeholder="shared code"
+                  disabled={paired || connecting}
+                  style={{ width: 160 }}
+                />
+              </div>
+              <div style={{ alignSelf: "flex-end" }}>
+                {paired || connecting ? (
+                  <button onClick={() => api.disconnect()} style={{ background: "#5a2d2d" }}>
+                    {connecting ? "Cancel" : "Unpair"}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => api.listen(relay, code)}
+                    disabled={!canPair}
+                    style={{ background: "var(--accent-dim)", borderColor: "var(--accent)" }}
+                  >
+                    Wait for Client
+                  </button>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="field" style={{ marginBottom: 0, minWidth: 220 }}>
+                <label>Available keyers</label>
+                <select
+                  value={pickedKey}
+                  disabled={paired || connecting || lanPeers.length === 0}
+                  onChange={(e) => setPickedKey(e.target.value)}
+                >
+                  {lanPeers.length === 0 ? (
+                    <option value="">(searching…)</option>
+                  ) : (
+                    lanPeers.map((p) => (
+                      <option key={p.key} value={p.key}>
+                        {p.name}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+              <div style={{ alignSelf: "flex-end", display: "flex", gap: 8 }}>
+                <button onClick={() => api.lanBrowse()} disabled={paired || connecting}>
+                  Refresh
+                </button>
+                {paired || connecting ? (
+                  <button onClick={() => api.disconnect()} style={{ background: "#5a2d2d" }}>
+                    {connecting ? "Cancel" : "Unpair"}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => picked && api.connectLan(picked.key, picked.endpoint)}
+                    disabled={!canConnectLan}
+                    style={{ background: "var(--accent-dim)", borderColor: "var(--accent)" }}
+                  >
+                    Connect
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </div>
         <p style={{ color: "var(--text-dim)", fontSize: 12, marginBottom: 0 }}>
-          Enter the same relay and pairing code as the operating position, then wait for it to
-          connect. Select a keying output port first.
+          {transport === "wan"
+            ? "Enter the same relay and pairing code as the operating position, then wait for it to connect. Select a keying output port first."
+            : "Pick the advertised keyer from the list and connect — no relay, no internet. Select a keying output port first."}
         </p>
       </div>
     </div>
