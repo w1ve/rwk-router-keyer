@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the keyer apps.
+
+  The suite talks to serial ports (CW key lines, paddle, logger) and plays sidetone audio, so
+  it needs the device/audio entitlements below. Keep this list minimal: only what the apps
+  actually use. The network entitlement is included because the Remote Keyer and Keyer-Router
+  open sockets (WireGuard tunnel, relay, LAN discovery); the standalone W1VE Keyer does not use
+  the network, but one shared entitlements file across the suite is simpler and the unused
+  grants are harmless.
+-->
+<plist version="1.0">
+<dict>
+  <!-- Allow a signed-but-hardened binary to run (required for notarization). -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+
+  <!-- Outgoing + incoming network for the tunnel/relay/LAN apps. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+
+  <!-- Microphone/audio session (sidetone output goes through the audio stack). -->
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
+
+  <!-- USB / serial device access for the key-line, paddle and logger ports. -->
+  <key>com.apple.security.device.usb</key>
+  <true/>
+</dict>
+</plist>
