@@ -263,14 +263,33 @@ impl SidetoneEngine {
     /// Lists available output device names.
     ///
     /// A machine with no audio subsystem yields an empty list rather than an error, so
-    /// the UI can still render a device picker.
+    /// the UI can still render a device picker. Names are returned sorted alphabetically.
     #[must_use]
     pub fn output_devices() -> Vec<String> {
+        Self::output_devices_marked().into_iter().map(|(name, _)| name).collect()
+    }
+
+    /// Lists available output device names paired with whether each is the system **default**
+    /// output. Sorted alphabetically. A UI can label the default one, e.g. `Speakers (default)`.
+    ///
+    /// A machine with no audio subsystem yields an empty list rather than an error.
+    #[must_use]
+    pub fn output_devices_marked() -> Vec<(String, bool)> {
         let host = cpal::default_host();
-        match host.output_devices() {
+        let default_name = host.default_output_device().and_then(|d| d.name().ok());
+        let mut names: Vec<String> = match host.output_devices() {
             Ok(devices) => devices.filter_map(|d| d.name().ok()).collect(),
             Err(_) => Vec::new(),
-        }
+        };
+        names.sort();
+        names.dedup();
+        names
+            .into_iter()
+            .map(|name| {
+                let is_default = default_name.as_deref() == Some(name.as_str());
+                (name, is_default)
+            })
+            .collect()
     }
 
     /// Starts (or restarts) the output stream on the default output device.
@@ -282,12 +301,37 @@ impl SidetoneEngine {
     /// Returns [`crate::Error::Audio`] when no output device is available or the stream
     /// cannot be built. Callers treat this as a warning and continue without sidetone.
     pub fn start(&mut self) -> Result<()> {
+        self.start_on(None)
+    }
+
+    /// Starts (or restarts) the output stream on a named output device.
+    ///
+    /// `device_name` of `None` uses the system default output device. A `Some(name)` that
+    /// does not match any present device falls back to the default (and the caller can tell
+    /// by comparing [`Self::device_name`] afterwards).
+    ///
+    /// Key-up requests are honoured immediately; use [`Self::key_down`] to gate audio.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Audio`] when no output device is available or the stream
+    /// cannot be built. Callers treat this as a warning and continue without sidetone.
+    pub fn start_on(&mut self, device_name: Option<&str>) -> Result<()> {
         self.stop();
 
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| crate::Error::Audio("no default output device".into()))?;
+        // Resolve the requested device by name, falling back to the default output device.
+        let device = match device_name {
+            Some(wanted) => host
+                .output_devices()
+                .ok()
+                .and_then(|mut devs| devs.find(|d| d.name().map(|n| n == wanted).unwrap_or(false)))
+                .or_else(|| host.default_output_device())
+                .ok_or_else(|| crate::Error::Audio("no output device".into()))?,
+            None => host
+                .default_output_device()
+                .ok_or_else(|| crate::Error::Audio("no default output device".into()))?,
+        };
         let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
 
         let supported = device

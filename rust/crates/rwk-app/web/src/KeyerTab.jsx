@@ -30,9 +30,25 @@ function loadMacros() {
   return DEFAULT_MACROS;
 }
 
+// Is this platform event-driven for device changes? On Windows the backend pushes updated
+// device/port lists on WM_DEVICECHANGE, so no manual Refresh is needed. Elsewhere we show a
+// Refresh button. navigator.userAgent carries the OS in the webview.
+const IS_WINDOWS = /windows/i.test(navigator.userAgent);
+
 // The Keyer tab: Keyer | Sidetone | Inputs panels across the top, and the Pair-with-Station
 // panel below — mirroring the C# client's layout, but with the Rust pairing-code model.
-export default function KeyerTab({ settings, connection, advertising }) {
+//
+// `ports`, `audioDevices` and `errors` are pushed from the backend (App.jsx forwards the
+// Ports / AudioDevices / Error events), so there is no manual polling: a plug/unplug updates
+// the lists live, and per-control failures render in red under the offending control.
+export default function KeyerTab({
+  settings,
+  connection,
+  advertising,
+  ports = [],
+  audioDevices = [],
+  errors = {},
+}) {
   // Keyer
   const [wpm, setWpm] = useState(settings.wpm);
   const [weight, setWeight] = useState(settings.weight);
@@ -42,13 +58,11 @@ export default function KeyerTab({ settings, connection, advertising }) {
   // Sidetone
   const [toneHz, setToneHz] = useState(settings.toneHz);
   const [toneVol, setToneVol] = useState(settings.toneVolume);
-  const [audioDevices, setAudioDevices] = useState([]);
 
-  // Inputs
-  const [ports, setPorts] = useState([]);
-  const [keyingPort, setKeyingPort] = useState("");
-  const [paddlePort, setPaddlePort] = useState("");
-  const [winkeyerPort, setWinkeyerPort] = useState("");
+  // Inputs — reflected from the backend-echoed settings (no local source of truth).
+  const keyingPort = settings.keyingPort || "";
+  const paddlePort = settings.paddlePort || "";
+  const winkeyerPort = settings.winkeyerPort || "";
 
   // Macros + type-ahead
   const [macros, setMacros] = useState(loadMacros);
@@ -75,24 +89,40 @@ export default function KeyerTab({ settings, connection, advertising }) {
     setKeyerId(settings.keyerId || "");
   }, [settings]);
 
-  // Enumerate devices once.
-  useEffect(() => {
-    api.audioDevices().then(setAudioDevices).catch(() => {});
-    api.serialPorts().then(setPorts).catch(() => {});
-  }, []);
-
   const paired = connection.state === "connected";
   const connecting = connection.state === "connecting";
+
+  // Sidetone device selection model: settings.audioDevice is null (follow system default),
+  // "" (off), or a device name. When null, show the actual default device by name so the user
+  // sees what they are hearing through. "(None)" = off = "".
+  const defaultDevice = audioDevices.find((d) => d.isDefault)?.name || "";
+  const audioValue = settings.audioDevice == null ? defaultDevice : settings.audioDevice;
 
   function saveMacros(next) {
     setMacros(next);
     localStorage.setItem("rwk.macros", JSON.stringify(next));
   }
 
+  // Type-ahead: any text added to the box — typed OR pasted — is appended to the send buffer
+  // and keyed with proper CW spacing. We diff against what we have already sent so a paste of
+  // a whole sentence enqueues the whole sentence (not just one key). ESC aborts + clears.
+  function onTypeAheadChange(e) {
+    const next = e.target.value;
+    if (next.length > typeAhead.length && next.startsWith(typeAhead)) {
+      const added = next.slice(typeAhead.length);
+      api.sendCw(added.toUpperCase());
+    } else if (next.length > typeAhead.length) {
+      // Non-append edit (rare): send the added remainder conservatively.
+      api.sendCw(next.toUpperCase());
+    }
+    setTypeAhead(next);
+  }
+
   function onTypeAheadKey(e) {
-    const ch = e.key;
-    if (ch.length === 1 && ch >= " " && ch <= "~") {
-      api.sendCw(ch.toUpperCase());
+    if (e.key === "Escape") {
+      e.preventDefault();
+      api.abortSend();
+      setTypeAhead("");
     }
   }
 
@@ -181,10 +211,10 @@ export default function KeyerTab({ settings, connection, advertising }) {
           <div className="row" style={{ marginTop: 10, gap: 6 }}>
             <input
               type="text"
-              placeholder="Type CW (sent as you type)…"
+              placeholder="Type or paste CW (sent as entered) — ESC to stop…"
               value={typeAhead}
-              onChange={(e) => setTypeAhead(e.target.value)}
-              onKeyPress={onTypeAheadKey}
+              onChange={onTypeAheadChange}
+              onKeyDown={onTypeAheadKey}
               style={{ flex: 1 }}
             />
             <button onClick={() => api.testTx()}>Test TX</button>
@@ -195,17 +225,37 @@ export default function KeyerTab({ settings, connection, advertising }) {
         <div className="panel">
           <h3>Sidetone</h3>
           <div className="field">
-            <label>Device</label>
+            <label className="row spread">
+              <span>Device</span>
+              {!IS_WINDOWS && (
+                <button className="mini" onClick={() => api.refreshAudioDevices()}>
+                  Refresh
+                </button>
+              )}
+            </label>
             <select
-              onChange={() => {
-                /* device selection is a later increment; default device for now */
+              value={audioValue}
+              onChange={(e) => {
+                const v = e.target.value;
+                // "" -> off; a name equal to the default device -> null (follow default);
+                // any other name -> that device.
+                const device = v === "" ? "" : v === defaultDevice ? null : v;
+                api.selectAudioDevice(device);
               }}
             >
-              <option>(Default Output)</option>
+              <option value="">(None — sidetone off)</option>
               {audioDevices.map((d) => (
-                <option key={d}>{d}</option>
+                <option key={d.name} value={d.name}>
+                  {d.isDefault ? `${d.name} (default)` : d.name}
+                </option>
               ))}
+              {/* keep a stale named selection visible until the next refresh */}
+              {settings.audioDevice &&
+                !audioDevices.some((d) => d.name === settings.audioDevice) && (
+                  <option value={settings.audioDevice}>{settings.audioDevice}</option>
+                )}
             </select>
+            <ErrorLine msg={errors.audio} />
           </div>
           <div className="field">
             <label>Frequency: {toneHz} Hz</label>
@@ -240,33 +290,34 @@ export default function KeyerTab({ settings, connection, advertising }) {
 
         {/* ─── Inputs ────────────────────────────────────── */}
         <div className="panel">
-          <h3>Inputs</h3>
+          <div className="row spread" style={{ marginBottom: 8 }}>
+            <h3 style={{ margin: 0 }}>Inputs</h3>
+            {!IS_WINDOWS && (
+              <button className="mini" onClick={() => api.serialPorts()}>
+                Refresh
+              </button>
+            )}
+          </div>
           <PortSelect
             label="Keying out (rig key line)"
             value={keyingPort}
             ports={ports}
-            onChange={(p) => {
-              setKeyingPort(p);
-              api.selectKeyingPort(p || null);
-            }}
+            error={errors.keying}
+            onChange={(p) => api.selectKeyingPort(p || null)}
           />
           <PortSelect
-            label="Paddle (input — not yet active)"
+            label="Paddle input (CTS=dit, DSR=dah, DCD=straight)"
             value={paddlePort}
             ports={ports}
-            onChange={(p) => {
-              setPaddlePort(p);
-              api.selectPaddlePort(p || null);
-            }}
+            error={errors.paddle}
+            onChange={(p) => api.selectPaddlePort(p || null)}
           />
           <PortSelect
             label="WinKeyer (not yet active)"
             value={winkeyerPort}
             ports={ports}
-            onChange={(p) => {
-              setWinkeyerPort(p);
-              api.selectWinkeyerPort(p || null);
-            }}
+            error={errors.winkeyer}
+            onChange={(p) => api.selectWinkeyerPort(p || null)}
           />
           <PttButton />
         </div>
@@ -412,18 +463,28 @@ export default function KeyerTab({ settings, connection, advertising }) {
   );
 }
 
-function PortSelect({ label, value, ports, onChange }) {
+function ErrorLine({ msg }) {
+  if (!msg) return null;
+  return (
+    <div style={{ color: "var(--bad, #e06c6c)", fontSize: 12, marginTop: 4 }}>{msg}</div>
+  );
+}
+
+function PortSelect({ label, value, ports, error, onChange }) {
+  // Keep the current value visible even if it is not in the live list (busy/hidden port).
+  const list = value && !ports.includes(value) ? [...ports, value] : ports;
   return (
     <div className="field">
       <label>{label}</label>
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
+      <select value={value || ""} onChange={(e) => onChange(e.target.value)}>
         <option value="">(None)</option>
-        {ports.map((p) => (
+        {list.map((p) => (
           <option key={p} value={p}>
             {p}
           </option>
         ))}
       </select>
+      <ErrorLine msg={error} />
     </div>
   );
 }

@@ -39,12 +39,20 @@ use rwk_core::engine::tunnel;
 use rwk_core::primitives::KeyingLine;
 use rwk_core::timing::{Clock, MonotonicClock};
 
+use rwk_core::engine::serial::natural_port_key;
+
 use crate::app_paths;
 use crate::station_winkeyer::{HostReport, HostReporter, StationWinKeyerHost};
 
 /// The inner UDP port the keying edge rides over the tunnel, matching the Client's
 /// [`crate::controller`] `EDGE_PORT` so the two ends agree.
 const EDGE_PORT: u16 = 5555;
+
+/// Control identifiers for inline per-control error messages in the UI.
+mod control {
+    pub const KEYING: &str = "keying";
+    pub const LOGGER: &str = "logger";
+}
 
 /// An event the Station controller emits for the UI to render. Serialized to the webview
 /// as-is on the shared `rwk://event` channel.
@@ -63,6 +71,12 @@ pub enum StationEvent {
     FailSafe { code: u8, message: String },
     /// A human-readable log line for the Log tab.
     Log { level: String, message: String },
+    /// The current serial-port inventory (numeric-sorted), pushed on change (PnP).
+    Ports { available: Vec<String> },
+    /// A short per-control error to show in red under the offending control (full detail is
+    /// logged too). An empty `message` clears the control's error. `control` is one of
+    /// "keying" | "logger".
+    Error { control: String, message: String },
     /// The current Station settings, echoed so the UI can confirm them.
     Settings {
         keying_port: Option<String>,
@@ -143,6 +157,17 @@ impl Shared {
 
     fn log(&self, level: &str, message: impl Into<String>) {
         self.emit(StationEvent::Log { level: level.into(), message: message.into() });
+    }
+
+    /// Logs the full detail and shows a short red message under `control`.
+    fn fail(&self, control: &str, short: impl Into<String>, detail: impl Into<String>) {
+        self.log("warn", detail);
+        self.emit(StationEvent::Error { control: control.into(), message: short.into() });
+    }
+
+    /// Clears any red message under `control`.
+    fn clear_error(&self, control: &str) {
+        self.emit(StationEvent::Error { control: control.into(), message: String::new() });
     }
 
     fn emit_settings(&self) {
@@ -252,7 +277,17 @@ impl StationController {
             browse: Mutex::new(None),
         };
         controller.shared.emit_settings();
+        controller.emit_ports();
         controller
+    }
+
+    /// Re-emits settings and the serial-port inventory. The UI calls this once it has
+    /// subscribed to the event channel, because the startup emit in [`Self::start`] races the
+    /// webview and would otherwise be lost. The Station does not browse LAN keyers unless the
+    /// operator asks, so no peer list is pushed here.
+    pub fn request_state(&self) {
+        self.shared.emit_settings();
+        self.emit_ports();
     }
 
     /// Selects the pairing transport: "wan" (relay + code) or "lan" (browse + pick a keyer).
@@ -273,16 +308,90 @@ impl StationController {
             .unwrap_or_default()
     }
 
+    fn emit_ports(&self) {
+        self.shared.emit(StationEvent::Ports { available: Self::serial_ports() });
+    }
+
+    /// Whether a pairing session is live (the keying — and maybe logger — port is held open).
+    fn is_paired(&self) -> bool {
+        self.active.lock().unwrap().is_some()
+    }
+
+    /// The serial ports held open by the current session, if any. The Station only opens its
+    /// keying (and logger) port at pairing time, so held ports are known only while paired.
+    fn held_ports(&self) -> Vec<String> {
+        if !self.is_paired() {
+            return Vec::new();
+        }
+        let s = self.shared.settings.lock().unwrap();
+        let mut held = Vec::new();
+        if let Some(p) = &s.keying_port {
+            held.push(p.clone());
+        }
+        if s.logger_enabled {
+            if let Some(p) = &s.logger_port {
+                held.push(p.clone());
+            }
+        }
+        held
+    }
+
+    /// Re-enumerates serial ports and pushes the fresh list. A selected keying/logger port
+    /// that vanishes while **not** paired drops to `None`; while paired the selections are
+    /// left untouched (the session owns the open ports — dropping them mid-QSO would be a
+    /// bug, and a busy COM port is often hidden from enumeration on Windows anyway).
+    pub fn reconcile_ports(&self) {
+        let mut present = Self::serial_ports();
+        for held in self.held_ports() {
+            if !present.contains(&held) {
+                present.push(held);
+            }
+        }
+        present.sort_by(|a, b| natural_port_key(a).cmp(&natural_port_key(b)));
+        self.shared.emit(StationEvent::Ports { available: present.clone() });
+
+        // While paired, do not disturb the selections (the session holds its ports).
+        if self.is_paired() {
+            return;
+        }
+
+        let (keying_gone, logger_gone) = {
+            let s = self.shared.settings.lock().unwrap();
+            (port_missing(&s.keying_port, &present), port_missing(&s.logger_port, &present))
+        };
+        if !(keying_gone || logger_gone) {
+            return;
+        }
+        if keying_gone {
+            let name = self.shared.settings.lock().unwrap().keying_port.take();
+            if let Some(n) = name {
+                self.shared.log("warn", format!("Keying port {n} removed; set to (None)."));
+            }
+            self.shared.clear_error(control::KEYING);
+        }
+        if logger_gone {
+            let name = self.shared.settings.lock().unwrap().logger_port.take();
+            if let Some(n) = name {
+                self.shared.log("warn", format!("Logger port {n} removed; set to (None)."));
+            }
+            self.shared.clear_error(control::LOGGER);
+        }
+        self.shared.persist();
+        self.shared.emit_settings();
+    }
+
     /// Selects the serial port that keys the radio, or `None` to clear it. The port is opened
     /// when pairing starts, so the replay driver owns it for the session; changing it while
     /// paired takes effect on the next pairing.
     pub fn select_keying_port(&self, port: Option<String>) {
         self.shared.settings.lock().unwrap().keying_port = port.clone();
+        self.shared.clear_error(control::KEYING);
         match port {
             Some(name) => self.shared.log("info", format!("Keying output set to {name}.")),
             None => self.shared.log("info", "Keying output cleared."),
         }
         self.shared.persist();
+        self.emit_ports();
         self.shared.emit_settings();
     }
 
@@ -304,11 +413,13 @@ impl StationController {
     /// Selects the serial port the local logger sends WinKeyer protocol on, or `None`.
     pub fn set_logger_port(&self, port: Option<String>) {
         self.shared.settings.lock().unwrap().logger_port = port.clone();
+        self.shared.clear_error(control::LOGGER);
         match port {
             Some(name) => self.shared.log("info", format!("Logger input port set to {name}.")),
             None => self.shared.log("info", "Logger input port cleared."),
         }
         self.shared.persist();
+        self.emit_ports();
         self.shared.emit_settings();
     }
 
@@ -641,8 +752,20 @@ async fn bring_up_station(
     };
     let serial = match SerialKeyingOutput::open(cfg) {
         Ok(out) => out,
-        Err(e) => return fail(shared, format!("keying port {port_name} failed: {e}")),
+        Err(e) => {
+            shared.fail(
+                control::KEYING,
+                format!("{port_name} not available"),
+                format!("keying port {port_name} failed: {e}"),
+            );
+            shared.emit(StationEvent::Connection {
+                state: "disconnected".into(),
+                path: "none".into(),
+            });
+            return;
+        }
     };
+    shared.clear_error(control::KEYING);
     shared.log("info", format!("Keying output open on {port_name}."));
 
     let arbiter = Arc::new(KeyingArbiter::with_observer(
@@ -670,11 +793,16 @@ async fn bring_up_station(
                 let reporter: HostReporter = make_host_reporter(Arc::clone(shared));
                 match StationWinKeyerHost::open(&lp, arbiter.local_handle(), reporter) {
                     Ok(host) => {
+                        shared.clear_error(control::LOGGER);
                         shared.log("info", format!("Logger input active on {}.", host.port_name()));
                         Some(host)
                     }
                     Err(e) => {
-                        shared.log("warn", format!("Logger input unavailable: {e}"));
+                        shared.fail(
+                            control::LOGGER,
+                            format!("{lp} not available"),
+                            format!("Logger input unavailable: {e}"),
+                        );
                         None
                     }
                 }
@@ -840,6 +968,11 @@ impl Drop for StationController {
     fn drop(&mut self) {
         self.disconnect();
     }
+}
+
+/// Whether `selected` names a port that is not in `present` (and is `Some`).
+fn port_missing(selected: &Option<String>, present: &[String]) -> bool {
+    matches!(selected, Some(name) if !present.iter().any(|p| p == name))
 }
 
 /// Parses a UI line name into a [`KeyingLine`]; "none"/empty maps to [`None`].

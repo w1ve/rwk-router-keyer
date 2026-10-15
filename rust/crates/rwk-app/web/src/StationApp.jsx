@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { onRwkEvent } from "./station-api.js";
+import { useEffect, useRef, useState } from "react";
+import { onRwkEvent, stationApi } from "./station-api.js";
 import StationTab from "./StationTab.jsx";
 
 const DEFAULT_SETTINGS = {
@@ -26,10 +26,13 @@ export default function StationApp() {
   const [loggerSending, setLoggerSending] = useState(false);
   const [lastFailSafe, setLastFailSafe] = useState(null);
   const [lanPeers, setLanPeers] = useState([]);
+  const [ports, setPorts] = useState([]);
+  const [errors, setErrors] = useState({}); // control -> short red message
   const [log, setLog] = useState([]);
+  const unlisten = useRef(null);
 
   useEffect(() => {
-    const unlisten = onRwkEvent((ev) => {
+    onRwkEvent((ev) => {
       switch (ev.kind) {
         case "settings":
           setSettings({
@@ -42,6 +45,12 @@ export default function StationApp() {
             pairingCode: ev.pairing_code,
             transport: ev.transport ?? "wan",
           });
+          break;
+        case "ports":
+          setPorts(ev.available || []);
+          break;
+        case "error":
+          setErrors((e) => ({ ...e, [ev.control]: ev.message || undefined }));
           break;
         case "lanPeers":
           setLanPeers(ev.peers || []);
@@ -74,9 +83,14 @@ export default function StationApp() {
         default:
           break;
       }
+    }).then((fn) => {
+      unlisten.current = fn;
+      // Beat the startup race: ask for a fresh settings + ports snapshot now that we have
+      // subscribed.
+      stationApi.requestState().catch(() => {});
     });
     return () => {
-      unlisten.then((f) => f());
+      if (unlisten.current) unlisten.current();
     };
   }, []);
 
@@ -122,6 +136,8 @@ export default function StationApp() {
             loggerSending={loggerSending}
             lastFailSafe={lastFailSafe}
             lanPeers={lanPeers}
+            ports={ports}
+            errors={errors}
           />
         )}
         {tab === "log" && (

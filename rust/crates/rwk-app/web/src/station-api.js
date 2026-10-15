@@ -8,6 +8,10 @@ import { listen } from "@tauri-apps/api/event";
 export const stationApi = {
   ping: () => invoke("station_ping"),
 
+  // Pull the current settings + ports once the UI has subscribed (the backend's startup push
+  // races the webview and would otherwise be missed).
+  requestState: () => invoke("station_request_state"),
+
   // Ports / keying configuration
   serialPorts: () => invoke("station_serial_ports"),
   selectKeyingPort: (port) => invoke("station_select_keying_port", { port }),

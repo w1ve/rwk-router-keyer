@@ -30,8 +30,28 @@ use crate::Result;
 /// # Errors
 ///
 /// Returns [`crate::Error::SerialIo`] if the platform enumeration call fails.
+///
+/// Ports are returned in natural (numeric-aware) ascending order of their name, so `COM2`
+/// precedes `COM10` precedes `COM100` rather than the lexical order the OS reports. The same
+/// ordering applies to Unix names like `/dev/ttyUSB0` … `/dev/ttyUSB10`.
 pub fn enumerate_ports() -> Result<Vec<SerialPortInfo>> {
-    Ok(serialport::available_ports()?)
+    let mut ports = serialport::available_ports()?;
+    ports.sort_by(|a, b| natural_port_key(&a.port_name).cmp(&natural_port_key(&b.port_name)));
+    Ok(ports)
+}
+
+/// A sort key for natural ordering of a port name: the non-digit prefix, then the trailing
+/// run of digits as a number. `COM10` → (`"COM"`, 10); `/dev/ttyUSB2` → (`"/dev/ttyUSB"`, 2).
+/// Names with no trailing number sort by prefix with a number of 0.
+///
+/// Exposed so UIs that merge in extra names (e.g. a busy, in-use port hidden from
+/// enumeration) can re-sort the combined list the same way.
+#[must_use]
+pub fn natural_port_key(name: &str) -> (String, u64) {
+    let digits_start = name.len() - name.chars().rev().take_while(|c| c.is_ascii_digit()).count();
+    let prefix = name[..digits_start].to_string();
+    let number = name[digits_start..].parse::<u64>().unwrap_or(0);
+    (prefix, number)
 }
 
 /// Serial keying output settings.
@@ -408,5 +428,17 @@ mod tests {
     fn enumerate_ports_does_not_error_on_a_machine_with_no_ports() {
         // Must return Ok (possibly empty); never panic.
         let _ = enumerate_ports().expect("enumeration");
+    }
+
+    #[test]
+    fn natural_port_key_orders_numerically_not_lexically() {
+        let mut names = vec!["COM10", "COM2", "COM1", "COM100", "COM21"];
+        names.sort_by(|a, b| natural_port_key(a).cmp(&natural_port_key(b)));
+        assert_eq!(names, vec!["COM1", "COM2", "COM10", "COM21", "COM100"]);
+
+        // Unix device names sort the same way on their trailing number.
+        let mut unix = vec!["/dev/ttyUSB10", "/dev/ttyUSB2", "/dev/ttyUSB0"];
+        unix.sort_by(|a, b| natural_port_key(a).cmp(&natural_port_key(b)));
+        assert_eq!(unix, vec!["/dev/ttyUSB0", "/dev/ttyUSB2", "/dev/ttyUSB10"]);
     }
 }

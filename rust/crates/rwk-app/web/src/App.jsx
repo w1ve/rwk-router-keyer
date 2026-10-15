@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { onRwkEvent } from "./api.js";
+import { useEffect, useRef, useState } from "react";
+import { api, onRwkEvent } from "./api.js";
 import KeyerTab from "./KeyerTab.jsx";
 import RouterTab from "./RouterTab.jsx";
 
@@ -10,6 +10,10 @@ const DEFAULT_SETTINGS = {
   paddleReverse: false,
   toneHz: 600,
   toneVolume: 70,
+  audioDevice: null,
+  keyingPort: null,
+  paddlePort: null,
+  winkeyerPort: null,
   transport: "wan",
   callsign: "",
   keyerId: "",
@@ -20,13 +24,19 @@ export default function App() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [connection, setConnection] = useState({ state: "disconnected", path: "none" });
   const [keyDown, setKeyDown] = useState(false);
+  const [pttOn, setPttOn] = useState(false);
+  const [sending, setSending] = useState(false);
   const [advertising, setAdvertising] = useState(false);
+  const [ports, setPorts] = useState([]);
+  const [audioDevices, setAudioDevices] = useState([]);
+  const [errors, setErrors] = useState({}); // control -> short red message
   const [forwardRules, setForwardRules] = useState([]);
   const [flexEnabled, setFlexEnabled] = useState(false);
   const [log, setLog] = useState([]);
+  const unlisten = useRef(null);
 
   useEffect(() => {
-    const unlisten = onRwkEvent((ev) => {
+    onRwkEvent((ev) => {
       switch (ev.kind) {
         case "settings":
           setSettings({
@@ -36,16 +46,36 @@ export default function App() {
             paddleReverse: ev.paddle_reverse,
             toneHz: ev.tone_hz,
             toneVolume: ev.tone_volume,
+            audioDevice: ev.audio_device ?? null,
+            keyingPort: ev.keying_port ?? null,
+            paddlePort: ev.paddle_port ?? null,
+            winkeyerPort: ev.winkeyer_port ?? null,
             transport: ev.transport ?? "wan",
             callsign: ev.callsign ?? "",
             keyerId: ev.keyer_id ?? "",
           });
+          break;
+        case "ports":
+          setPorts(ev.available || []);
+          break;
+        case "audioDevices":
+          // Each entry: { name, isDefault }.
+          setAudioDevices(ev.available || []);
+          break;
+        case "error":
+          setErrors((e) => ({ ...e, [ev.control]: ev.message || undefined }));
           break;
         case "connection":
           setConnection({ state: ev.state, path: ev.path });
           break;
         case "keyState":
           setKeyDown(ev.down);
+          break;
+        case "pttState":
+          setPttOn(ev.on);
+          break;
+        case "sending":
+          setSending(ev.active);
           break;
         case "advertising":
           setAdvertising(ev.active);
@@ -65,9 +95,23 @@ export default function App() {
         default:
           break;
       }
+    }).then((fn) => {
+      unlisten.current = fn;
+      // Beat the startup race: the backend's initial emit happens before this webview
+      // subscribed, so ask for a fresh snapshot now.
+      api.requestState().catch(() => {});
     });
+
+    // Global ESC: abort sending from anywhere in the window (e.g. while a macro plays and the
+    // type-ahead box is not focused).
+    const onKey = (e) => {
+      if (e.key === "Escape") api.abortSend().catch(() => {});
+    };
+    window.addEventListener("keydown", onKey);
+
     return () => {
-      unlisten.then((f) => f());
+      if (unlisten.current) unlisten.current();
+      window.removeEventListener("keydown", onKey);
     };
   }, []);
 
@@ -105,7 +149,14 @@ export default function App() {
 
       <div className="tabbody">
         {tab === "keyer" && (
-          <KeyerTab settings={settings} connection={connection} advertising={advertising} />
+          <KeyerTab
+            settings={settings}
+            connection={connection}
+            advertising={advertising}
+            ports={ports}
+            audioDevices={audioDevices}
+            errors={errors}
+          />
         )}
         {tab === "router" && (
           <RouterTab
@@ -147,6 +198,12 @@ export default function App() {
         <span>RTT: --</span>
         <span style={{ color: keyDown ? "var(--key-on)" : "var(--text-dim)" }}>
           Key: {keyDown ? "Down" : "Up"}
+        </span>
+        <span style={{ color: pttOn ? "var(--ptt-on)" : "var(--text-dim)" }}>
+          PTT: {pttOn ? "On" : "Off"}
+        </span>
+        <span style={{ color: sending ? "var(--accent)" : "var(--text-dim)" }}>
+          {sending ? "Sending" : "Idle"}
         </span>
       </div>
     </div>

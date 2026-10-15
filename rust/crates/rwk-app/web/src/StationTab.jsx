@@ -14,8 +14,9 @@ export default function StationTab({
   loggerSending,
   lastFailSafe,
   lanPeers = [],
+  ports = [],
+  errors = {},
 }) {
-  const [ports, setPorts] = useState([]);
   const [keyingPort, setKeyingPort] = useState(settings.keyingPort || "");
   const [keyLine, setKeyLine] = useState(settings.keyLine || "dtr");
   const [pttLine, setPttLine] = useState(settings.pttLine || "rts");
@@ -39,9 +40,7 @@ export default function StationTab({
     if (settings.transport) setTransport(settings.transport);
   }, [settings]);
 
-  useEffect(() => {
-    api.serialPorts().then(setPorts).catch(() => {});
-  }, []);
+  // Ports are pushed from the backend (StationApp forwards the Ports event); no polling.
 
   // Keep the picked keyer valid: default to the first peer, and drop the selection if the
   // advertised keyer we had chosen has aged out of the list.
@@ -113,12 +112,15 @@ export default function StationTab({
               }}
             >
               <option value="">(None)</option>
-              {ports.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
+              {(keyingPort && !ports.includes(keyingPort) ? [...ports, keyingPort] : ports).map(
+                (p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ),
+              )}
             </select>
+            <ErrorLine msg={errors.keying} />
           </div>
           <div className="row" style={{ gap: 10 }}>
             <div className="field" style={{ flex: 1, marginBottom: 0 }}>
@@ -184,7 +186,7 @@ export default function StationTab({
               }}
             >
               <option value="">(None)</option>
-              {ports
+              {(loggerPort && !ports.includes(loggerPort) ? [...ports, loggerPort] : ports)
                 .filter((p) => p !== keyingPort)
                 .map((p) => (
                   <option key={p} value={p}>
@@ -192,6 +194,7 @@ export default function StationTab({
                   </option>
                 ))}
             </select>
+            <ErrorLine msg={errors.logger} />
           </div>
         </div>
         <p style={{ color: "var(--text-dim)", fontSize: 12, marginBottom: 0, marginTop: 10 }}>
@@ -312,6 +315,14 @@ export default function StationTab({
         </p>
       </div>
     </div>
+  );
+}
+
+// A short red error line shown under a control (empty message renders nothing).
+function ErrorLine({ msg }) {
+  if (!msg) return null;
+  return (
+    <div style={{ color: "var(--bad, #e06c6c)", fontSize: 12, marginTop: 4 }}>{msg}</div>
   );
 }
 

@@ -72,4 +72,4 @@ pub use keying::{
     EdgeEvent, EdgeSchedule, EdgeScheduleBuilder, ElementKeyer, KeyerElement, KeyerElementTiming,
     PaddleElementEngine, PaddleState,
 };
-pub use serial::{enumerate_ports, KeyingOutputConfig, PttTiming, SerialKeyingOutput};
+pub use serial::{enumerate_ports, natural_port_key, KeyingOutputConfig, PttTiming, SerialKeyingOutput};

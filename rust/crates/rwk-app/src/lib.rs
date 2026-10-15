@@ -19,22 +19,41 @@
 
 mod app_paths;
 mod controller;
+mod device_watch;
 mod station_controller;
 mod station_winkeyer;
 
 use std::sync::Arc;
 
 use controller::{ClientController, ClientEvent};
+use device_watch::DeviceChangeWatcher;
 use station_controller::{StationController, StationEvent};
 use tauri::{Emitter, Manager, State};
+
+/// Extracts the native window handle as an `isize` for the serial-PnP device watcher.
+///
+/// Returns `None` off Windows (the watcher then polls) or if the handle is unavailable.
+#[allow(unused_variables)]
+fn window_handle_isize(window: &tauri::WebviewWindow) -> Option<isize> {
+    #[cfg(windows)]
+    {
+        return window.hwnd().ok().map(|h| h.0 as isize);
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Client application (`w1ve-rkr`)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// The Tauri-managed state for the Client app: the live Client controller.
+/// The Tauri-managed state for the Client app: the live Client controller plus the serial
+/// PnP watcher (kept here so it lives for the whole app and is not dropped).
 struct ClientState {
     controller: ClientController,
+    _watcher: DeviceChangeWatcher,
 }
 
 /// Launches the Client (operator) application and blocks until the window closes.
@@ -49,11 +68,25 @@ pub fn run_client() {
                 let _ = handle.emit("rwk://event", &event);
             });
             let controller = ClientController::start(sink);
-            app.manage(ClientState { controller });
+
+            // Install the serial PnP watcher. On Windows it subclasses this window for
+            // WM_DEVICECHANGE; elsewhere it polls. Either way it fires the controller's port
+            // reconciliation, which pushes a fresh Ports event and drops vanished selections.
+            let raw_window =
+                app.get_webview_window("main").and_then(|w| window_handle_isize(&w));
+            let app_handle = app.handle().clone();
+            let on_change: device_watch::OnChange = Arc::new(move || {
+                if let Some(state) = app_handle.try_state::<ClientState>() {
+                    state.controller.reconcile_ports();
+                }
+            });
+            let watcher = DeviceChangeWatcher::start(raw_window, on_change);
+            app.manage(ClientState { controller, _watcher: watcher });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             ping,
+            request_state,
             set_speed,
             set_weight,
             set_mode,
@@ -64,13 +97,16 @@ pub fn run_client() {
             lan_advertise,
             set_tone_frequency,
             set_tone_volume,
+            select_audio_device,
             audio_devices,
+            refresh_audio_devices,
             serial_ports,
             select_keying_port,
             select_paddle_port,
             select_winkeyer_port,
             send_cw,
             test_tx,
+            abort_send,
             connect,
             disconnect,
             forward_rules_refresh,
@@ -92,6 +128,13 @@ pub fn run() {
 #[tauri::command]
 fn ping() -> String {
     format!("w1ve-rkr {} ready", env!("CARGO_PKG_VERSION"))
+}
+
+/// Re-emits settings, forward rules, flex state, ports, and audio devices. The UI calls this
+/// right after subscribing to the event stream to beat the startup race.
+#[tauri::command]
+fn request_state(state: State<'_, ClientState>) {
+    state.controller.request_state();
 }
 
 // ─── Client: keyer settings ──────────────────────────────────────────────────
@@ -149,8 +192,18 @@ fn set_tone_volume(state: State<'_, ClientState>, percent: u32) {
 }
 
 #[tauri::command]
-fn audio_devices() -> Vec<String> {
+fn select_audio_device(state: State<'_, ClientState>, device: Option<String>) {
+    state.controller.select_audio_device(device);
+}
+
+#[tauri::command]
+fn audio_devices() -> Vec<controller::AudioDeviceView> {
     ClientController::audio_devices()
+}
+
+#[tauri::command]
+fn refresh_audio_devices(state: State<'_, ClientState>) {
+    state.controller.refresh_audio_devices();
 }
 
 // ─── Client: ports ────────────────────────────────────────────────────────────
@@ -185,6 +238,11 @@ fn send_cw(state: State<'_, ClientState>, text: String) {
 #[tauri::command]
 fn test_tx(state: State<'_, ClientState>) {
     state.controller.test_tx();
+}
+
+#[tauri::command]
+fn abort_send(state: State<'_, ClientState>) {
+    state.controller.abort_send();
 }
 
 // ─── Client: pairing ──────────────────────────────────────────────────────────
@@ -245,9 +303,11 @@ fn set_flex_discovery(state: State<'_, ClientState>, enabled: bool) {
 //  Station application (`w1ve-rkr-station`)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// The Tauri-managed state for the Station app: the live Station controller.
+/// The Tauri-managed state for the Station app: the live Station controller plus the serial
+/// PnP watcher (kept here so it lives for the whole app and is not dropped).
 struct StationState {
     controller: StationController,
+    _watcher: DeviceChangeWatcher,
 }
 
 /// Launches the Station (remote radio site) application and blocks until the window closes.
@@ -260,22 +320,36 @@ pub fn run_station() {
                 let _ = handle.emit("rwk://event", &event);
             });
             let controller = StationController::start(sink);
-            app.manage(StationState { controller });
 
-            // Retitle the window for the Station. Both executables share one web bundle and
-            // one tauri.conf.json window; the front end probes the `station_app_role`
-            // command, which exists only in this binary, and mounts the Station UI when it
-            // succeeds (and the Client UI when it does not).
-            if let Some(window) = app.get_webview_window("main") {
+            // Retitle the window for the Station, and capture its handle for the PnP watcher.
+            // Both executables share one web bundle and one tauri.conf.json window; the front
+            // end probes the `station_app_role` command, which exists only in this binary, and
+            // mounts the Station UI when it succeeds (and the Client UI when it does not).
+            let raw_window = if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_title(
                     "W1VE Remote Keyer-Router Station — Any Rig, Any Internet, Anytime",
                 );
-            }
+                window_handle_isize(&window)
+            } else {
+                None
+            };
+
+            // Install the serial PnP watcher (Windows: WM_DEVICECHANGE on this window;
+            // elsewhere: polling), which fires the Station's port reconciliation.
+            let app_handle = app.handle().clone();
+            let on_change: device_watch::OnChange = Arc::new(move || {
+                if let Some(state) = app_handle.try_state::<StationState>() {
+                    state.controller.reconcile_ports();
+                }
+            });
+            let watcher = DeviceChangeWatcher::start(raw_window, on_change);
+            app.manage(StationState { controller, _watcher: watcher });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             station_ping,
             station_app_role,
+            station_request_state,
             station_serial_ports,
             station_select_keying_port,
             station_set_key_line,
@@ -303,6 +377,12 @@ fn station_ping() -> String {
 #[tauri::command]
 fn station_app_role() -> String {
     "station".to_string()
+}
+
+/// Re-emits the Station settings + ports once the UI has subscribed (beats the startup race).
+#[tauri::command]
+fn station_request_state(state: State<'_, StationState>) {
+    state.controller.request_state();
 }
 
 #[tauri::command]

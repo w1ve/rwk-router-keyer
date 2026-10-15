@@ -6,6 +6,10 @@ import { listen } from "@tauri-apps/api/event";
 export const api = {
   ping: () => invoke("ping"),
 
+  // Pull the current settings + ports + audio devices (called once the UI has subscribed,
+  // since the backend's startup push races the webview and would otherwise be missed).
+  requestState: () => invoke("request_state"),
+
   // Keyer settings
   setSpeed: (wpm) => invoke("set_speed", { wpm }),
   setWeight: (weight) => invoke("set_weight", { weight }),
@@ -15,7 +19,9 @@ export const api = {
   // Sidetone
   setToneFrequency: (hz) => invoke("set_tone_frequency", { hz }),
   setToneVolume: (percent) => invoke("set_tone_volume", { percent }),
+  selectAudioDevice: (device) => invoke("select_audio_device", { device }),
   audioDevices: () => invoke("audio_devices"),
+  refreshAudioDevices: () => invoke("refresh_audio_devices"),
 
   // Ports
   serialPorts: () => invoke("serial_ports"),
@@ -26,6 +32,7 @@ export const api = {
   // Keying
   sendCw: (text) => invoke("send_cw", { text }),
   testTx: () => invoke("test_tx"),
+  abortSend: () => invoke("abort_send"),
 
   // Pairing — WAN (relay + code)
   connect: (relay, code) => invoke("connect", { relay, code }),
