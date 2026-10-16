@@ -524,6 +524,18 @@ impl EdgeReplayer {
                 continue;
             }
 
+            // Adopt the Client's session epoch from the first frame of a fresh session. The
+            // Client bumps its epoch on each new pairing "so the station re-anchors" (see
+            // `EdgeSender`/`begin_session` docs); the station cannot know that number ahead of
+            // time, so it takes it from the first frame it sees while no edge has yet been
+            // applied. This is the receiving half of the epoch handshake: without it, a Client
+            // epoch of 2+ against a station anchored at 1 would make every frame F4. Only done
+            // before the baseline is set, so it never re-anchors mid-stream (which would mask
+            // a real F4/F5).
+            if !tracker.has_applied() && tracker.epoch() != inbound.frame.epoch {
+                tracker.begin_session(inbound.frame.epoch);
+            }
+
             let results = tracker.validate_frame(&inbound.frame);
             for result in results {
                 self.handle_validation(result, inbound.arrival, now, keying);
@@ -808,6 +820,45 @@ mod tests {
         rp.tick(100 * MS, &mut out);
 
         assert!(!rp.is_safe_latched(), "F4 must not latch");
+        assert!(!rp.is_key_down(), "F4 forces key-up");
+        let events = rp.take_events();
+        assert!(events.contains(&ReplayEvent::FailSafe { condition: FailSafeCondition::F4 }));
+    }
+
+    #[test]
+    fn fresh_session_adopts_the_clients_epoch_from_the_first_frame() {
+        // The station anchors at epoch 1 but the client paired and bumped to 2. The first
+        // frame of the session must be adopted (not F4): this is the receiving half of the
+        // epoch handshake.
+        let mut rp = replayer();
+        let mut out = RecordingOutput::default();
+        rp.begin_session(1);
+
+        rp.process_datagram(&frame(2, &[EdgeEntry::key_down_at(1, 0, 0)]), 0);
+        rp.tick(60 * MS, &mut out);
+
+        assert_eq!(out.key_states(), vec![true], "the first frame's epoch is adopted, edge keyed");
+        assert!(!rp.is_safe_latched());
+        let events = rp.take_events();
+        assert!(
+            !events.contains(&ReplayEvent::FailSafe { condition: FailSafeCondition::F4 }),
+            "no F4 on a fresh session adopting the client's epoch"
+        );
+    }
+
+    #[test]
+    fn epoch_change_mid_stream_still_raises_f4() {
+        // Once a baseline is applied, a different epoch is a genuine foreign frame → F4. The
+        // adoption only applies to the first frame of a fresh session.
+        let mut rp = replayer();
+        let mut out = RecordingOutput::default();
+        rp.begin_session(2);
+        rp.process_datagram(&frame(2, &[EdgeEntry::key_down_at(1, 0, 0)]), 0);
+        rp.tick(60 * MS, &mut out);
+        assert!(rp.is_key_down());
+
+        rp.process_datagram(&frame(3, &[EdgeEntry::key_up_at(1, 0, 0)]), 100 * MS);
+        rp.tick(100 * MS, &mut out);
         assert!(!rp.is_key_down(), "F4 forces key-up");
         let events = rp.take_events();
         assert!(events.contains(&ReplayEvent::FailSafe { condition: FailSafeCondition::F4 }));

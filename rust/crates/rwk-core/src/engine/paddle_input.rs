@@ -55,6 +55,18 @@ impl ContactSample {
         Self::default()
     }
 
+    /// This sample interpreted relative to a resting `baseline` (per-line XOR): a line that
+    /// idles closed in the baseline only reads as a contact when it differs from rest. Used to
+    /// neutralize a floating/idle-high port so it never produces a stuck key.
+    #[must_use]
+    pub fn relative_to(self, baseline: ContactSample) -> ContactSample {
+        ContactSample {
+            dit: self.dit ^ baseline.dit,
+            dah: self.dah ^ baseline.dah,
+            straight: self.straight ^ baseline.straight,
+        }
+    }
+
     /// Converts to a [`PaddleState`], optionally swapping dit/dah (paddle reverse). A closed
     /// straight-key contact folds into the dit contact, matching how
     /// [`KeyerMode::Straight`](crate::primitives::KeyerMode::Straight) keys from the dit line.
@@ -73,6 +85,15 @@ impl ContactSample {
 pub struct PaddleInputPort {
     port_name: String,
     port: Option<Box<dyn SerialPort>>,
+    /// The resting state of each control line, captured just after open. A paddle/key at rest
+    /// leaves its contacts OPEN, so the expected baseline is all-false. But a port with nothing
+    /// wired (or a USB-serial adapter whose modem-status lines idle HIGH) reads a line as
+    /// *asserted* at rest — which, taken literally, is a permanently-held key (a solid tone).
+    /// Capturing the baseline lets [`Self::read`] interpret each line *relative to its own
+    /// resting state* (effective = raw XOR baseline), so a line that is closed-at-open counts
+    /// as idle and only a genuine change from rest registers as a contact. This auto-calibrates
+    /// per line and makes a floating/unconfigured port never key.
+    baseline: ContactSample,
 }
 
 impl PaddleInputPort {
@@ -95,7 +116,22 @@ impl PaddleInputPort {
         port.write_data_terminal_ready(true)?;
         port.write_request_to_send(false)?;
 
-        Ok(Self { port_name: port_name.to_string(), port: Some(port) })
+        // Capture the resting state of the lines so a floating/idle-high port (nothing wired)
+        // does not read as a permanently-held key. Read a couple of times and let DTR settle
+        // first; a transient on the very first read would mis-calibrate the baseline.
+        std::thread::sleep(Duration::from_millis(20));
+        let baseline = Self::read_raw(&mut port).unwrap_or_default();
+
+        Ok(Self { port_name: port_name.to_string(), port: Some(port), baseline })
+    }
+
+    /// Reads the three control lines into a raw [`ContactSample`], with no baseline applied.
+    fn read_raw(port: &mut Box<dyn SerialPort>) -> Result<ContactSample> {
+        // CTS → dit, DSR → dah, DCD → straight key.
+        let dit = port.read_clear_to_send()?;
+        let dah = port.read_data_set_ready()?;
+        let straight = port.read_carrier_detect()?;
+        Ok(ContactSample { dit, dah, straight })
     }
 
     /// The port name.
@@ -115,14 +151,15 @@ impl PaddleInputPort {
     ///
     /// Returns [`crate::Error::SerialIo`] if any control line cannot be read.
     pub fn read(&mut self) -> Result<ContactSample> {
+        let baseline = self.baseline;
         let Some(port) = self.port.as_mut() else {
             return Ok(ContactSample::none());
         };
-        // CTS → dit, DSR → dah, DCD → straight key.
-        let dit = port.read_clear_to_send()?;
-        let dah = port.read_data_set_ready()?;
-        let straight = port.read_carrier_detect()?;
-        Ok(ContactSample { dit, dah, straight })
+        let raw = Self::read_raw(port)?;
+        // Interpret each line relative to its resting state: a line that idles closed
+        // (floating/unwired) only registers a contact when it *changes* from rest, so an
+        // unconfigured port never produces a stuck key.
+        Ok(raw.relative_to(baseline))
     }
 
     /// Closes the port, dropping DTR and releasing the OS handle.
@@ -174,5 +211,40 @@ mod tests {
     #[test]
     fn none_sample_is_idle() {
         assert!(ContactSample::none().to_paddle_state(false).is_idle());
+    }
+
+    #[test]
+    fn a_floating_port_that_idles_closed_reads_as_idle_not_a_stuck_key() {
+        // A port with nothing wired idles with all lines asserted (this is the bug source).
+        let baseline = ContactSample { dit: true, dah: true, straight: true };
+        // At rest, the raw read equals the baseline → relative reads all-open (idle), so the
+        // keyer never sees a held contact and the tone never sticks on.
+        let at_rest = baseline.relative_to(baseline);
+        assert!(at_rest.to_paddle_state(false).is_idle(), "a floating port must read idle");
+        assert!(!at_rest.dit && !at_rest.dah && !at_rest.straight);
+    }
+
+    #[test]
+    fn a_normal_port_idles_open_and_keys_on_contact() {
+        // A properly-wired paddle idles with lines open (baseline all-false).
+        let baseline = ContactSample::none();
+        // Resting: idle.
+        assert!(ContactSample::none().relative_to(baseline).to_paddle_state(false).is_idle());
+        // Dit contact closes → registers as dit.
+        let dit_closed = ContactSample { dit: true, dah: false, straight: false };
+        assert!(dit_closed.relative_to(baseline).to_paddle_state(false).dit);
+    }
+
+    #[test]
+    fn a_floating_line_registers_a_contact_only_when_it_changes_from_rest() {
+        // Straight-key line idles closed (floating high); the others idle open.
+        let baseline = ContactSample { dit: false, dah: false, straight: true };
+        // Rest: straight reads idle (open), because it matches its closed baseline.
+        let rest = ContactSample { dit: false, dah: false, straight: true }.relative_to(baseline);
+        assert!(!rest.straight, "a closed-at-rest straight line reads idle");
+        // The operator actually keys the straight contact → the line now reads OPEN (changed
+        // from its closed rest) → registers as a press.
+        let pressed = ContactSample { dit: false, dah: false, straight: false }.relative_to(baseline);
+        assert!(pressed.straight, "a change from the closed rest registers as a contact");
     }
 }

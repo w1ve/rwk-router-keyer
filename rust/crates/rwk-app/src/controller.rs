@@ -1176,22 +1176,25 @@ async fn bring_up_client(shared: &Arc<Shared>, connected: tunnel::Connected) {
 
     *shared.transport.lock().unwrap() = Some(transport);
     *shared.session.lock().await = Some(session);
-    {
-        let mut epoch = shared.epoch.lock().unwrap();
-        *epoch = epoch.wrapping_add(1);
-    }
+    // The epoch is intentionally NOT bumped here. Both edge sources (the paddle poller and
+    // the type-ahead send worker) sample `shared.epoch` independently, so a bump would make
+    // them disagree and the Station would F4 whichever source sent second. The station adopts
+    // the first frame's epoch of each fresh session and re-anchors on reconnect (it tears the
+    // replayer down and back up per pairing), so a stable epoch is both correct and necessary.
     shared.emit(ClientEvent::Connection { state: "connected".into(), path: path.clone() });
     shared.log("info", format!("Paired over the {path} path."));
 }
 
-/// The operating-position LAN flow: bind the WireGuard socket, broadcast the beacon with that
-/// port, and wait for a Station to pick this keyer. On success, bring the link up as the
-/// responder. Runs as one task; aborting it stops both the beacon and the wait.
+/// The operating-position LAN flow: a **persistent responder**. The operator arms it once
+/// (Advertise); it then keeps answering Stations until unpaired. Each cycle binds a fresh
+/// WireGuard socket, broadcasts the beacon with that port, waits for a Station to pick this
+/// keyer, and brings the link up as the responder. When a later pick supersedes it (e.g. the
+/// Station reconnects after a drop), the loop re-binds and re-advertises — so the keyer
+/// reconnects without the operator re-arming. The Station resolves this keyer's *current* port
+/// from the live beacon at connect time, so a re-bound port is never stale.
+///
+/// Runs as one task; aborting it (unpair) stops the beacon and the wait.
 async fn lan_advertise_and_await(shared: Arc<Shared>) {
-    let (socket, wg_port) = match tunnel::lan_bind().await {
-        Ok(pair) => pair,
-        Err(e) => return fail(&shared, format!("LAN bind failed: {e}")),
-    };
     let (identity, callsign, keyer_id) = {
         let config = shared.config.lock().unwrap();
         let s = shared.settings.lock().unwrap();
@@ -1201,28 +1204,37 @@ async fn lan_advertise_and_await(shared: Arc<Shared>) {
         }
     };
 
-    let beacon = rwk_core::engine::lan_discovery::Beacon {
-        callsign,
-        keyer_id,
-        public_key: identity.public_bytes(),
-        wg_port,
-    };
-    let advertiser = match rwk_core::engine::lan_discovery::LanAdvertiser::new(beacon) {
-        Ok(a) => a,
-        Err(e) => return fail(&shared, format!("LAN advertise failed: {e}")),
-    };
-    let beacon_task = tokio::spawn(advertiser.run());
+    loop {
+        let (socket, wg_port) = match tunnel::lan_bind().await {
+            Ok(pair) => pair,
+            Err(e) => return fail(&shared, format!("LAN bind failed: {e}")),
+        };
 
-    let connected = match tunnel::lan_await_initiator(socket, &identity).await {
-        Ok(c) => c,
-        Err(e) => {
-            beacon_task.abort();
-            return fail(&shared, format!("LAN pairing failed: {e}"));
-        }
-    };
-    beacon_task.abort();
-    shared.emit(ClientEvent::Advertising { active: false });
-    bring_up_client(&shared, connected).await;
+        let beacon = rwk_core::engine::lan_discovery::Beacon {
+            callsign: callsign.clone(),
+            keyer_id: keyer_id.clone(),
+            public_key: identity.public_bytes(),
+            wg_port,
+        };
+        let advertiser = match rwk_core::engine::lan_discovery::LanAdvertiser::new(beacon) {
+            Ok(a) => a,
+            Err(e) => return fail(&shared, format!("LAN advertise failed: {e}")),
+        };
+        let beacon_task = tokio::spawn(advertiser.run());
+        shared.emit(ClientEvent::Advertising { active: true });
+
+        let connected = match tunnel::lan_await_initiator(socket, &identity).await {
+            Ok(c) => c,
+            Err(e) => {
+                beacon_task.abort();
+                shared.log("warn", format!("LAN listen cycle ended: {e}; re-advertising."));
+                continue;
+            }
+        };
+        beacon_task.abort();
+        shared.emit(ClientEvent::Advertising { active: false });
+        bring_up_client(&shared, connected).await;
+    }
 }
 
 /// Pushes `rules` to the Station over the control channel (if paired) and restarts the
@@ -1485,7 +1497,7 @@ fn drive_edge(
     key_down: bool,
     timestamp_ticks: u64,
 ) {
-    // 1. Local sidetone (via its own audio thread).
+    // 1. Local sidetone (via its own audio thread) — immediate, never waits on the network.
     if let Some(tone) = tone {
         tone.key(key_down);
     }
@@ -1495,12 +1507,17 @@ fn drive_edge(
     }
     // 3. UI indicator.
     shared.emit(ClientEvent::KeyState { down: key_down });
-    // 4. Tunnel transport when paired.
+    // 4. Tunnel transport when paired — fire-and-forget. Spawning the send (rather than
+    //    blocking on it) keeps CW timing decoupled from the tunnel: a stalled or backed-up
+    //    link can never latch the key down between a key-down edge and its key-up. The frame
+    //    carries its own timestamp, so the Station reconstructs spacing despite send jitter.
     let transport = shared.transport.lock().unwrap().clone();
     if let Some(transport) = transport {
         let event = EdgeEvent { timestamp_ticks, key_down, source: EdgeSource::Paddle };
         let frame = sender.frame_for(event);
-        let _ = rt.block_on(async { transport.send_frame(&frame).await });
+        rt.spawn(async move {
+            let _ = transport.send_frame(&frame).await;
+        });
     }
 }
 

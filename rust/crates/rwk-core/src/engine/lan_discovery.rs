@@ -275,6 +275,49 @@ impl LanBrowser {
     pub fn peers(&mut self) -> Vec<LanPeer> {
         prune_and_sort(&mut self.peers, Instant::now())
     }
+
+    /// Binds a browser and listens for up to `timeout` for the current beacon of `key`,
+    /// returning its freshly-heard endpoint.
+    ///
+    /// The radio site uses this right before connecting so it never handshakes a stale port:
+    /// an advertiser that re-armed (and re-bound to a new WireGuard port) is picked up on its
+    /// next broadcast — well inside a couple of [`ADVERTISE_INTERVAL`]s — so a reconnect
+    /// always targets the keyer's *current* address, not the one cached when the operator
+    /// first browsed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Config`] if no beacon for `key` arrives within `timeout`;
+    /// propagates socket errors.
+    pub async fn resolve(
+        self_key: [u8; 32],
+        key: [u8; 32],
+        timeout: Duration,
+    ) -> Result<SocketAddr> {
+        let mut browser = Self::bind(self_key)?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(crate::Error::Config(
+                    "the selected keyer is no longer advertising on the LAN".into(),
+                ));
+            }
+            match tokio::time::timeout(remaining, browser.recv_once()).await {
+                Ok(Ok(_)) => {
+                    if let Some(peer) = browser.peers().into_iter().find(|p| p.public_key == key) {
+                        return Ok(peer.endpoint);
+                    }
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    return Err(crate::Error::Config(
+                        "the selected keyer is no longer advertising on the LAN".into(),
+                    ))
+                }
+            }
+        }
+    }
 }
 
 /// Prunes stale peers (not seen within [`PEER_TTL`]) and returns the rest sorted by name.
@@ -364,6 +407,28 @@ mod tests {
             .unwrap();
         assert!(!accepted, "our own beacon must be ignored");
         assert_eq!(browser.peers().len(), 1, "self-echo did not add a peer");
+    }
+
+    #[tokio::test]
+    async fn resolve_finds_the_current_endpoint_for_a_key() {
+        // An advertiser for key [3;32] broadcasting on wg_port 51830.
+        let advertiser = LanAdvertiser::new(Beacon { public_key: [3u8; 32], wg_port: 51830, ..beacon() })
+            .unwrap();
+        let beacon_task = tokio::spawn(advertiser.run());
+
+        // resolve() from a different self_key should return the advertised endpoint port.
+        let endpoint = LanBrowser::resolve([9u8; 32], [3u8; 32], Duration::from_secs(5))
+            .await
+            .expect("resolve should find the advertiser");
+        assert_eq!(endpoint.port(), 51830);
+        beacon_task.abort();
+    }
+
+    #[tokio::test]
+    async fn resolve_times_out_when_the_key_is_absent() {
+        // Nothing advertising key [5;32]; resolve must time out rather than hang.
+        let r = LanBrowser::resolve([9u8; 32], [5u8; 32], Duration::from_millis(300)).await;
+        assert!(r.is_err());
     }
 
     #[test]

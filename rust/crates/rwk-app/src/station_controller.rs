@@ -564,13 +564,14 @@ impl StationController {
                 return;
             }
         };
-        let endpoint: std::net::SocketAddr = match peer_endpoint.parse() {
-            Ok(a) => a,
-            Err(e) => {
-                self.shared.log("warn", format!("Invalid keyer address: {e}"));
-                return;
-            }
-        };
+        // The passed endpoint is a hint from the last browse; the keyer's current endpoint is
+        // re-resolved from a fresh beacon just before connecting (below), so a keyer that
+        // re-armed on a new port is still reached. Validate the hint only.
+        if peer_endpoint.parse::<std::net::SocketAddr>().is_err() {
+            self.shared.log("warn", "Invalid keyer address.");
+            return;
+        }
+        let endpoint_hint = peer_endpoint.to_string();
         self.stop_browse();
         self.disconnect();
 
@@ -583,6 +584,22 @@ impl StationController {
             let identity = match shared.config.lock().unwrap().identity.to_identity() {
                 Ok(id) => id,
                 Err(e) => return fail(&shared, format!("identity error: {e}")),
+            };
+            // Resolve the keyer's current endpoint from a fresh beacon (it may have re-armed on
+            // a new port since the operator browsed), falling back to the browse hint.
+            let self_key = identity.public_bytes();
+            let endpoint = match rwk_core::engine::lan_discovery::LanBrowser::resolve(
+                self_key,
+                peer_key,
+                std::time::Duration::from_secs(4),
+            )
+            .await
+            {
+                Ok(addr) => addr,
+                Err(_) => match endpoint_hint.parse() {
+                    Ok(addr) => addr,
+                    Err(e) => return fail(&shared, format!("invalid keyer address: {e}")),
+                },
             };
             let connected = match tunnel::lan_connect_to(&identity, peer_key, endpoint).await {
                 Ok(c) => c,
