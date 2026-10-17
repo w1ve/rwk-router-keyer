@@ -414,6 +414,134 @@ async fn a_word_space_does_not_false_trip_the_f10_watchdog() {
     pump.abort();
 }
 
+/// Reproduces the APP's send path at high WPM: the send worker builds each frame then hands it
+/// to the tunnel **fire-and-forget** (`tokio::spawn(send_frame)`), rather than awaiting it. At
+/// 39+ WPM edges are ~31ms apart, so many spawned send tasks are in flight at once — and tokio
+/// does NOT guarantee they run in spawn order. If a later edge's datagram overtakes an earlier
+/// one, the Station's sequence tracker discards the lower sequence as a duplicate and keying
+/// stops. This asserts all edges still replay under that pattern at a fast speed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fire_and_forget_sends_preserve_keying_at_high_wpm() {
+    let (client, station) = tunnel_edge_pair().await;
+    let client = Arc::new(client);
+
+    let clock = SharedClock::new();
+    let transitions = Arc::new(Mutex::new(Vec::new()));
+    let mut replayer = tunnel_replayer(clock.as_ref(), EdgeJitterProfile::PathAdaptive, None);
+    replayer.begin_session(1);
+    let output = RecordingOutput {
+        clock: Arc::clone(&clock),
+        transitions: Arc::clone(&transitions),
+        last: None,
+    };
+    let bus = EventBus::new();
+    let mut events = bus.subscribe();
+    let driver = spawn_driver(replayer, Box::new(output), clock.clone(), Some(bus.clone()), None);
+    let pump = tokio::spawn(pump_edges(Arc::clone(&station), driver));
+
+    let session_start = clock.now();
+    // 40 WPM, a longer string so reorder has many chances to bite.
+    let schedule =
+        EdgeScheduleBuilder::build("CQ CQ DE W1VE", 40, 50, session_start, TICK_HZ).unwrap();
+    let mut sender = EdgeSender::new(1, TICK_HZ, session_start);
+
+    for edge in &schedule.edges {
+        wait_until_tick(clock.as_ref(), edge.timestamp_ticks);
+        let event = EdgeEvent {
+            timestamp_ticks: edge.timestamp_ticks,
+            key_down: edge.key_down,
+            source: EdgeSource::Host,
+        };
+        // Frame is built synchronously (sequence stays monotonic), but the SEND is
+        // fire-and-forget, exactly like the app's drive_edge.
+        let frame = sender.frame_for(event);
+        let client = Arc::clone(&client);
+        tokio::spawn(async move {
+            let _ = client.send_frame(&frame).await;
+        });
+    }
+
+    let expected = schedule.edges.len();
+    let replayed = wait_for_transition_count(&transitions, expected, Duration::from_secs(10)).await;
+
+    let mut fired: Vec<u8> = Vec::new();
+    while let Ok(ev) = events.try_recv() {
+        if let CoreEvent::FailSafe { code, .. } = ev {
+            fired.push(code);
+        }
+    }
+    assert!(fired.is_empty(), "no fail-safe may fire; got {fired:?}");
+    assert_eq!(
+        replayed, expected,
+        "fire-and-forget sends must still deliver all {expected} edges in order (got {replayed})"
+    );
+
+    pump.abort();
+}
+
+/// Keying must work at EVERY speed 5..=60 WPM (the C# keyer was flawless across that range).
+/// This sweeps representative speeds end to end over the real tunnel + replay driver and
+/// asserts that at each speed every edge replays and no fail-safe fires — catching a
+/// higher-WPM drop (the Server silently stopping keying) deterministically.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn keying_survives_every_speed_from_5_to_60_wpm() {
+    for wpm in [5u32, 10, 15, 20, 25, 30, 35, 39, 40, 45, 50, 55, 60] {
+        let (client, station) = tunnel_edge_pair().await;
+
+        let clock = SharedClock::new();
+        let transitions = Arc::new(Mutex::new(Vec::new()));
+        let mut replayer = tunnel_replayer(clock.as_ref(), EdgeJitterProfile::PathAdaptive, None);
+        replayer.begin_session(1);
+        let output = RecordingOutput {
+            clock: Arc::clone(&clock),
+            transitions: Arc::clone(&transitions),
+            last: None,
+        };
+        let bus = EventBus::new();
+        let mut events = bus.subscribe();
+        let driver =
+            spawn_driver(replayer, Box::new(output), clock.clone(), Some(bus.clone()), None);
+        let pump = tokio::spawn(pump_edges(Arc::clone(&station), driver));
+
+        // "PARIS" exercises dits, dahs and the gaps; short enough to run quickly per speed.
+        let session_start = clock.now();
+        let schedule = EdgeScheduleBuilder::build("PARIS", wpm, 50, session_start, TICK_HZ).unwrap();
+        let mut sender = EdgeSender::new(1, TICK_HZ, session_start);
+
+        for edge in &schedule.edges {
+            wait_until_tick(clock.as_ref(), edge.timestamp_ticks);
+            let event = EdgeEvent {
+                timestamp_ticks: edge.timestamp_ticks,
+                key_down: edge.key_down,
+                source: EdgeSource::Host,
+            };
+            client.send_frame(&sender.frame_for(event)).await.unwrap();
+        }
+
+        let expected = schedule.edges.len();
+        let replayed =
+            wait_for_transition_count(&transitions, expected, Duration::from_secs(10)).await;
+
+        let mut fired: Vec<u8> = Vec::new();
+        while let Ok(ev) = events.try_recv() {
+            if let CoreEvent::FailSafe { code, .. } = ev {
+                fired.push(code);
+            }
+        }
+
+        assert!(
+            fired.is_empty(),
+            "at {wpm} WPM a fail-safe fired ({fired:?}) — keying must never stop at any speed"
+        );
+        assert_eq!(
+            replayed, expected,
+            "at {wpm} WPM the Station replayed {replayed}/{expected} edges — it must replay all"
+        );
+
+        pump.abort();
+    }
+}
+
 /// Busy-waits until the clock reaches `target_ticks`, yielding briefly so the runtime is
 /// not starved. Precise to well under a millisecond, unlike `tokio::time::sleep`.
 fn wait_until_tick(clock: &SharedClock, target_ticks: u64) {
@@ -437,4 +565,146 @@ async fn wait_for_transition_count(
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+/// PROVES THE 39-WPM BUG MECHANISM, DETERMINISTICALLY.
+///
+/// The app's old `drive_edge` sent each frame fire-and-forget (`tokio::spawn(send_frame)`).
+/// Tokio does not run spawned tasks in spawn order, and under load a later edge's datagram can
+/// overtake an earlier one. The Station's sequence tracker treats any sequence `<=` the last
+/// applied as a duplicate and discards it (`tracker.rs`: `edge.sequence <= self.last_sequence`).
+/// So if edge N+1 is applied before edge N, edge N is dropped forever — and when the dropped
+/// edge is a key-UP, the key can stay latched or the stream stalls. That is why keying stopped
+/// at higher WPM.
+///
+/// Loopback rarely reorders on its own, so this test *forces* the hazard the real scheduler
+/// creates: each fire-and-forget send sleeps a small, sequence-dependent amount so that later
+/// edges deterministically overtake earlier ones. Under the OLD pattern this drops edges; we
+/// assert the Station does NOT replay them all, pinning the regression.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reordered_fire_and_forget_sends_drop_edges() {
+    let (client, station) = tunnel_edge_pair().await;
+    let client = Arc::new(client);
+
+    let clock = SharedClock::new();
+    let transitions = Arc::new(Mutex::new(Vec::new()));
+    let mut replayer = tunnel_replayer(clock.as_ref(), EdgeJitterProfile::PathAdaptive, None);
+    replayer.begin_session(1);
+    let output = RecordingOutput {
+        clock: Arc::clone(&clock),
+        transitions: Arc::clone(&transitions),
+        last: None,
+    };
+    let driver = spawn_driver(replayer, Box::new(output), clock.clone(), None, None);
+    let pump = tokio::spawn(pump_edges(Arc::clone(&station), driver));
+
+    let session_start = clock.now();
+    let schedule =
+        EdgeScheduleBuilder::build("CQ CQ DE W1VE", 40, 50, session_start, TICK_HZ).unwrap();
+    let mut sender = EdgeSender::new(1, TICK_HZ, session_start);
+    let expected = schedule.edges.len();
+
+    // Send every frame "at once", fire-and-forget, with an alternating delay so odd-indexed
+    // sends land before even-indexed ones — guaranteed reorder on the wire.
+    for (i, edge) in schedule.edges.iter().enumerate() {
+        let event = EdgeEvent {
+            timestamp_ticks: edge.timestamp_ticks,
+            key_down: edge.key_down,
+            source: EdgeSource::Host,
+        };
+        let frame = sender.frame_for(event); // sequence stays monotonic in build order
+        let client = Arc::clone(&client);
+        // Even index waits longer than the odd index that follows it → the odd overtakes.
+        let delay_ms = if i % 2 == 0 { 6 } else { 0 };
+        tokio::spawn(async move {
+            if delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            let _ = client.send_frame(&frame).await;
+        });
+    }
+
+    let replayed =
+        wait_for_transition_count(&transitions, expected, Duration::from_secs(5)).await;
+
+    // The reorder must cost us edges: the Station cannot have replayed all of them, because the
+    // tracker discarded the overtaken (lower-sequence) frames as duplicates.
+    assert!(
+        replayed < expected,
+        "reordered fire-and-forget sends must drop edges (replayed {replayed} of {expected}); \
+         if this now equals expected the reorder hazard is gone and this guard is stale"
+    );
+
+    pump.abort();
+}
+
+/// PROVES THE FIX. The app now routes every frame through a single ordered FIFO channel drained
+/// by ONE task, so datagrams leave in the exact order they were keyed and can never overtake.
+/// This models that drain: the same frames, same alternating-delay hazard as the bug test
+/// above, but pushed through one `mpsc` channel and sent by a single consumer that awaits each
+/// send before the next. With ordering restored, every edge must replay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_fifo_drain_preserves_keying_at_high_wpm() {
+    let (client, station) = tunnel_edge_pair().await;
+    let client = Arc::new(client);
+
+    let clock = SharedClock::new();
+    let transitions = Arc::new(Mutex::new(Vec::new()));
+    let mut replayer = tunnel_replayer(clock.as_ref(), EdgeJitterProfile::PathAdaptive, None);
+    replayer.begin_session(1);
+    let output = RecordingOutput {
+        clock: Arc::clone(&clock),
+        transitions: Arc::clone(&transitions),
+        last: None,
+    };
+    let bus = EventBus::new();
+    let mut events = bus.subscribe();
+    let driver = spawn_driver(replayer, Box::new(output), clock.clone(), Some(bus.clone()), None);
+    let pump = tokio::spawn(pump_edges(Arc::clone(&station), driver));
+
+    // The ordered outbound queue + single drain task — exactly the app's new design.
+    let (frame_tx, mut frame_rx) =
+        tokio::sync::mpsc::unbounded_channel::<rwk_core::protocol::edge::RwkPaddleFrame>();
+    let drain_client = Arc::clone(&client);
+    let drain = tokio::spawn(async move {
+        while let Some(frame) = frame_rx.recv().await {
+            let _ = drain_client.send_frame(&frame).await;
+        }
+    });
+
+    let session_start = clock.now();
+    let schedule =
+        EdgeScheduleBuilder::build("CQ CQ DE W1VE", 40, 50, session_start, TICK_HZ).unwrap();
+    let mut sender = EdgeSender::new(1, TICK_HZ, session_start);
+    let expected = schedule.edges.len();
+
+    // Pace the edges like the keyer thread does, pushing each finished frame into the FIFO.
+    for edge in &schedule.edges {
+        wait_until_tick(clock.as_ref(), edge.timestamp_ticks);
+        let event = EdgeEvent {
+            timestamp_ticks: edge.timestamp_ticks,
+            key_down: edge.key_down,
+            source: EdgeSource::Host,
+        };
+        let _ = frame_tx.send(sender.frame_for(event));
+    }
+    drop(frame_tx); // let the drain task finish once all frames are sent
+
+    let replayed =
+        wait_for_transition_count(&transitions, expected, Duration::from_secs(10)).await;
+
+    let mut fired: Vec<u8> = Vec::new();
+    while let Ok(ev) = events.try_recv() {
+        if let CoreEvent::FailSafe { code, .. } = ev {
+            fired.push(code);
+        }
+    }
+    assert!(fired.is_empty(), "no fail-safe may fire with ordered sends; got {fired:?}");
+    assert_eq!(
+        replayed, expected,
+        "the ordered FIFO drain must deliver all {expected} edges at 40 WPM (got {replayed})"
+    );
+
+    drain.abort();
+    pump.abort();
 }
