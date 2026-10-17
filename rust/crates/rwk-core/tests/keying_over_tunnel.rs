@@ -29,6 +29,7 @@ use rwk_core::engine::keying::{EdgeEvent, EdgeScheduleBuilder};
 use rwk_core::engine::network::EdgeTransport;
 use rwk_core::engine::replay::{spawn_driver, EdgeJitterProfile, KeyingOutput};
 use rwk_core::engine::edge_station::{pump_edges, tunnel_replayer};
+use rwk_core::engine::{CoreEvent, EventBus};
 use rwk_core::engine::{NetDriver, NetStack, NetStackHandle};
 use rwk_core::engine::tunnel::{StaticIdentity, TunnelPeer, WireGuardTunnel};
 use rwk_core::primitives::EdgeSource;
@@ -349,6 +350,65 @@ async fn jittered_sends_still_replay_within_two_milliseconds() {
          (budget 2.000ms, with up to 15ms injected send jitter)",
         expected,
         worst as f64 / 1e6,
+    );
+
+    pump.abort();
+}
+
+/// Keying a string that contains a WORD SPACE must not trip the F10 scheduler watchdog. The
+/// regression this guards: F10 measured "time since the last edge fired", so any gap longer
+/// than 250ms — a word space at 20 WPM is ~420ms — false-tripped F10 and latched the Station
+/// SAFE mid-send. "VVV TEST" has a space between the two words, so it exercises exactly that
+/// gap end to end over the real tunnel + replay driver. We assert every edge replays AND no
+/// fail-safe (least of all F10) was published on the bus.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_word_space_does_not_false_trip_the_f10_watchdog() {
+    let (client, station) = tunnel_edge_pair().await;
+
+    let clock = SharedClock::new();
+    let transitions = Arc::new(Mutex::new(Vec::new()));
+    let mut replayer = tunnel_replayer(clock.as_ref(), EdgeJitterProfile::PathAdaptive, None);
+    replayer.begin_session(1);
+    let output = RecordingOutput {
+        clock: Arc::clone(&clock),
+        transitions: Arc::clone(&transitions),
+        last: None,
+    };
+    // A bus so we can observe any fail-safe the driver's watchdog publishes.
+    let bus = EventBus::new();
+    let mut events = bus.subscribe();
+    let driver = spawn_driver(replayer, Box::new(output), clock.clone(), Some(bus.clone()), None);
+    let pump = tokio::spawn(pump_edges(Arc::clone(&station), driver));
+
+    // "VVV TEST" — a space between the words gives the ~420ms gap that used to trip F10.
+    let session_start = clock.now();
+    let schedule = EdgeScheduleBuilder::build("VVV TEST", 20, 50, session_start, TICK_HZ).unwrap();
+    let mut sender = EdgeSender::new(1, TICK_HZ, session_start);
+
+    for edge in &schedule.edges {
+        wait_until_tick(clock.as_ref(), edge.timestamp_ticks);
+        let event = EdgeEvent {
+            timestamp_ticks: edge.timestamp_ticks,
+            key_down: edge.key_down,
+            source: EdgeSource::Host,
+        };
+        client.send_frame(&sender.frame_for(event)).await.unwrap();
+    }
+
+    let expected = schedule.edges.len();
+    let replayed = wait_for_transition_count(&transitions, expected, Duration::from_secs(10)).await;
+    assert_eq!(replayed, expected, "every edge must replay across the word gap (got {replayed})");
+
+    // Drain the bus: no fail-safe may have fired. F10 in particular is the regression.
+    let mut fired: Vec<u8> = Vec::new();
+    while let Ok(ev) = events.try_recv() {
+        if let CoreEvent::FailSafe { code, .. } = ev {
+            fired.push(code);
+        }
+    }
+    assert!(
+        fired.is_empty(),
+        "no fail-safe may fire while keying a word with a space; got {fired:?}"
     );
 
     pump.abort();

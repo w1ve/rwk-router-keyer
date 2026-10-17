@@ -115,6 +115,10 @@ pub struct ReplaySnapshot {
     pub has_pending_edges: bool,
     /// Clock value at which an edge was last keyed out, or 0 if none.
     pub last_edge_fired: i64,
+    /// The deadline of the front (soonest) pending edge, or 0 when none is pending. F10 is a
+    /// *missed-deadline* detector: an edge is overdue only once `now` is past its own deadline,
+    /// never merely because edges are spaced apart (a word gap is not a stall).
+    pub next_deadline: i64,
 }
 
 /// Detects the timing conditions the replayer cannot see itself: F1, F2, F3.
@@ -244,10 +248,18 @@ impl SchedulerWatchdog {
         if !snapshot.has_pending_edges || !snapshot.session_active || snapshot.safe_latched {
             return None;
         }
-        if snapshot.last_edge_fired <= 0 {
+        // F10 is a MISSED-DEADLINE detector, not a "no edge fired lately" timer. The front
+        // pending edge has a scheduled deadline; a healthy replay thread fires it at (or just
+        // after) that deadline. Only when the thread is genuinely stalled does `now` run well
+        // past the edge's own deadline. Measuring against `last_edge_fired` instead would
+        // false-trip on any legitimate gap longer than the threshold — a word space at 20 WPM
+        // (~420 ms) is longer than 250 ms yet is not a stall. An edge still waiting out its
+        // jitter-buffer playout delay has a deadline in the future, so `now - deadline` is
+        // negative and never trips.
+        if snapshot.next_deadline <= 0 {
             return None;
         }
-        if now - snapshot.last_edge_fired >= self.overrun_ticks {
+        if now - snapshot.next_deadline >= self.overrun_ticks {
             return Some(FailSafeCondition::F10);
         }
         None
@@ -276,6 +288,7 @@ mod tests {
             last_inbound: 0,
             has_pending_edges: false,
             last_edge_fired: 0,
+            next_deadline: 0,
         }
     }
 
@@ -375,14 +388,37 @@ mod tests {
     }
 
     #[test]
-    fn watchdog_fires_f10_when_pending_edges_stall() {
+    fn watchdog_fires_f10_when_the_front_edge_deadline_is_missed() {
+        // A pending edge whose deadline is in the past by >250ms means the replay thread
+        // stalled and failed to fire it on time.
         let watchdog = SchedulerWatchdog::new(GHZ);
         let mut snapshot = active_snapshot();
         snapshot.has_pending_edges = true;
-        snapshot.last_edge_fired = 1_000 * MS;
+        snapshot.next_deadline = 1_000 * MS;
 
-        assert_eq!(watchdog.check(&snapshot, 1_100 * MS), None, "100ms is not an overrun");
+        assert_eq!(watchdog.check(&snapshot, 1_100 * MS), None, "100ms late is within budget");
         assert_eq!(watchdog.check(&snapshot, 1_300 * MS), Some(FailSafeCondition::F10));
+    }
+
+    #[test]
+    fn watchdog_does_not_false_trip_on_a_long_gap_between_edges() {
+        // The regression this guards: a word space at 20 WPM is ~420ms, during which the next
+        // edge is pending but its deadline is still in the FUTURE. That is not a stall, so no
+        // F10 — even though far more than 250ms has elapsed since the last edge fired.
+        let watchdog = SchedulerWatchdog::new(GHZ);
+        let mut snapshot = active_snapshot();
+        snapshot.has_pending_edges = true;
+        snapshot.last_edge_fired = 1_000 * MS; // last edge fired long ago…
+        snapshot.next_deadline = 1_500 * MS; // …but the next edge is not due until 1_500ms.
+
+        // At 1_420ms (420ms after the last firing) the next edge is still 80ms in the future.
+        assert_eq!(
+            watchdog.check(&snapshot, 1_420 * MS),
+            None,
+            "a long inter-edge gap is not a stall"
+        );
+        // Right at the deadline: on time, not overrun.
+        assert_eq!(watchdog.check(&snapshot, 1_500 * MS), None);
     }
 
     #[test]
@@ -390,12 +426,23 @@ mod tests {
         let watchdog = SchedulerWatchdog::new(GHZ);
         let mut snapshot = active_snapshot();
         // No pending edges: an idle replayer cannot overrun.
-        snapshot.last_edge_fired = 1_000 * MS;
+        snapshot.next_deadline = 1_000 * MS;
         assert_eq!(watchdog.check(&snapshot, 99_000 * MS), None);
 
-        // Pending, but never fired anything yet.
+        // Pending, but no real deadline recorded yet.
         snapshot.has_pending_edges = true;
-        snapshot.last_edge_fired = 0;
+        snapshot.next_deadline = 0;
         assert_eq!(watchdog.check(&snapshot, 99_000 * MS), None);
+    }
+
+    #[test]
+    fn watchdog_does_not_trip_while_an_edge_waits_out_its_jitter_playout() {
+        // A freshly-scheduled edge has a deadline in the FUTURE (the jitter-buffer playout
+        // delay). now - deadline is negative, so it can never trip F10 before it is due.
+        let watchdog = SchedulerWatchdog::new(GHZ);
+        let mut snapshot = active_snapshot();
+        snapshot.has_pending_edges = true;
+        snapshot.next_deadline = 2_000 * MS; // due in the future
+        assert_eq!(watchdog.check(&snapshot, 1_700 * MS), None, "not due yet, not a stall");
     }
 }

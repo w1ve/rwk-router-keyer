@@ -298,6 +298,9 @@ impl EdgeReplayer {
             last_inbound: self.last_inbound,
             has_pending_edges: !self.pending.is_empty(),
             last_edge_fired: self.last_edge_fired,
+            // The soonest pending edge's deadline, so the F10 watchdog measures lateness
+            // against the edge's own schedule rather than the gap since the last firing.
+            next_deadline: self.pending.front().map(|e| e.deadline).unwrap_or(0),
         }
     }
 
